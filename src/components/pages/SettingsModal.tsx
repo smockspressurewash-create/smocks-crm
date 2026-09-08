@@ -2573,11 +2573,19 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                   toast?.("Deletion cancelled — jobs kept"); return;
                 }
                 const ids = oldJobs.map((j: any) => j.id);
-                const { error } = await (supabase as any).from("jobs").delete().in("id", ids);
+                // SECURITY/SYNC FIX (audit finding) — no .select("id")/row-
+                // count check: an RLS-mismatched delete reported success and
+                // told the owner their only backup copy (the just-downloaded
+                // JSON) was safe to rely on, while the rows still existed
+                // server-side and would reappear on the next sync.
+                const { data: deletedRows, error } = await (supabase as any).from("jobs").delete().in("id", ids).select("id");
                 if (error) { toast?.("Some jobs may not have deleted from the server — " + error.message, "red"); return; }
-                setJobs((prev: any[]) => prev.filter(j => !ids.includes(j.id)));
-                markRecentlyDeleted?.("jobs", ids);
-                toast?.(`Archived and deleted ${ids.length} job(s) ✓`, "green");
+                const deletedIds = Array.isArray(deletedRows) ? deletedRows.map((r: any) => r.id) : [];
+                if (deletedIds.length === 0) { toast?.("Nothing was deleted from the server — the jobs may already be gone or belong to a different account", "red"); return; }
+                if (deletedIds.length < ids.length) toast?.(`Only ${deletedIds.length} of ${ids.length} job(s) actually deleted from the server — the rest may reappear`, "yellow");
+                setJobs((prev: any[]) => prev.filter(j => !deletedIds.includes(j.id)));
+                markRecentlyDeleted?.("jobs", deletedIds);
+                toast?.(`Archived and deleted ${deletedIds.length} job(s) ✓`, "green");
               }} className="w-full !text-xs">
                 <Download size={12} className="inline mr-1.5" />Export & Delete Jobs Older Than 30 Days
               </GBtn>

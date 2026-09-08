@@ -1534,13 +1534,18 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           }
           if (!sentEmail && !sentSms) return { error: "Failed to send — " + (errs.join("; ") || "no email/phone on file for this customer") };
           const sentAt = today();
-          (supabase as any).from("estimates").update({ sentAt, sendChannel: channel }).eq("id", est.id).then(() => {}, () => {});
+          // SECURITY/SYNC FIX (audit finding) — silently swallowed both
+          // success and failure (EstimatesPage.tsx's equivalent write was
+          // already fixed to check this; Alfred's own tool wasn't).
+          (supabase as any).from("estimates").update({ sentAt, sendChannel: channel }).eq("id", est.id).select("id")
+            .then((r: any) => { if (r?.error || !Array.isArray(r?.data) || r.data.length === 0) console.warn("[AlfredTool send_estimate] sentAt write failed:", r?.error?.message || "matched 0 rows"); })
+            .catch((e: any) => console.warn("[AlfredTool send_estimate] sentAt write threw:", e?.message));
           setEstimates((prev: any[]) => prev.map(x => x.id === est.id ? { ...x, sentAt, sendChannel: channel } : x));
           toast("Alfred sent the estimate to " + sc.firstName + (errs.length ? " (partial)" : ""));
           return { success: true, estimateId: est.id, customer: sc.firstName + " " + sc.lastName, sentEmail, sentSms, warnings: errs.length ? errs : undefined };
         }
         case "schedule_job": {
-          console.log("[AlfredTool schedule_job] raw inputs from model:", JSON.stringify(inputs));
+          console.log("[AlfredTool schedule_job] inputs from model — customerId:", inputs?.customerId, "date:", inputs?.date);
           // Trim before comparing — a customer with no lastName (a business/
           // HOA-style entry: firstName="Springfield HOA", lastName="") builds
           // a trailing-space string ("springfield hoa ") that a strict `===`
@@ -1625,7 +1630,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             // confirming the column actually exists (see CLAUDE.md's Database
             // section on organizations/profiles being aspirational scaffolding).
           };
-          console.log("[AlfredTool schedule_job] EXACT payload being sent to Supabase:", JSON.stringify(newJ, null, 2));
+          console.log("[AlfredTool schedule_job] payload — customerId:", (newJ as any)?.customerId, "id:", (newJ as any)?.id);
           // The manual form itself does setJobs() + toast IMMEDIATELY, then
           // inserts in a detached, un-awaited async IIFE — correct for a UI
           // button (nothing downstream needs its return value), but wrong
@@ -2065,7 +2070,12 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (!Array.isArray(data) || data.length === 0) return { error: "Couldn't mark that invoice paid (permissions or it no longer exists)." };
           if ((inv as any).jobId) {
             setJobs((prev: any[]) => prev.map(j => j.id === (inv as any).jobId ? { ...j, paymentStatus: "Paid" } : j));
-            (supabase as any).from("jobs").update({ paymentStatus: "Paid" }).eq("id", (inv as any).jobId).then(() => {}).catch(() => {});
+            // SECURITY/SYNC FIX (audit finding) — completely silent before,
+            // no error log, no 0-row check; could leave estimates.paidAt set
+            // but jobs.paymentStatus still "Pending" with no trace of why.
+            (supabase as any).from("jobs").update({ paymentStatus: "Paid" }).eq("id", (inv as any).jobId).select("id")
+              .then((r: any) => { if (r?.error || !Array.isArray(r?.data) || r.data.length === 0) console.warn("[AlfredTool mark_invoice_paid] jobs.paymentStatus write failed:", r?.error?.message || "matched 0 rows"); })
+              .catch((e: any) => console.warn("[AlfredTool mark_invoice_paid] jobs.paymentStatus write threw:", e?.message));
           }
           toast("Alfred marked invoice paid ✓ · " + fmt(inv.total));
           return { success: true, invoiceId: inv.id, amount: inv.total, paidAt };
@@ -2390,14 +2400,20 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (!inputs.requestId || inputs.approve === undefined) return { error: "requestId and approve required" };
           const patch: any = { status: inputs.approve ? "approved" : "denied", responded_at: new Date().toISOString() };
           if (!inputs.approve && inputs.reason) patch.denial_reason = inputs.reason;
-          const { error: respErr } = await (supabase as any).from("job_requests").update(patch).eq("id", inputs.requestId);
-          if (respErr) return { error: "Couldn't update the request — " + respErr.message };
+          // SECURITY/SYNC FIX (audit finding) — neither write here checked
+          // for the RLS 0-row-silent-success case (CLAUDE.md): Alfred could
+          // tell the owner "approved" while job_requests/jobs.crew never
+          // actually changed.
+          const respRes = await (supabase as any).from("job_requests").update(patch).eq("id", inputs.requestId).select("id");
+          if (respRes?.error) return { error: "Couldn't update the request — " + respRes.error.message };
+          if (!Array.isArray(respRes?.data) || respRes.data.length === 0) return { error: "The request couldn't be updated — it may not exist or belong to a different account." };
           if (inputs.approve) {
             const { data: reqRow } = await (supabase as any).from("job_requests").select("employee_id,job_id").eq("id", inputs.requestId).maybeSingle();
             if (reqRow?.job_id && reqRow?.employee_id) {
               const j = jobs.find((x: any) => x.id === reqRow.job_id);
               const crew = Array.from(new Set([...(j?.crew || []), reqRow.employee_id]));
-              await (supabase as any).from("jobs").update({ crew }).eq("id", reqRow.job_id);
+              const crewRes = await (supabase as any).from("jobs").update({ crew }).eq("id", reqRow.job_id).select("id");
+              if (crewRes?.error || !Array.isArray(crewRes?.data) || crewRes.data.length === 0) return { error: "Request approved, but the crew assignment didn't save — " + (crewRes?.error?.message || "the job may belong to a different account") };
               setJobs((prev: any[]) => prev.map((x: any) => x.id === reqRow.job_id ? { ...x, crew } : x));
             }
           }
@@ -2423,11 +2439,16 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (row.kind === "reschedule") {
             const patch: any = { scheduledDate: row.proposed.toDate };
             if (row.proposed.toTime) patch.scheduledTime = row.proposed.toTime;
-            const { error: moveErr } = await (supabase as any).from("jobs").update(patch).eq("id", row.job_id);
-            if (moveErr) return { error: "Couldn't move the job — " + moveErr.message };
+            // SECURITY/SYNC FIX (audit finding) — same 0-row check needed here.
+            const moveRes = await (supabase as any).from("jobs").update(patch).eq("id", row.job_id).select("id");
+            if (moveRes?.error) return { error: "Couldn't move the job — " + moveRes.error.message };
+            if (!Array.isArray(moveRes?.data) || moveRes.data.length === 0) return { error: "The job couldn't be moved — it may not exist or belong to a different account." };
             setJobs((prev: any[]) => prev.map((x: any) => x.id === row.job_id ? { ...x, ...patch } : x));
           }
-          await (supabase as any).from("alfred_pending_actions").update({ status: "approved", resolved_at: new Date().toISOString() }).eq("id", row.id);
+          {
+            const resolveRes = await (supabase as any).from("alfred_pending_actions").update({ status: "approved", resolved_at: new Date().toISOString() }).eq("id", row.id).select("id");
+            if (resolveRes?.error || !Array.isArray(resolveRes?.data) || resolveRes.data.length === 0) return { error: "Couldn't mark the request resolved — " + (resolveRes?.error?.message || "it may belong to a different account") };
+          }
           const custRow = customers.find((x: any) => x.id === row.customer_id);
           const confirmMsg = `Hi ${custRow?.firstName || ""}, you're all set — we've moved your appointment to ${row.proposed.toDate}${row.proposed.toTime ? " at " + row.proposed.toTime : ""}. See you then!`;
           let notifyWarning: string | undefined;
@@ -2545,8 +2566,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         }
         case "cancel_followup_reminder": {
           if (!inputs.reminderId) return { error: "reminderId required" };
-          const { error: remCancelErr } = await (supabase as any).from("alfred_reminders").delete().eq("id", inputs.reminderId).eq("owner_id", ownerId);
+          // SECURITY/SYNC FIX (audit finding) — no 0-row check: a "cancelled"
+          // reminder that didn't actually match a row would still fire later.
+          const { data: remCancelData, error: remCancelErr } = await (supabase as any).from("alfred_reminders").delete().eq("id", inputs.reminderId).eq("owner_id", ownerId).select("id");
           if (remCancelErr) return { error: remCancelErr.message };
+          if (!Array.isArray(remCancelData) || remCancelData.length === 0) return { error: "That reminder couldn't be cancelled — it may not exist or already ran." };
           return { success: true, cancelled: inputs.reminderId };
         }
         case "get_business_stats": {

@@ -323,8 +323,13 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
   }, [view]);
   const reviewMileageLog = (id: string, status: "approved" | "denied") => {
     setMileageLogs(prev => prev.map(m => m.id === id ? { ...m, status } : m));
-    (supabase as any).from("mileage_logs").update({ status, reviewed_at: new Date().toISOString() }).eq("id", id)
-      .then((r: any) => { if (r?.error) toast?.("Couldn't save — " + r.error.message, "red"); else toast?.(status === "approved" ? "Mileage approved ✓" : "Mileage denied", "green"); })
+    // SECURITY/SYNC FIX (audit finding) — no .select("id")/0-row check, so
+    // an RLS-mismatched write toasted "approved" while silently not saving.
+    (supabase as any).from("mileage_logs").update({ status, reviewed_at: new Date().toISOString() }).eq("id", id).select("id")
+      .then((r: any) => {
+        if (!r?.error && Array.isArray(r?.data) && r.data.length > 0) { toast?.(status === "approved" ? "Mileage approved ✓" : "Mileage denied", "green"); return; }
+        toast?.("Couldn't save — " + (r?.error?.message || "the server didn't confirm the update"), "red");
+      })
       .catch((e: any) => toast?.("Couldn't save — " + (e?.message || "unknown error"), "red"));
   };
   // ISSUE 7 (round 2) — this used to default to "1st of the month → today",
@@ -1872,12 +1877,16 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
               // paidDays and paymentLog are separate columns, so a missing/
               // mismatched paymentLog column must not be able to block the
               // paidDays status itself from saving.
-              (supabase as any).from("employees").update({ paidDays: next, paymentLog: nextLog }).eq("id", f.id)
+              // SECURITY/SYNC FIX (audit finding) — this write, unlike
+              // togglePeriod above, never checked for the RLS 0-row-silent-
+              // success case (CLAUDE.md): "Marked as paid" toasted even when
+              // owner_id mismatch meant nothing actually saved.
+              (supabase as any).from("employees").update({ paidDays: next, paymentLog: nextLog }).eq("id", f.id).select("id")
                 .then(async (r: any) => {
-                  if (!r?.error) { toast?.(next[key] === "paid" ? "Marked as paid ✓" : "Marked as unpaid", "green"); return; }
-                  console.warn("[MarkPaid] full update failed:", r.error.message, "— retrying with paidDays only");
-                  const retry = await (supabase as any).from("employees").update({ paidDays: next }).eq("id", f.id);
-                  if (retry?.error) { console.error("[MarkPaid] paidDays-only retry also failed:", retry.error.message); toast?.("Failed to save pay status — " + retry.error.message, "red"); }
+                  if (!r?.error && Array.isArray(r?.data) && r.data.length > 0) { toast?.(next[key] === "paid" ? "Marked as paid ✓" : "Marked as unpaid", "green"); return; }
+                  console.warn("[MarkPaid] full update failed:", r?.error?.message || "matched 0 rows", "— retrying with paidDays only");
+                  const retry = await (supabase as any).from("employees").update({ paidDays: next }).eq("id", f.id).select("id");
+                  if (retry?.error || !Array.isArray(retry?.data) || retry.data.length === 0) { console.error("[MarkPaid] paidDays-only retry also failed:", retry?.error?.message || "matched 0 rows"); toast?.("Failed to save pay status — " + (retry?.error?.message || "the server didn't confirm the update"), "red"); }
                   else toast?.(next[key] === "paid" ? "Marked as paid ✓ (payment log needs a pending database migration)" : "Marked as unpaid", "yellow");
                 })
                 .catch((e: any) => { console.error("[MarkPaid] threw:", e?.message); toast?.("Failed to save pay status — " + (e?.message || "unknown error"), "red"); });

@@ -431,7 +431,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         const { smsOptIn, smsOptInAt, stripeCustomerId, savedPaymentMethodId, savedPaymentMethodLabel, referredBy, ...core } = payload;
         insert = await sb(serviceRoleKey, `customers`, { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify(core) });
       }
-      if (!insert.ok) { console.error("[submit_referral_signup] insert failed:", insert.status, JSON.stringify(insert.data)); return json({ error: "Failed to save referral signup" }, 500); }
+      if (!insert.ok) { console.error("[submit_referral_signup] insert failed, status:", insert.status); return json({ error: "Failed to save referral signup" }, 500); }
       return json({ success: true });
     }
 
@@ -490,8 +490,50 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           source: "customer-submitted", owner_id: ownerId, status: "completed",
         }),
       });
-      if (!insert.ok) { console.error("[submit_review] insert failed:", insert.status, JSON.stringify(insert.data)); return json({ error: "Failed to submit review" }, 500); }
+      if (!insert.ok) { console.error("[submit_review] insert failed, status:", insert.status); return json({ error: "Failed to submit review" }, 500); }
       return json({ success: true, review: Array.isArray(insert.data) ? insert.data[0] : insert.data });
+    }
+
+    // ── ClientPortal.tsx (#/estimate/:id) promo/referral redemption on
+    // estimate approval — SECURITY/SYNC FIX (audit finding). The client used
+    // to write these directly from the anonymous customer's own (sessionless)
+    // Supabase client, which the owner_id-scoped RLS on `promotions`/
+    // `customers` silently rejects with the same 0-row-silent-success pattern
+    // documented in CLAUDE.md — a promo's usageLimit was never actually
+    // enforced end-to-end and referrers never actually got credited. Mirrors
+    // submit_review below: resolves owner_id server-side from the promo/
+    // referrer row itself, never trusted from the client, and writes with the
+    // service role.
+    if (action === "redeem_promotion") {
+      const { promoId } = body;
+      if (!promoId) return json({ error: "Missing promoId" }, 400);
+      const promoRow = await sb(serviceRoleKey, `promotions?id=eq.${encodeURIComponent(promoId)}&select=id,redeemedCount`);
+      const promo = Array.isArray(promoRow.data) ? promoRow.data[0] : null;
+      if (!promo) return json({ error: "Promotion not found" }, 404);
+      const upd = await sb(serviceRoleKey, `promotions?id=eq.${encodeURIComponent(promoId)}&select=id`, {
+        method: "PATCH", headers: { Prefer: "return=representation" },
+        body: JSON.stringify({ redeemedCount: (Number(promo.redeemedCount) || 0) + 1 }),
+      });
+      if (!upd.ok || !Array.isArray(upd.data) || upd.data.length === 0) { console.error("[redeem_promotion] update failed, status:", upd.status); return json({ error: "Failed to redeem promotion" }, 500); }
+      return json({ success: true });
+    }
+    if (action === "credit_referral") {
+      const { referrerId } = body;
+      if (!referrerId) return json({ error: "Missing referrerId" }, 400);
+      const custRow = await sb(serviceRoleKey, `customers?id=eq.${encodeURIComponent(referrerId)}&select=id,referralCreditOwed,owner_id`);
+      const cust = Array.isArray(custRow.data) ? custRow.data[0] : null;
+      if (!cust) return json({ error: "Referrer not found" }, 404);
+      const ownerId = cust.owner_id;
+      if (!ownerId) return json({ error: "Referrer has no owner_id" }, 400);
+      const settingsRow = await sb(serviceRoleKey, `app_settings?owner_id=eq.${encodeURIComponent(ownerId)}&select=data&limit=1`);
+      const referrerCredit = Number(settingsRow.ok && Array.isArray(settingsRow.data) ? settingsRow.data[0]?.data?.referralSettings?.referrerCredit : 0) || 0;
+      const nextCredit = (Number(cust.referralCreditOwed) || 0) + referrerCredit;
+      const upd = await sb(serviceRoleKey, `customers?id=eq.${encodeURIComponent(referrerId)}&select=id`, {
+        method: "PATCH", headers: { Prefer: "return=representation" },
+        body: JSON.stringify({ referralCreditOwed: nextCredit }),
+      });
+      if (!upd.ok || !Array.isArray(upd.data) || upd.data.length === 0) { console.error("[credit_referral] update failed, status:", upd.status); return json({ error: "Failed to credit referrer" }, 500); }
+      return json({ success: true, referralCreditOwed: nextCredit });
     }
 
     // ── ClientPortal.tsx (#/estimate/:id) payment/sign confirmation texts —

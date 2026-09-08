@@ -561,9 +561,19 @@ export function ClientAuthPortal({
     setReschedulingSend(true);
     try {
       const j = myJobsList.find(x => x.id === jobId);
-      await (supabase as any).from("jobs").update({
+      // SECURITY/SYNC FIX (audit finding) — this never checked the result at
+      // all (not even `.error`, let alone RLS's 0-row-silent-success case),
+      // so a customer always saw "request sent ✓" even when the write never
+      // landed and the owner's dashboard never saw the request. Bail out of
+      // the whole flow (no notification, no optimistic UI, no success toast)
+      // unless the write actually matched a row.
+      const rescheduleRes = await (supabase as any).from("jobs").update({
         rescheduleRequested: true, rescheduleRequestNote: rescheduleNote.trim() || null, rescheduleRequestedAt: new Date().toISOString(),
-      }).eq("id", jobId);
+      }).eq("id", jobId).select("id");
+      if (rescheduleRes?.error || !Array.isArray(rescheduleRes?.data) || rescheduleRes.data.length === 0) {
+        toast?.("Couldn't send request — please call or text us directly", "red");
+        return;
+      }
       // Same anonymous-safe owner-notification proxy CustomerReviewPage.tsx/
       // ClientPortal.tsx use — see functions/api/alfred-notify.ts.
       fetch("/api/alfred-notify", {

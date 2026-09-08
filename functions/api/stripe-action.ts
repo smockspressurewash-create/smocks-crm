@@ -183,6 +183,25 @@ const stripeFetch = async (secretKey: string, method: string, path: string, para
 // customer read in this app already does (see public-data.ts) — safe here
 // because invoiceId is only ever used to look up ONE specific amount, never
 // returned to the caller or used to enumerate other rows.
+// SECURITY FIX (audit finding) — list_payment_methods/detach_payment_method/
+// charge_saved_payment_method only ever checked "is the caller an owner/
+// manager of SOME tenant," never that the target Stripe customer actually
+// belongs to THAT tenant. Stripe customer/payment-method ids are global
+// across every business still sharing the platform-wide STRIPE_SECRET_KEY
+// (i.e. hasn't configured their own keys/Connect account) — without this
+// check, any owner/manager could pass another business's real cus_.../pm_...
+// id and list, detach, or charge that customer's saved card. Mirrors the
+// verification detach_my_payment_method already does for the customer-facing
+// path, applied to the staff-facing one.
+const verifyStripeCustomerOwnedBy = async (stripeCustomerId: string, ownerId: string, serviceRoleKey: string): Promise<boolean> => {
+  if (!stripeCustomerId || !ownerId || !serviceRoleKey) return false;
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/customers?stripeCustomerId=eq.${encodeURIComponent(stripeCustomerId)}&owner_id=eq.${encodeURIComponent(ownerId)}&select=id&limit=1`, {
+    headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
+  });
+  const rows = await res.json().catch(() => []);
+  return Array.isArray(rows) && rows.length > 0;
+};
+
 const getInvoiceAmountCents = async (invoiceId: string, serviceRoleKey: string): Promise<number> => {
   if (!serviceRoleKey) throw new Error("Server missing SUPABASE_SERVICE_ROLE_KEY env var — add it in the Cloudflare Pages dashboard, then redeploy.");
   const res = await fetch(`${SUPABASE_URL}/rest/v1/estimates?id=eq.${encodeURIComponent(invoiceId)}&select=total`, {
@@ -349,12 +368,24 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
 
       if (action === "list_payment_methods") {
         if (!body.customerId) throw new Error("Missing customerId");
+        if (serviceRoleKey && !(await verifyStripeCustomerOwnedBy(body.customerId, callerOwnerId!, serviceRoleKey))) {
+          return new Response(JSON.stringify({ error: "That customer doesn't belong to your business." }), { status: 403, headers: { "Content-Type": "application/json" } });
+        }
         const pmRes = await stripeFetch(secretKey, "GET", `payment_methods?customer=${encodeURIComponent(body.customerId)}&type=card`, undefined, stripeAccount);
         const methods = (pmRes.data || []).map((pm: any) => ({ id: pm.id, brand: pm.card?.brand, last4: pm.card?.last4, expMonth: pm.card?.exp_month, expYear: pm.card?.exp_year }));
         return json({ paymentMethods: methods });
       }
-      // detach_payment_method
+      // detach_payment_method — never trust a client-claimed paymentMethodId
+      // alone: fetch it from Stripe first to find its real owning customer,
+      // then verify that customer belongs to the caller's own tenant, same
+      // as detach_my_payment_method's customer-facing check below.
       if (!body.paymentMethodId) throw new Error("Missing paymentMethodId");
+      {
+        const pmCheck = await stripeFetch(secretKey, "GET", `payment_methods/${encodeURIComponent(body.paymentMethodId)}`, undefined, stripeAccount);
+        if (serviceRoleKey && !(await verifyStripeCustomerOwnedBy(pmCheck?.customer, callerOwnerId!, serviceRoleKey))) {
+          return new Response(JSON.stringify({ error: "That card doesn't belong to your business." }), { status: 403, headers: { "Content-Type": "application/json" } });
+        }
+      }
       await stripeFetch(secretKey, "POST", `payment_methods/${encodeURIComponent(body.paymentMethodId)}/detach`, {}, stripeAccount);
       return json({ success: true });
     }
@@ -377,7 +408,16 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       const email = user?.email;
       if (!email) return new Response(JSON.stringify({ error: "Not signed in." }), { status: 401, headers: { "Content-Type": "application/json" } });
 
-      const custRes = await fetch(`${SUPABASE_URL}/rest/v1/customers?email=eq.${encodeURIComponent(email)}&select=stripeCustomerId,owner_id&limit=1`, {
+      // BUG FIX (audit finding) — a customer can be linked to MULTIPLE
+      // businesses (see public-data.ts get_customer_portal_data's
+      // multi-business `accounts` array). Without filtering by owner_id, this
+      // always resolved to whichever linked business's row the query happens
+      // to return first, regardless of which business tab is active on the
+      // client — a card action for Business B could silently act on Business
+      // A's row. body.ownerId (the client's currently-active business) scopes
+      // it correctly when provided; falls back to unscoped for old callers.
+      const custQueryUrl = `${SUPABASE_URL}/rest/v1/customers?email=eq.${encodeURIComponent(email)}&select=stripeCustomerId,owner_id&limit=1` + (body.ownerId ? `&owner_id=eq.${encodeURIComponent(body.ownerId)}` : "");
+      const custRes = await fetch(custQueryUrl, {
         headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
       });
       const custRows = await custRes.json().catch(() => []);
@@ -409,7 +449,10 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       const email = user?.email;
       if (!email) return new Response(JSON.stringify({ error: "Not signed in." }), { status: 401, headers: { "Content-Type": "application/json" } });
 
-      const custRes = await fetch(`${SUPABASE_URL}/rest/v1/customers?email=eq.${encodeURIComponent(email)}&select=stripeCustomerId,owner_id&limit=1`, {
+      // BUG FIX (audit finding) — same multi-business owner_id scoping as
+      // get_my_saved_card above.
+      const custQueryUrl2 = `${SUPABASE_URL}/rest/v1/customers?email=eq.${encodeURIComponent(email)}&select=stripeCustomerId,owner_id&limit=1` + (body.ownerId ? `&owner_id=eq.${encodeURIComponent(body.ownerId)}` : "");
+      const custRes = await fetch(custQueryUrl2, {
         headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
       });
       const custRows = await custRes.json().catch(() => []);
@@ -704,6 +747,25 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         return json({ success: true });
       }
       case "create_checkout_session": {
+        // SECURITY FIX (audit finding) — with no invoiceId, resolvedOwnerIdOuter
+        // (used above to pick which business's Stripe key/account to charge
+        // through) falls all the way back to a client-claimed body.ownerId,
+        // and amountCents/description were fully client-controlled too. An
+        // unauthenticated caller could pass an arbitrary ownerId + amount and
+        // get a real Checkout Session created against that business's Stripe
+        // account — no money is stolen (the customer still has to pay), but
+        // it lets anyone mint "invoice" checkout links purporting to be from
+        // any business, and probes which ownerIds have Stripe configured.
+        // Require a real verified session whenever there's no invoiceId to
+        // anchor the owner/amount instead, same guard charge_saved_payment_
+        // method uses.
+        if (!body.invoiceId) {
+          const accessTokenGuard = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+          const verifiedOwnerId = await resolveCallerOwnerId(accessTokenGuard);
+          if (!verifiedOwnerId) {
+            return new Response(JSON.stringify({ error: "Not authenticated — sign in and try again." }), { status: 401, headers: { "Content-Type": "application/json" } });
+          }
+        }
         const amountCents = body.invoiceId ? await getInvoiceAmountCents(body.invoiceId, serviceRoleKey) : Math.round(Number(body.amountCents) || 0);
         if (amountCents <= 0) throw new Error("Invalid amount");
         const params: Record<string, string> = {
@@ -819,16 +881,24 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         // client-claimed body.ownerId when no session resolves, which is
         // exactly what an unauthenticated attacker would hit. Re-verify a
         // REAL session directly here, independent of that fallback.
+        let verifiedOwnerIdForCharge: string | null = null;
         {
           const accessTokenGuard = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
-          const verifiedOwnerId = await resolveCallerOwnerId(accessTokenGuard);
-          if (!verifiedOwnerId) {
+          verifiedOwnerIdForCharge = await resolveCallerOwnerId(accessTokenGuard);
+          if (!verifiedOwnerIdForCharge) {
             return new Response(JSON.stringify({ error: "Not authenticated — sign in and try again." }), { status: 401, headers: { "Content-Type": "application/json" } });
           }
         }
         const amountCents = body.invoiceId ? await getInvoiceAmountCents(body.invoiceId, serviceRoleKey) : Math.round(Number(body.amountCents) || 0);
         if (!body.customerId || !body.paymentMethodId) throw new Error("Missing customerId/paymentMethodId");
         if (amountCents <= 0) throw new Error("Invalid amount");
+        // SECURITY FIX (audit finding) — verifiedOwnerIdForCharge only proved
+        // "a real session," not that body.customerId is actually THIS
+        // caller's own tenant's customer. Same cross-tenant risk as
+        // list_payment_methods/detach_payment_method above.
+        if (serviceRoleKey && !(await verifyStripeCustomerOwnedBy(body.customerId, verifiedOwnerIdForCharge, serviceRoleKey))) {
+          return new Response(JSON.stringify({ error: "That customer doesn't belong to your business." }), { status: 403, headers: { "Content-Type": "application/json" } });
+        }
         const params: Record<string, string> = {
           amount: String(amountCents),
           currency: body.currency || "usd",
@@ -840,10 +910,19 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         };
         if (body.invoiceId) params["metadata[invoiceId]"] = body.invoiceId;
         // Idempotency key derived from the invoice when one is given (the
-        // charge is then fully determined by it — safe to reuse on retry);
-        // ad-hoc charges (field-portal tips/fees, no invoiceId) have no
-        // stable id to key on and keep a fresh key per call.
-        const chargeIdemKey = body.invoiceId ? `charge-${body.invoiceId}` : crypto.randomUUID();
+        // charge is then fully determined by it — safe to reuse on retry).
+        // SECURITY/SYNC FIX (audit finding) — ad-hoc charges (field-portal
+        // tips/fees, no invoiceId) used to get a fresh crypto.randomUUID()
+        // key on every single call, which is exactly the charge type most
+        // likely to be retried by a flaky field connection (see the
+        // withTimeout pattern these buttons already use because of hangs) —
+        // a retried/double-tapped tip could create two real PaymentIntents.
+        // Derive a stable key from the charge's own identity instead, bucketed
+        // to a 60s window so a genuinely new charge for the same
+        // customer/card/amount a minute later still gets its own key.
+        const chargeIdemKey = body.invoiceId
+          ? `charge-${body.invoiceId}`
+          : `charge-${body.customerId}-${body.paymentMethodId}-${amountCents}-${Math.floor(Date.now() / 60000)}`;
         const intent = await stripeFetch(secretKey, "POST", "payment_intents", params, stripeAccount, chargeIdemKey);
         return json({ id: intent.id, client_secret: intent.client_secret, status: intent.status });
       }

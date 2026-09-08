@@ -204,8 +204,15 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
     // and CrewView.tsx's updateJob — the two blocks below still run for
     // their extra side effects (this doubles up on crew, harmlessly, since
     // both send identical data).
-    (supabase as any).from("jobs").update(patch).eq("id", jid)
-      .then((result: any) => { if (result?.error) { console.error("[CalendarPage] updateJob failed:", result.error.message); toast?.("Failed to save — " + result.error.message, "red"); } })
+    // SECURITY/SYNC FIX (audit finding) — this checked only `error`, missing
+    // the RLS 0-row-silent-success case (CLAUDE.md) that the crew-patch write
+    // below already guards against: a "Mark Paid"/notes/checklist edit from
+    // this page's detail modal could silently drop with no error at all.
+    (supabase as any).from("jobs").update(patch).eq("id", jid).select("id")
+      .then((result: any) => {
+        if (result?.error) { console.error("[CalendarPage] updateJob failed:", result.error.message); toast?.("Failed to save — " + result.error.message, "red"); return; }
+        if (!Array.isArray(result?.data) || result.data.length === 0) { console.error("[CalendarPage] updateJob matched 0 rows"); toast?.("Failed to save — the server didn't confirm the update", "red"); }
+      })
       .catch((e: any) => { console.error("[CalendarPage] updateJob threw:", e?.message); toast?.("Failed to save — " + (e?.message || "unknown error"), "red"); });
     // Clock-in/lunch/hours fields are excluded from the App-level 30s bulk
     // autosave so it never clobbers a more-recent employee-portal write —

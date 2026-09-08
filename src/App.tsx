@@ -1427,7 +1427,10 @@ export function App() {
   // expiry using the stored googleRefreshToken, so a real usage attempt
   // essentially never lands on an expired token.
   useEffect(() => {
-    if (!hasCrmSession) return;
+    // SECURITY FIX (audit finding) — session-bleed guard: without page!=="client"
+    // this can silently refresh a stale owner's Google token in the background
+    // while a customer is actually using #/client on the same device.
+    if (!hasCrmSession || page === "client") return;
     const tryRefresh = async () => {
       const s = settingsRef.current as any;
       if (!s?.googleRefreshToken) return;
@@ -1444,7 +1447,7 @@ export function App() {
     tryRefresh();
     const interval = setInterval(tryRefresh, 5 * 60 * 1000);
     return () => clearInterval(interval);
-  }, [hasCrmSession]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [hasCrmSession, page]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Cross-device settings sync (BUG 9) ──────────────────────────────────────
   // Settings (API keys, model prefs, integrations, branding) live in
@@ -2049,7 +2052,11 @@ export function App() {
   // for every already-completed goal the moment the app loads).
   const goalTrackingSeededRef = useRef(false);
   useEffect(() => {
-    if (!hasCrmSession || !crmUserId) return;
+    // SECURITY FIX (audit finding) — same session-bleed guard as the other
+    // owner-notification diff effects: crmRole/hasCrmSession aren't reset on
+    // navigating to #/client in the same tab, so without this a customer
+    // could see the owner's real goal-progress/reward toast leak on-screen.
+    if (!hasCrmSession || !crmUserId || page === "client") return;
     if (!goalTrackingSeededRef.current) { goalTrackingSeededRef.current = true; return; }
     const active = (goalsList || []).filter((g: any) => !g.done);
     if (active.length === 0) return;
@@ -2089,7 +2096,7 @@ export function App() {
         sendEmail(settings as any, { to: ownerEmail, subject: "🎉 Goal reached — " + ((settings as any)?.companyName || "Crew Boss"), body: html }).catch((e: any) => console.warn("[GoalTracking] goal-hit email threw:", e?.message));
       }
     });
-  }, [jobs, customers, goalsList, hasCrmSession, crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [jobs, customers, goalsList, hasCrmSession, crmUserId, page]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Owner notifications on crew activity (FEATURE 7) ─────────────────────────
   // Diff the 3s employees/jobs poll to detect clock in/out (dayClockInAt),
@@ -3346,7 +3353,10 @@ export function App() {
   const ownerWasClockedInRef = useRef(false);
   const myOwnerEmpRow = employees.find((e: any) => e.role === "owner" && ((e.user_id && e.user_id === crmUserId) || (e.email && crmUserEmail && e.email.toLowerCase() === crmUserEmail.toLowerCase())));
   useEffect(() => {
-    if (!hasCrmSession || !myOwnerEmpRow) return;
+    // SECURITY FIX (audit finding) — session-bleed guard, same reasoning as
+    // the Google-token refresh effect above: don't request GPS or log
+    // mileage against a stale owner session while #/client is active.
+    if (!hasCrmSession || !myOwnerEmpRow || page === "client") return;
     const autoMileageEnabled = (settings as any)?.autoMileageTrackingEnabled !== false;
     const clockedIn = !!(myOwnerEmpRow as any).dayClockInAt;
     if (clockedIn && autoMileageEnabled && ownerMileageWatchIdRef.current == null && navigator.geolocation) {
@@ -3391,7 +3401,7 @@ export function App() {
       console.log("[Owner Mileage] auto-tracking stopped —", miles, "mi logged");
     }
     ownerWasClockedInRef.current = clockedIn;
-  }, [hasCrmSession, (myOwnerEmpRow as any)?.dayClockInAt, (settings as any)?.autoMileageTrackingEnabled]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [hasCrmSession, (myOwnerEmpRow as any)?.dayClockInAt, (settings as any)?.autoMileageTrackingEnabled, page]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => { if (ownerMileageWatchIdRef.current != null) navigator.geolocation.clearWatch(ownerMileageWatchIdRef.current); }, []);
 
   // SMS compliance — keep messaging.ts's in-memory opted-out-phone registry

@@ -383,14 +383,23 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
     // FIX 14 — redeem the applied promo/referral code once the customer
     // actually approves. A promotion bumps its redeemedCount; a referral
     // credits the REFERRER (not this customer) per Settings → Referrals.
+    // SECURITY/SYNC FIX (audit finding) — this anonymous customer session has
+    // no owner_id-scoped RLS session, so the old direct client-side writes
+    // below silently matched 0 rows every time (CLAUDE.md's documented
+    // 0-row-silent-success gotcha): promo usageLimit was never actually
+    // enforced end-to-end, and referrers never actually got credited. Routes
+    // through /api/public-data's service-role actions instead, same pattern
+    // as this component's other anonymous writes (mark_estimate_viewed, etc).
     if (appliedPromo?.kind === "promotion") {
       const promoId = appliedPromo.promo.id;
-      (supabase as any).from("promotions").update({ redeemedCount: (appliedPromo.promo.redeemedCount || 0) + 1 }).eq("id", promoId).then(() => {}, () => {});
+      fetch("/api/public-data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "redeem_promotion", promoId }) })
+        .catch((err: any) => console.warn("[ClientPortal] redeem_promotion failed:", err?.message));
     } else if (appliedPromo?.kind === "referral") {
       const referrer = appliedPromo.referrer;
       const nextCredit = (Number(referrer.referralCreditOwed) || 0) + (Number(referralSettings.referrerCredit) || 0);
       setCustomers?.((prev: any[]) => prev.map(cust => cust.id === referrer.id ? { ...cust, referralCreditOwed: nextCredit } : cust));
-      (supabase as any).from("customers").update({ referralCreditOwed: nextCredit }).eq("id", referrer.id).then(() => {}, () => {});
+      fetch("/api/public-data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "credit_referral", referrerId: referrer.id }) })
+        .catch((err: any) => console.warn("[ClientPortal] credit_referral failed:", err?.message));
     }
     if (onApprove) onApprove(e.id, {
       sigData, payType, tip, totalPaid: paymentIntentId ? totalWithTip : 0, signedAt: new Date().toISOString(), payChoice,

@@ -1958,7 +1958,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
                   // registered. Always clickable now; if contact info is
                   // genuinely missing, say so out loud instead of just
                   // dimming the button.
-                  console.log("[SendInvoice] 'Yes — Preview' clicked — channel:", invoiceChannel, "customer:", customer?.id, "email:", customer?.email, "phone:", customer?.phone);
+                  console.log("[SendInvoice] 'Yes — Preview' clicked — channel:", invoiceChannel, "customer:", customer?.id);
                   if (invoiceChannel === "email" && !customer?.email) {
                     toast("No email on file for this customer — add one or switch to Text.", "red");
                     return;
@@ -4412,7 +4412,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           }
           const c: Customer = r.data;
           if (!c) {
-            console.error("CUSTOMER FETCH ERROR: no data returned | customerId:", id, "| full response:", JSON.stringify(r));
+            console.error("CUSTOMER FETCH ERROR: no data returned | customerId:", id, "| status:", r?.status);
             storeSentinel(id);
             return;
           }
@@ -4421,8 +4421,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         })
         .catch((e: any) => {
           console.error("CUSTOMER FETCH ERROR (thrown) | customerId:", id,
-            "\n  message:", e?.message,
-            "\n  full:", JSON.stringify(e));
+            "\n  message:", e?.message);
           storeSentinel(id);
         });
     }
