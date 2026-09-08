@@ -706,7 +706,7 @@ export function App() {
   // hashchange so clicking a second email link while the CRM tab is already
   // open also jumps/glows, not just the very first load.
   useEffect(() => {
-    const OPEN_TYPE_BY_PAGE: Record<string, string> = { invoices: "invoice", estimates: "estimate", jobs: "job", customers: "customer" };
+    const OPEN_TYPE_BY_PAGE: Record<string, string> = { invoices: "invoice", estimates: "estimate", jobs: "job", customers: "customer", employees: "employee" };
     const applyOpenParam = () => {
       const raw = window.location.hash.replace(/^#\/?/, "");
       const [pagePart, queryPart] = raw.split("?");
@@ -2269,7 +2269,7 @@ export function App() {
     // BUG FIX (session-bleed audit) — same guard as the effects above.
     if (!hasCrmSession || page === "client") return;
     const snap: Record<string, number> = {};
-    const events: { id: string; text: string; at: number }[] = [];
+    const events: { id: string; text: string; at: number; openId: string }[] = [];
     for (const e of employees as any[]) {
       const log: any[] = Array.isArray(e.paymentLog) ? e.paymentLog : [];
       snap[e.id] = log.length;
@@ -2279,7 +2279,7 @@ export function App() {
         const newEntries = log.slice(prevLen).filter((l: any) => l?.markedBy === "employee");
         newEntries.forEach((l: any) => {
           const empName = `${e.firstName || ""} ${e.lastName || ""}`.trim() || "An employee";
-          events.push({ id: e.id + ":payconfirm:" + (l.id || l.periodStart), text: `💵 ${empName} marked ${l.periodStart ? "their " + l.periodStart + " period" : "a pay period"} as paid (${fmt(Number(l.amount) || 0)}) — tap to review`, at: Date.now() });
+          events.push({ id: e.id + ":payconfirm:" + (l.id || l.periodStart), text: `💵 ${empName} marked ${l.periodStart ? "their " + l.periodStart + " period" : "a pay period"} as paid (${fmt(Number(l.amount) || 0)}) — tap to review`, at: Date.now(), openId: e.id });
         });
       }
     }
@@ -2287,7 +2287,7 @@ export function App() {
     if (!employeePayConfirmSeededRef.current) { employeePayConfirmSeededRef.current = true; return; }
     if (events.length) {
       events.forEach(ev => toast(ev.text, "yellow"));
-      setNotifications((prev: AppNotification[]) => [...events.map(ev => ({ ...ev, read: false, category: "crew" as const, page: "employees" })), ...prev].slice(0, NOTIFICATIONS_CAP));
+      setNotifications((prev: AppNotification[]) => [...events.map(ev => ({ ...ev, read: false, category: "crew" as const, page: "employees", openType: "employee", openId: ev.openId })), ...prev].slice(0, NOTIFICATIONS_CAP));
     }
   }, [employees, hasCrmSession, page]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -5162,7 +5162,7 @@ export function App() {
                 </div>
                 <div className="flex-1 overflow-y-auto p-2 space-y-1">
                   {notifications.slice(0, 8).map(n => (
-                    <button key={n.id + n.at} onClick={() => { markNotificationRead(n.id); setPage(n.page || "notifications"); setNotifOpen(false); }} className={"w-full flex items-center gap-3 p-2.5 hover:bg-white/5 rounded-xl text-left " + (n.read ? "opacity-50" : "")}>
+                    <button key={n.id + n.at} onClick={() => { markNotificationRead(n.id); setPage(n.page || "notifications"); if (n.openType && n.openId) setAlfredHighlight({ type: n.openType, id: n.openId }); setNotifOpen(false); }} className={"w-full flex items-center gap-3 p-2.5 hover:bg-white/5 rounded-xl text-left " + (n.read ? "opacity-50" : "")}>
                       <div className={"p-1.5 rounded-lg " + (n.category === "issue" ? "bg-red-950/30 text-red-400" : n.category === "crew" ? "bg-blue-950/30 text-blue-400" : "bg-green-950/30 text-green-400")}>
                         {n.category === "issue" ? <AlertTriangle size={12} /> : n.category === "crew" ? <Users2 size={12} /> : <Receipt size={12} />}
                       </div>
@@ -5318,7 +5318,7 @@ export function App() {
                 {page === "intake"         && <LeadIntakePage customers={customers} setCustomers={setCustomers} estimates={estimates} setEstimates={setEstimates} services={services} jobs={jobs} settings={settings} setSettings={setSettings} toast={toast} onNav={setPage} onConvertToEstimate={(customerId: string) => { setEstimatePresetCustomerId(customerId); setFabAutoOpenNew("estimates"); setPage("estimates"); }} ownerId={crmUserId} markRecentlyDeleted={markRecentlyDeleted} />}
                 {page === "alfred"         && (managerBlocked("alfred") ? <RestrictedNotice label="Alfred AI" /> : <AlfredPage conversations={alfredConversations} setConversations={setAlfredConversations} activeConvId={activeConvId} setActiveConvId={setActiveConvId} memory={alfredMemory} setMemory={setAlfredMemory} personality={personality} setPersonality={setPersonality} apiKey={settings.anthropicKey ?? settings.geminiKey ?? ""} openSettings={() => setSettingsOpen(true)} toast={toast} jobs={jobs} setJobs={setJobs} estimates={estimates} setEstimates={setEstimates} customers={customers} setCustomers={setCustomers} employees={employees} automations={automations} setAutomations={setAutomations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} setWins={setWins} goals={goalsList} setGoals={setGoalsList} setSettings={setSettings} settings={settings} modelStatus={modelStatus} setModelStatus={setModelStatus} onNav={setPage} onSpotlight={queueAlfredSpotlight} expenses={expenses} setExpenses={setExpenses} chemicals={chemicals} ownerId={crmUserId} reviews={reviews} setReviews={setReviews} vehicles={vehicles} setVehicles={setVehicles} maintenance={maintenance} setMaintenance={setMaintenance} trainingModules={trainingModules} services={services} />)}
                 {page === "google"         && (managerBlocked("google") ? <RestrictedNotice label="Google Workspace" /> : <GoogleWorkspacePage settings={settings} setSettings={setSettings} googleData={googleData as any} setGoogleData={setGoogleData} customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} onNav={setPage} />)}
-                {page === "employees"      && <EmployeesPage employees={employees} setEmployees={setEmployees} jobs={jobs} setJobs={setJobs} customers={customers} settings={settings} toast={toast} autoOpenManagerInvite={autoOpenManagerInvite} onAutoOpenManagerInviteConsumed={() => setAutoOpenManagerInvite(false)} initialView={employeesInitialView} onInitialViewConsumed={() => setEmployeesInitialView(undefined)} ownerId={crmUserId} planLimits={planLimits} onUpgrade={openBillingUpgrade} />}
+                {page === "employees"      && <EmployeesPage employees={employees} setEmployees={setEmployees} jobs={jobs} setJobs={setJobs} customers={customers} settings={settings} toast={toast} autoOpenManagerInvite={autoOpenManagerInvite} onAutoOpenManagerInviteConsumed={() => setAutoOpenManagerInvite(false)} initialView={employeesInitialView} onInitialViewConsumed={() => setEmployeesInitialView(undefined)} ownerId={crmUserId} planLimits={planLimits} onUpgrade={openBillingUpgrade} highlightId={alfredHighlight?.type === "employee" ? alfredHighlight.id : null} onHighlightConsumed={() => setAlfredHighlight(null)} />}
                 {page === "hiring"         && <HiringPage settings={settings} setSettings={setSettings} toast={toast} ownerId={crmUserId} onNav={setPage} />}
                 {page === "fleet"          && <FleetPage vehicles={vehicles} setVehicles={setVehicles} maintenance={maintenance} setMaintenance={setMaintenance} toast={toast} />}
                 {page === "expenses"       && <ExpensesPage expenses={expenses} setExpenses={setExpenses} toast={toast} />}

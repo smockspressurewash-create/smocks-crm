@@ -783,6 +783,13 @@ export interface AppNotification {
   category?: "invoice" | "crew" | "issue" | "system" | "trash_can";
   page?: string;
   detail?: string;
+  // BUG FIX (user report) — "notification says click to view it but that
+  // doesn't work." Bell click only ever did setPage(n.page) — landed on
+  // the right PAGE but never opened/highlighted the specific record the
+  // notification was actually about. openType/openId feed the same
+  // alfredHighlight spotlight mechanism email "View" links already use.
+  openType?: string;
+  openId?: string;
 }
 
 // ─── Social ───────────────────────────────────────────────────────────────────

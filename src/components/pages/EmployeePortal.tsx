@@ -5550,7 +5550,12 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           ownerId: ownerIdForPush,
           title: "Employee marked pay received",
           body: `${empName} confirmed they were paid for ${period.label} (${fmt(period.pay)}) — tap to review.`,
-          url: "/#/employees",
+          // BUG FIX (user report) — "click to view doesn't work." Plain
+          // "/#/employees" only ever landed on the list — ?open=ID feeds
+          // App.tsx's existing applyOpenParam/alfredHighlight mechanism
+          // (same one email "View" links use), which EmployeesPage now
+          // reads to actually open this employee's Payroll tab.
+          url: "/#/employees?open=" + empId,
           tag: "employee-marked-paid-" + empId + "-" + period.start,
         });
       }

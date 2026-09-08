@@ -301,7 +301,7 @@ function PayrollCalendar({ employees, jobs = [] }: { employees: any[]; jobs?: an
   );
 }
 
-export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs = (() => {}) as any, customers = [], settings = {} as any, toast = (_msg: string, _tone?: string) => {}, autoOpenManagerInvite = false, onAutoOpenManagerInviteConsumed, initialView, onInitialViewConsumed, ownerId, planLimits, onUpgrade = () => {} }: { employees?: any[]; setEmployees: any; jobs?: any[]; setJobs?: any; customers?: any[]; settings?: any; toast?: any; autoOpenManagerInvite?: boolean; onAutoOpenManagerInviteConsumed?: () => void; initialView?: "list" | "hours" | "payroll"; onInitialViewConsumed?: () => void; ownerId?: string; planLimits?: PlanLimits; onUpgrade?: () => void }) {
+export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs = (() => {}) as any, customers = [], settings = {} as any, toast = (_msg: string, _tone?: string) => {}, autoOpenManagerInvite = false, onAutoOpenManagerInviteConsumed, initialView, onInitialViewConsumed, ownerId, planLimits, onUpgrade = () => {}, highlightId, onHighlightConsumed }: { employees?: any[]; setEmployees: any; jobs?: any[]; setJobs?: any; customers?: any[]; settings?: any; toast?: any; autoOpenManagerInvite?: boolean; onAutoOpenManagerInviteConsumed?: () => void; initialView?: "list" | "hours" | "payroll"; onInitialViewConsumed?: () => void; ownerId?: string; planLimits?: PlanLimits; onUpgrade?: () => void; highlightId?: string | null; onHighlightConsumed?: () => void }) {
   const [modal, setModal] = useState({ open: false, data: null });
   const [view, setView] = useState("list"); // list | hours | payroll
   // Hours tab — which employee's per-shift/per-job paid/unpaid breakdown is
@@ -548,6 +548,19 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
     setView(initialView);
     onInitialViewConsumed?.();
   }, [initialView]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // BUG FIX (user report) — "notification says click to view it but that
+  // doesn't work." The owner's Payroll notification (App.tsx's employee-
+  // pay-confirm effect / push url) landed on this page but never actually
+  // opened the specific employee — same alfredHighlight spotlight pattern
+  // email "View" links use elsewhere. Opens that employee's edit modal on
+  // the Payroll tab so the pay section they were pointed at is visible.
+  useEffect(() => {
+    if (!highlightId) return;
+    const emp = employees.find((e: any) => e.id === highlightId);
+    if (emp) { setView("payroll"); setModal({ open: true, data: emp }); }
+    onHighlightConsumed?.();
+  }, [highlightId, employees]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Employee edits (pay rate, paidPeriods, permissions, etc.) have no bulk
   // autosave the way `jobs` does — without an immediate Supabase write here,
