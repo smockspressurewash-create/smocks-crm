@@ -383,26 +383,23 @@ const sendSms = async (ctx: Ctx, toPhone: string, bodyRaw: string, isOwnerReply 
   if (!res.ok) return { ok: false, error: (await res.text().catch(() => "")).slice(0, 200) };
   // Log to inbox_threads so it shows up in the owner's Inbox too, same as
   // every other outbound SMS in this app (CLAUDE.md "Critical rules").
+  //
+  // BUG FIX — "some conversations still aren't showing outgoing messages
+  // from Alfred." This used to do its own "fetch all threads, find by
+  // normalized phone in JS, then either append_inbox_message or insert a
+  // new row" — a classic check-then-act race, EXACTLY the one
+  // find_or_create_inbox_thread (migration 0090/0091) was built to close,
+  // per that migration's own comment: "the inbound Twilio webhook logging
+  // a customer's reply at the same moment the app logs an outbound Alfred/
+  // owner send to that same number." twilio-sms-webhook.ts and
+  // lib/messaging.ts's logOutboundSmsToInbox both migrated to that atomic
+  // RPC already — this was the one remaining outbound path still doing the
+  // old racy fetch-then-branch, so an Alfred reply landing right after (or
+  // right before) the matching inbound webhook write for the same number
+  // could still both "find nothing" and each create their own thread,
+  // splitting the conversation — the outbound half then lives in a
+  // duplicate thread nobody's looking at.
   try {
-    const threads = await sbGet(ctx, `inbox_threads?channel=eq.sms&select=id,contact_phone,contact_name,customer_id,messages${ownerScope(ctx)}`);
-    const digits = normalizePhoneDigits(toPhone);
-    // BUG FIX — "one whole SMS conversation is missing from the Inbox."
-    // This used to fall back to matching ANY thread whose contact_phone was
-    // ONE OF the owner's authorized phones (myPhone + every alfredExtraPhones
-    // entry) whenever there was no EXACT match yet — meant to avoid
-    // "starting a new thread the first time a second number ever texts in,"
-    // but in practice it meant every distinct authorized number (the
-    // owner's real phone, a second personal test number, an employee's
-    // number registered for their own narrower Alfred access) permanently
-    // got folded into whichever ONE of those threads happened to be created
-    // first, forever — confirmed live: an employee's own Alfred texts from
-    // their registered number were silently appended into the OWNER's
-    // separate personal Alfred thread instead of ever getting their own,
-    // so that employee's whole conversation never showed up as its own
-    // entry in the Inbox. A thread must always represent one distinct real
-    // phone number's conversation — exact match only; a new number always
-    // gets its own new thread, exactly like every non-owner sender already does.
-    const existing = threads.find((t: any) => normalizePhoneDigits(t.contact_phone) === digits);
     // BUG FIX — was always `dir: "out"` with no marker at all, so a reply
     // Alfred sent to the OWNER looked in the Inbox exactly like a normal
     // outgoing message the owner sent themselves, with no way to tell them
@@ -412,46 +409,26 @@ const sendSms = async (ctx: Ctx, toPhone: string, bodyRaw: string, isOwnerReply 
     // mediaUrl either, so even the reply half of the conversation showed as
     // a blank/silent bubble in the owner's Inbox with nothing to play back.
     const msg = { id: crypto.randomUUID(), dir: "out", body, ts: Date.now(), via: "alfred", ...(mediaUrl ? { mediaUrl, mediaType: "audio/mpeg" } : {}) };
-    if (existing) {
-      // BUG FIX — "some conversations aren't showing Alfred's responses."
-      // A plain PATCH here reads existing.messages (fetched a moment ago
-      // at the top of this function) and writes the whole array back —
-      // if the INBOUND message for this same thread got logged by the
-      // webhook handler in between that read and this write, this PATCH
-      // would silently overwrite it with a Alfred-reply-only array. The
-      // append_inbox_message RPC does the append inside a single atomic
-      // UPDATE, so this can no longer race with any other logger.
-      await fetch(`${SUPABASE_URL}/rest/v1/rpc/append_inbox_message`, {
-        method: "POST", headers: { ...ctx.authHeaders, "Content-Type": "application/json" },
-        body: JSON.stringify({ p_thread_id: existing.id, p_message: msg, p_unread: !!isOwnerReply || existing.unread !== false }),
-      });
-      // Backfill a real name/customer_id onto a thread that was previously
-      // created with only a bare phone number (e.g. from before this fix) —
-      // a separate, harmless-to-race PATCH of fields the append above
-      // doesn't touch at all.
-      const backfill: Record<string, unknown> = {};
-      // Also correct an old thread still literally named "Alfred" from
-      // before that got fixed elsewhere in this file — not just a blank
-      // name or the bare phone number.
-      if (!isOwnerReply && contact?.name && (!existing.contact_name || existing.contact_name === toPhone || String(existing.contact_name).toLowerCase() === "alfred")) backfill.contact_name = contact.name;
-      if (!isOwnerReply && contact?.customerId && !existing.customer_id) backfill.customer_id = contact.customerId;
-      if (Object.keys(backfill).length > 0) {
-        await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?id=eq.${encodeURIComponent(existing.id)}`, {
-          method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
-          body: JSON.stringify(backfill),
-        });
-      }
-    } else {
-      // BUG FIX — this used to name the owner's own conversation-with-Alfred
-      // thread literally "Alfred" in the Inbox, which the owner explicitly
-      // asked to stop — a conversation is still with/about a real contact
-      // (here, the owner's own number), not a fake pseudo-contact. The
-      // per-message "from Alfred" badge (via:"alfred" on the message itself,
-      // see InboxPage.tsx) already distinguishes an Alfred-sent message from
-      // a manually-typed one — that's the right place for this signal, not
-      // the thread's contact name.
-      await sbWrite(ctx, "inbox_threads", "POST", { id: crypto.randomUUID(), channel: "sms", contact_name: contact?.name || toPhone, contact_phone: toPhone, customer_id: !isOwnerReply ? (contact?.customerId || null) : null, unread: false, messages: [msg], last_message_at: msg.ts, updated_at: new Date().toISOString() });
-    }
+    const rpcRes = await fetch(`${SUPABASE_URL}/rest/v1/rpc/find_or_create_inbox_thread`, {
+      method: "POST", headers: { ...ctx.authHeaders, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        p_owner_id: ctx.ownerId || null,
+        p_channel: "sms",
+        p_contact_phone: toPhone,
+        // this used to name the owner's own conversation-with-Alfred
+        // thread literally "Alfred" in the Inbox, which the owner
+        // explicitly asked to stop — a conversation is still with/about a
+        // real contact (here, the owner's own number), not a fake
+        // pseudo-contact. The per-message "from Alfred" badge (via:"alfred"
+        // on the message itself, see InboxPage.tsx) already distinguishes
+        // an Alfred-sent message from a manually-typed one.
+        p_contact_name: (!isOwnerReply && contact?.name) || toPhone,
+        p_customer_id: !isOwnerReply ? (contact?.customerId || null) : null,
+        p_message: msg,
+        p_unread: !!isOwnerReply,
+      }),
+    });
+    if (!rpcRes.ok) console.warn("[AlfredSms] find_or_create_inbox_thread failed (" + rpcRes.status + "):", await rpcRes.text().catch(() => ""));
   } catch (e: any) { console.warn("[AlfredSms] inbox log failed:", e?.message); }
   return { ok: true };
 };
