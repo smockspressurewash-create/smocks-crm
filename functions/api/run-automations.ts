@@ -304,7 +304,12 @@ const runForOwner = async (ownerId: string, serviceRoleKey: string, env: Record<
       getCandidates: () => jobs.filter((j: any) => j.status === "scheduled" && daysSince(j.createdAt || j.scheduledDate) <= 2).map((j: any) => { const c = customers.find((x: any) => x.id === j.customerId); return c ? { key: j.id, customer: c, job: j, anchorMs: Date.now() } : null; }).filter(Boolean) },
     review_request: { direction: "after", defaultDelayMinutes: 2880, defaultCooldownDays: 3650, smsTemplateKey: "review_request",
       extraVars: (cand: any) => ({ review_link: reviewLink(cand.customer) }),
-      getCandidates: () => jobs.filter((j: any) => j.status === "completed").map((j: any) => { const c = customers.find((x: any) => x.id === j.customerId); if (!c) return null; const completedDate = j.signOff?.timestamp?.slice(0, 10) || j.scheduledDate; if (!completedDate || daysSince(completedDate) > 14) return null; if (c.reviewRequested && daysSince(c.reviewRequested) < 90) return null; const anchorMs = j.signOff?.timestamp ? new Date(j.signOff.timestamp).getTime() : new Date(completedDate).getTime(); return { key: j.id, customer: c, job: j, anchorMs }; }).filter(Boolean) },
+      // FEATURE — "let the field crew opt a bad job out of the automated
+      // review request." skipReviewRequest (migration 0094, set from
+      // EmployeePortal.tsx's Report Problem panel) excludes it here — same
+      // opt-out this cron-driven path shares with JobDetailModal's manual
+      // send button.
+      getCandidates: () => jobs.filter((j: any) => j.status === "completed" && !j.skipReviewRequest).map((j: any) => { const c = customers.find((x: any) => x.id === j.customerId); if (!c) return null; const completedDate = j.signOff?.timestamp?.slice(0, 10) || j.scheduledDate; if (!completedDate || daysSince(completedDate) > 14) return null; if (c.reviewRequested && daysSince(c.reviewRequested) < 90) return null; const anchorMs = j.signOff?.timestamp ? new Date(j.signOff.timestamp).getTime() : new Date(completedDate).getTime(); return { key: j.id, customer: c, job: j, anchorMs }; }).filter(Boolean) },
     estimate_followup: { direction: "after", defaultDelayMinutes: 1440, defaultCooldownDays: 3, conditionKey: "estimate_not_viewed", smsTemplateKey: "estimate_followup",
       getCandidates: () => estimates.filter((e: any) => e.status === "pending" && e.sentAt).map((e: any) => { const c = customers.find((x: any) => x.id === e.customerId); return c ? { key: e.id, customer: c, estimate: e, anchorMs: new Date(e.sentAt).getTime() } : null; }).filter(Boolean) },
     estimate_viewed: { direction: "after", defaultDelayMinutes: 0, defaultCooldownDays: 3650, smsTemplateKey: "estimate_viewed_ack",

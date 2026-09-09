@@ -387,9 +387,87 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         custInsert = await sb(serviceRoleKey, `customers`, { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify(core) });
       }
       if (!custInsert.ok) return json({ error: "Failed to save customer" }, 500);
-      const jobInsert = await sb(serviceRoleKey, `jobs`, { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ ...job, owner_id: ownerId }) });
+      const newCust = Array.isArray(custInsert.data) ? custInsert.data[0] : null;
+
+      // FEATURE — "whenever you add a new customer for trash can cleaning,
+      // automatically fit them into a route/day and notify them." Picks the
+      // existing weekday (among the owner's other confirmed trash-can jobs)
+      // with the fewest customers currently on it, schedules this new job on
+      // the next occurrence of that day, and skips a week entirely if that
+      // date falls in the same week as an owner-configured holiday
+      // (settings.trashCanHolidayDates — see SettingsModal.tsx/TrashCanPage.tsx).
+      // Falls back to leaving the job unassigned (today's behavior — lands in
+      // TrashCanPage's manual Planning stage) if anything here can't resolve.
+      let assignedJob = { ...job, owner_id: ownerId };
+      let assignedDayLabel = "";
+      try {
+        const [existingJobsRow, settingsRow] = await Promise.all([
+          sb(serviceRoleKey, `jobs?owner_id=eq.${encodeURIComponent(ownerId)}&serviceCategory=eq.trash_can&status=neq.cancelled&select=scheduledDate,dayAssignmentConfirmed`),
+          sb(serviceRoleKey, `app_settings?owner_id=eq.${encodeURIComponent(ownerId)}&select=data`),
+        ]);
+        const existingJobs: any[] = Array.isArray(existingJobsRow.data) ? existingJobsRow.data : [];
+        const holidayDates: string[] = Array.isArray(settingsRow.data) ? (settingsRow.data[0]?.data?.trashCanHolidayDates || []) : [];
+        const DOW_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+        const countByDow = [0, 0, 0, 0, 0, 0, 0];
+        existingJobs.forEach((j: any) => {
+          if (!j.scheduledDate || !j.dayAssignmentConfirmed) return;
+          const d = new Date(j.scheduledDate + "T12:00:00");
+          if (!isNaN(d.getTime())) countByDow[d.getDay()]++;
+        });
+        // Only consider weekdays that already have at least one route going
+        // (never invent a brand-new day nobody services yet) — if this is
+        // the owner's very first trash-can customer, there's nothing to pick
+        // from, so it falls through to the unassigned/manual-planning path.
+        const activeDows = countByDow.map((n, i) => ({ dow: i, n })).filter(x => x.n > 0);
+        if (activeDows.length > 0) {
+          activeDows.sort((a, b) => a.n - b.n);
+          const targetDow = activeDows[0].dow;
+          const inSameWeek = (a: Date, b: Date) => {
+            const startOfWeek = (d: Date) => { const s = new Date(d); s.setDate(s.getDate() - s.getDay()); s.setHours(0, 0, 0, 0); return s.getTime(); };
+            return startOfWeek(a) === startOfWeek(b);
+          };
+          let candidate = new Date();
+          const daysUntil = (targetDow - candidate.getDay() + 7) % 7;
+          candidate.setDate(candidate.getDate() + (daysUntil === 0 ? 7 : daysUntil)); // next occurrence, not today
+          // Holiday-week skip — try up to 4 weeks ahead in case of back-to-back holidays.
+          for (let guard = 0; guard < 4; guard++) {
+            const hitsHoliday = holidayDates.some(hd => { const hDate = new Date(hd + "T12:00:00"); return !isNaN(hDate.getTime()) && inSameWeek(candidate, hDate); });
+            if (!hitsHoliday) break;
+            candidate.setDate(candidate.getDate() + 7);
+          }
+          const isoDate = candidate.toISOString().slice(0, 10);
+          assignedJob = { ...assignedJob, scheduledDate: isoDate, dayAssignmentConfirmed: true };
+          assignedDayLabel = DOW_NAMES[targetDow];
+        }
+      } catch (e: any) {
+        console.warn("[submit_trashcan_signup] auto-assign failed, falling back to unassigned:", e?.message);
+      }
+
+      const jobInsert = await sb(serviceRoleKey, `jobs`, { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify(assignedJob) });
       if (!jobInsert.ok) return json({ error: "Failed to save job" }, 500);
-      return json({ success: true });
+
+      // Best-effort SMS confirmation — never blocks the signup itself on a
+      // messaging failure (same reasoning as every other public-form send in
+      // this file).
+      if (assignedDayLabel && newCust?.phone) {
+        try {
+          const settingsRow2 = await sb(serviceRoleKey, `app_settings?owner_id=eq.${encodeURIComponent(ownerId)}&select=data`);
+          const s = Array.isArray(settingsRow2.data) ? settingsRow2.data[0]?.data : null;
+          if (s?.twilioSid && s?.twilioAuthToken && s?.twilioFromNumber) {
+            const companyName = s.companyName || "Crew Boss";
+            const body2 = `Hi ${newCust.firstName || "there"}! You're all set with ${companyName} for trash can cleaning — you're on the ${assignedDayLabel} route, first service ${assignedJob.scheduledDate}. Reply STOP to opt out.`;
+            await fetch(`https://api.twilio.com/2010-04-01/Accounts/${s.twilioSid}/Messages.json`, {
+              method: "POST",
+              headers: { Authorization: `Basic ${btoa(s.twilioSid + ":" + s.twilioAuthToken)}`, "Content-Type": "application/x-www-form-urlencoded" },
+              body: new URLSearchParams({ To: newCust.phone, From: s.twilioFromNumber, Body: body2 }).toString(),
+            });
+          }
+        } catch (e: any) {
+          console.warn("[submit_trashcan_signup] confirmation SMS failed:", e?.message);
+        }
+      }
+
+      return json({ success: true, assignedDay: assignedDayLabel || null, scheduledDate: assignedJob.scheduledDate });
     }
 
     // ── ReferralLanding.tsx (#/r/CODE) — referral codes are random,
@@ -491,6 +569,14 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         }),
       });
       if (!insert.ok) { console.error("[submit_review] insert failed, status:", insert.status); return json({ error: "Failed to submit review" }, 500); }
+      // FEATURE — "prompt the customer to leave a review in the portal if
+      // they haven't yet." Stamps once so ClientAuthPortal.tsx can hide the
+      // nudge after a real submission (best-effort — the review itself
+      // already saved above regardless of whether this succeeds).
+      sb(serviceRoleKey, `customers?id=eq.${encodeURIComponent(customerId)}`, {
+        method: "PATCH", headers: { Prefer: "return=minimal" },
+        body: JSON.stringify({ reviewSubmittedAt: new Date().toISOString() }),
+      }).catch(() => {});
       return json({ success: true, review: Array.isArray(insert.data) ? insert.data[0] : insert.data });
     }
 
@@ -791,6 +877,14 @@ const publicSettingsSubset = (data: Record<string, any>) => ({
   // (just a string, "stripe"|"square", no secret involved).
   paymentProvider: data.paymentProvider || "stripe",
   paymentProviderPreference: data.paymentProviderPreference || "both",
+  // FEATURE — review-nudge banner in ClientAuthPortal.tsx needs these to
+  // build the same #/rate link the automated review-request flow uses —
+  // none of these are secrets, just public review-link config.
+  googlePlaceId: data.googlePlaceId, googleReviewLink: data.googleReviewLink,
+  reviewGoogleMinStars: data.reviewGoogleMinStars,
+  clientPortalCancelReschedule: data.clientPortalCancelReschedule,
+  clientPortalCanCancel: data.clientPortalCanCancel,
+  clientPortalCanReschedule: data.clientPortalCanReschedule,
 });
 
 const json = (data: any, status = 200) => new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });

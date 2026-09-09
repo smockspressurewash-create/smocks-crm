@@ -68,6 +68,35 @@ function CompareCell({ value }: { value: boolean | string }) {
   return <span className="text-white/70 text-xs md:text-sm font-medium">{value}</span>;
 }
 
+// BUG FIX — "compare cost page doesn't fit the screen on mobile." The table
+// below has min-w-[520px] inside an overflow-x-auto wrapper, so it never
+// actually broke the page layout, but on a real phone (~350-390px viewport)
+// it forced a horizontal scroll just to read a 3-column comparison — reads
+// as "broken" even though nothing overflowed the page itself. Below md,
+// swap the table for a stacked per-plan accordion that needs no horizontal
+// scrolling at all; the full table still renders unchanged at md+.
+function MobileCompareCard({ planName, planKey, highlighted }: { planName: string; planKey: "solo" | "crew" | "growth"; highlighted?: boolean }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className={"glass rounded-xl overflow-hidden " + (highlighted ? "border border-red-600/40" : "")}>
+      <button onClick={() => setOpen(o => !o)} className="w-full flex items-center justify-between gap-3 px-4 py-3.5 text-left">
+        <span className={"font-semibold text-sm " + (highlighted ? "text-red-400" : "text-white")}>{planName}</span>
+        <ChevronDown size={16} className={"text-white/40 flex-shrink-0 transition-transform " + (open ? "rotate-180" : "")} />
+      </button>
+      {open && (
+        <div className="px-4 pb-4 space-y-2 animate-fade-in">
+          {COMPARISON_ROWS.map(row => (
+            <div key={row.label} className="flex items-center justify-between gap-3 text-xs py-1 border-b border-white/5 last:border-0">
+              <span className="text-white/60">{row.label}</span>
+              <span className="flex-shrink-0"><CompareCell value={row[planKey]} /></span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function FaqItem({ q, a }: { q: string; a: string }) {
   const [open, setOpen] = useState(false);
   return (
@@ -198,7 +227,8 @@ export function PricingPage({
         </Reveal>
 
         <Reveal>
-          <div className="glass rounded-2xl overflow-hidden overflow-x-auto">
+          {/* md+ — full side-by-side table */}
+          <div className="hidden md:block glass rounded-2xl overflow-hidden overflow-x-auto">
             <table className="w-full min-w-[520px] text-sm">
               <thead>
                 <tr className="border-b border-white/10">
@@ -221,6 +251,12 @@ export function PricingPage({
                 ))}
               </tbody>
             </table>
+          </div>
+          {/* Below md — stacked accordion, no horizontal scroll needed */}
+          <div className="md:hidden space-y-3">
+            {PLANS.map(p => (
+              <MobileCompareCard key={p.name} planName={p.name} planKey={p.name.toLowerCase() as "solo" | "crew" | "growth"} highlighted={p.highlighted} />
+            ))}
           </div>
         </Reveal>
       </section>

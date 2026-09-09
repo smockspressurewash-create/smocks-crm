@@ -28,12 +28,19 @@ function hashParam(key: string): string {
 // other demo popup) instead of this page's own normal full-screen solid
 // black — the outer demo overlay already supplies the blur/dim, so this just
 // stops fighting it with its own opaque min-h-screen background.
-export function CustomerReviewPage({ overrides, embedded = false }: { overrides?: Partial<Record<"c" | "n" | "g" | "rl" | "co", string>>; embedded?: boolean } = {}) {
-  const param = (key: "c" | "n" | "g" | "rl" | "co") => overrides?.[key] ?? hashParam(key);
+export function CustomerReviewPage({ overrides, embedded = false }: { overrides?: Partial<Record<"c" | "n" | "g" | "rl" | "co" | "gm", string>>; embedded?: boolean } = {}) {
+  const param = (key: "c" | "n" | "g" | "rl" | "co" | "gm") => overrides?.[key] ?? hashParam(key);
   const customerId = param("c");
   const firstName = decodeURIComponent(param("n") || "there");
   const googlePlaceId = param("g");
   const companyName = decodeURIComponent(param("co") || "Crew Boss");
+  // FEATURE — "ask the owner what star threshold sends to Google." Was
+  // hardcoded at 1-3 → private feedback, 4-5 → Google, with no way for an
+  // owner to tighten that to only 5-star reviews going public. Defaults to
+  // 4 (unchanged behavior) when not present in the link — see the settings
+  // toggle in SettingsModal.tsx (reviewGoogleMinStars) and the &gm= param
+  // added everywhere this page's link gets built.
+  const googleMinStars = Math.min(5, Math.max(1, Number(param("gm")) || 4));
   // FIX 13 — this used to fall back to a hardcoded
   // "g.page/r/smocks-pressure-washing/review" link whenever no Place ID was
   // set, which sent every OTHER deployment's customers to a specific
@@ -91,13 +98,20 @@ export function CustomerReviewPage({ overrides, embedded = false }: { overrides?
 
   const pick = (r: number) => {
     setRating(r);
-    setTimeout(() => setStep(r >= 4 ? "happy" : "unhappy"), 300);
+    setTimeout(() => setStep(r >= googleMinStars ? "happy" : "unhappy"), 300);
   };
 
+  // FEATURE — "ask what went wrong AND what prompted it." A single free-text
+  // box asked one implicit question; this asks two explicit ones so the
+  // owner gets more actionable private feedback, still saved as one comment.
+  const [feedbackPrompt, setFeedbackPrompt] = useState("");
   const submitFeedback = async () => {
     if (!feedback.trim()) return;
     setSubmitting(true);
-    await saveToSupabase(rating, feedback.trim(), "private");
+    const combined = feedbackPrompt.trim()
+      ? `What went wrong: ${feedback.trim()}\n\nWhat prompted it: ${feedbackPrompt.trim()}`
+      : feedback.trim();
+    await saveToSupabase(rating, combined, "private");
     setSubmitting(false);
     setStep("done");
   };
@@ -192,12 +206,22 @@ export function CustomerReviewPage({ overrides, embedded = false }: { overrides?
               </div>
               <div className="flex justify-center gap-1">{stars(20)}</div>
               <div>
-                <label className="text-xs text-white/50 mb-1.5 block uppercase tracking-wider">Your feedback (private — only we see this)</label>
+                <label className="text-xs text-white/50 mb-1.5 block uppercase tracking-wider">What went wrong? (private — only we see this)</label>
                 <textarea
                   value={feedback}
                   onChange={e => setFeedback(e.target.value)}
-                  rows={4}
+                  rows={3}
                   placeholder="What could we have done better?"
+                  className="w-full bg-white/5 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white placeholder-white/25 resize-none focus:outline-none focus:border-red-500/50"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-white/50 mb-1.5 block uppercase tracking-wider">What prompted this? <span className="normal-case text-white/30">(optional)</span></label>
+                <textarea
+                  value={feedbackPrompt}
+                  onChange={e => setFeedbackPrompt(e.target.value)}
+                  rows={2}
+                  placeholder="e.g. missed spots, late arrival, damage..."
                   className="w-full bg-white/5 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white placeholder-white/25 resize-none focus:outline-none focus:border-red-500/50"
                 />
               </div>
@@ -215,9 +239,9 @@ export function CustomerReviewPage({ overrides, embedded = false }: { overrides?
           {step === "done" && (
             <div className="text-center py-4 space-y-4">
               <CheckCircle size={52} className="mx-auto text-green-400" />
-              <div className="text-xl font-bold">{rating >= 4 ? "Thank you! ⭐" : "We appreciate your honesty"}</div>
+              <div className="text-xl font-bold">{rating >= googleMinStars ? "Thank you! ⭐" : "We appreciate your honesty"}</div>
               <div className="text-white/60 text-sm">
-                {rating >= 4
+                {rating >= googleMinStars
                   ? "Your review helps homeowners in York find great service."
                   : "We'll be in touch to make this right. We really do care."}
               </div>

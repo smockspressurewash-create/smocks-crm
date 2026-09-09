@@ -944,6 +944,8 @@ export interface AppSettings {
   // their main number.
   alfredExtraPhones?: string[];
   clientPortalCancelReschedule?: boolean;
+  clientPortalCanCancel?: boolean;
+  clientPortalCanReschedule?: boolean;
   weeklyDigestAutoSend?: boolean;
 
   // Crew policy
@@ -995,6 +997,8 @@ export interface AppSettings {
   googleBackendUrl?: string;
   googlePlaceId?: string;
   googleReviewLink?: string;
+  reviewGoogleMinStars?: number;
+  trashCanHolidayDates?: string[];
   // ITEM 10 — the owner's OAuth provider token/refresh token, distinct from
   // googleToken above (legacy/mock field). googleTokenExpiresAt lets Gmail
   // sends proactively refresh before the access token actually expires

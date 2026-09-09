@@ -2298,6 +2298,24 @@ export function App() {
     }
   }, [employees, hasCrmSession, page]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // FEATURE — "once in a while, notify owners to invite a friend and both
+  // sides get a discount." A once-a-week in-app nudge toward the referral
+  // card in Settings → Billing (see SettingsModal.tsx's get_my_referral_link
+  // card) — never more than once per 7 days (localStorage-tracked, not
+  // server-side, since missing a beat here has no real consequence).
+  useEffect(() => {
+    if (!hasCrmSession || crmRole !== "owner" || page === "client") return;
+    try {
+      const key = "smocks.lastReferralNudgeAt";
+      const last = Number(localStorage.getItem(key) || 0);
+      if (Date.now() - last < 7 * 86400000) return;
+      localStorage.setItem(key, String(Date.now()));
+      const id = "referral-nudge-" + today();
+      toast?.("💸 Know another pressure-washing business owner? Invite them from Settings → Billing — you both get 20% off.", "yellow");
+      setNotifications((prev: AppNotification[]) => [{ id, text: "💸 Invite another business owner to CrewBoss and you both get 20% off — check Settings → Billing.", at: Date.now(), read: false, category: "system" as const, page: "settings" }, ...prev].slice(0, NOTIFICATIONS_CAP));
+    } catch { /* localStorage unavailable — skip silently, not worth surfacing */ }
+  }, [hasCrmSession, crmRole, page]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // FEATURE — photo/video auto-deletion (owner opt-in, Settings → Data;
   // settings.mediaRetentionDays is 0/undefined by default, meaning this is a
   // no-op for everyone unless the owner explicitly turns it on). Runs once
@@ -4378,6 +4396,18 @@ export function App() {
   // navigateMarketing("login") unchanged — that's the real free-tier
   // signup path, no payment involved at all.
   const [choosingPlan, setChoosingPlan] = useState(false);
+  // FEATURE — "invite another owner to CrewBoss, both sides get a discount."
+  // Captured once from the URL (e.g. #/login?ref=CODE, the link
+  // SettingsModal.tsx's referral card generates) and carried through to
+  // checkout — never re-read from the hash at checkout time, since by then
+  // the user may have navigated to a plain #/pricing with no ref param.
+  const [referredByCode] = useState(() => {
+    try {
+      const hash = window.location.hash;
+      const q = hash.includes("?") ? hash.slice(hash.indexOf("?") + 1) : "";
+      return new URLSearchParams(q).get("ref") || "";
+    } catch { return ""; }
+  });
   const startPaidSignup = async (plan: string, interval: "month" | "year") => {
     setChoosingPlan(true);
     try {
@@ -4387,12 +4417,23 @@ export function App() {
         body: JSON.stringify({
           action: "create_signup_checkout_session",
           plan, interval,
+          ...(referredByCode ? { referredByCode } : {}),
           successUrl: `${window.location.origin}${window.location.pathname}#/signup-complete?session_id={CHECKOUT_SESSION_ID}`,
           cancelUrl: `${window.location.origin}${window.location.pathname}#/pricing`,
         }),
       });
-      const data = await res.json();
-      if (!res.ok || !data.url) { toast(data.error || "Couldn't start checkout — try again", "red"); setChoosingPlan(false); return; }
+      // BUG FIX — "start free trial / sign up and pay doesn't work." A non-
+      // JSON response (Cloudflare Function crashed, missing env var returned
+      // an HTML error page, etc) made `res.json()` throw a cryptic "Unexpected
+      // token <" that surfaced as-is — not actionable. Parse defensively so a
+      // real error message reaches the user (or at least a clear "server
+      // returned something unexpected" instead of a raw parse exception).
+      const data = await res.json().catch(() => null as any);
+      if (!res.ok || !data?.url) {
+        toast(data?.error || `Couldn't start checkout (server returned ${res.status}) — try again or contact support.`, "red");
+        setChoosingPlan(false);
+        return;
+      }
       window.location.href = data.url;
     } catch (e: any) {
       toast("Couldn't start checkout — " + (e?.message || "unknown error"), "red");
@@ -4782,17 +4823,32 @@ export function App() {
               <CrewBossMark className="w-11 h-11" />
             </div>
             <div className="text-2xl font-bold tracking-tight">CrewBoss</div>
-            <div className="text-sm text-white/40 mt-1">{settings.companyName || "Business Management"}</div>
+            {/* UI POLISH — the signup screen used to show the exact same
+                generic "Business Management" subtitle whether you were
+                signing in or creating a brand-new account, giving no signal
+                this is where a free trial actually starts. */}
+            <div className="text-sm text-white/40 mt-1">
+              {ownerLoginMode === "register" ? "Start your free 14-day trial — no card required" : (settings.companyName || "Business Management")}
+            </div>
           </div>
 
-          <div className="w-full flex gap-1 p-1 rounded-xl bg-white/5 border border-white/10">
-            <button className="flex-1 py-2 rounded-lg text-xs font-medium bg-red-600/30 border border-red-500/40 text-white transition">
-              Owner / Manager
-            </button>
-            <button onClick={() => setPage("portal")} className="flex-1 py-2 rounded-lg text-xs font-medium text-white/40 hover:text-white/70 transition">
-              Employee Portal
-            </button>
-          </div>
+          {/* BUG FIX — "signing up shouldn't ask owner vs employee." A brand-
+              new registration is always a new business owner (employees never
+              self-register — they're invited by an owner via a link straight
+              to #/portal, see EmployeesPage.tsx). This Owner/Manager vs
+              Employee Portal tab still matters for RETURNING logins (an
+              employee could land on the main URL by mistake), so it only
+              shows in login mode, not during registration. */}
+          {ownerLoginMode === "login" && (
+            <div className="w-full flex gap-1 p-1 rounded-xl bg-white/5 border border-white/10">
+              <button className="flex-1 py-2 rounded-lg text-xs font-medium bg-red-600/30 border border-red-500/40 text-white transition">
+                Owner / Manager
+              </button>
+              <button onClick={() => setPage("portal")} className="flex-1 py-2 rounded-lg text-xs font-medium text-white/40 hover:text-white/70 transition">
+                Employee Portal
+              </button>
+            </div>
+          )}
 
           {pendingCheckoutSession?.status === "verifying" && (
             <div className="w-full p-4 rounded-2xl bg-green-950/20 border border-green-700/40 text-center text-sm text-green-300 flex items-center justify-center gap-2">

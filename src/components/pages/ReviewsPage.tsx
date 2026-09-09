@@ -96,7 +96,7 @@ export function ReviewsPage({ reviews = [], setReviews, jobs = [], customers = [
     setManualSendBusy(true);
     try {
       const companyName = (settings as any)?.companyName || "Crew Boss";
-      const rateLink = `${window.location.origin}${window.location.pathname}#/rate?c=${encodeURIComponent(c.id)}&n=${encodeURIComponent(c.firstName)}&g=${encodeURIComponent((settings as any).googlePlaceId || "")}&rl=${encodeURIComponent((settings as any).googleReviewLink || "")}&co=${encodeURIComponent(companyName)}`;
+      const rateLink = `${window.location.origin}${window.location.pathname}#/rate?c=${encodeURIComponent(c.id)}&n=${encodeURIComponent(c.firstName)}&g=${encodeURIComponent((settings as any).googlePlaceId || "")}&rl=${encodeURIComponent((settings as any).googleReviewLink || "")}&co=${encodeURIComponent(companyName)}&gm=${encodeURIComponent(String((settings as any).reviewGoogleMinStars || 4))}`;
       if ((settings as any)?.twilioSid && c.phone) {
         const body = `Hi ${c.firstName}, thanks for choosing ${companyName}! How did we do? ${rateLink}`;
         await withTimeout(twilioSend(settings as any, c.phone, body), 10000, "Review SMS");
@@ -160,7 +160,7 @@ export function ReviewsPage({ reviews = [], setReviews, jobs = [], customers = [
     // CustomerReviewPage.tsx), same one useAutomationEngine.ts's automated
     // review-request path already builds correctly.
     const companyName = (settings as any)?.companyName || "Crew Boss";
-    const reviewUrl = `${window.location.origin}${window.location.pathname}#/rate?c=${encodeURIComponent(c.id)}&n=${encodeURIComponent(c.firstName)}&g=${encodeURIComponent((settings as any)?.googlePlaceId ?? "")}&rl=${encodeURIComponent((settings as any)?.googleReviewLink ?? "")}&co=${encodeURIComponent(companyName)}`;
+    const reviewUrl = `${window.location.origin}${window.location.pathname}#/rate?c=${encodeURIComponent(c.id)}&n=${encodeURIComponent(c.firstName)}&g=${encodeURIComponent((settings as any)?.googlePlaceId ?? "")}&rl=${encodeURIComponent((settings as any)?.googleReviewLink ?? "")}&co=${encodeURIComponent(companyName)}&gm=${encodeURIComponent(String((settings as any)?.reviewGoogleMinStars || 4))}`;
     const msg = "Hi " + c.firstName + "! Thanks for choosing " + companyName + " 🙌 How'd we do? Leave us a quick review — it means the world to a small business: " + reviewUrl + "\n\nReply STOP to opt out.";
 
     let sent = false;

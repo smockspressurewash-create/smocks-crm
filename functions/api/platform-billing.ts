@@ -16,6 +16,10 @@
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_8aEa3wsYJ7ghVPcGbtHymw_ugj0aEfm";
 const TRIAL_DAYS = 14;
+// FEATURE — "invite a friend, both sides get a discount." Flat percent for
+// both the referrer's one-time credit and the referee's first billing cycle
+// — simple, symmetric, easy for an owner to explain to another owner.
+const REFERRAL_DISCOUNT_PERCENT = 20;
 
 const PLANS: Record<string, { monthly: number; annual: number }> = {
   solo: { monthly: 29, annual: 23 },
@@ -97,6 +101,27 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         // PCI SAQ-A, the same reasoning as every other Stripe Checkout use
         // in this codebase).
       };
+      // FEATURE — "invite another owner, both sides get a discount." A
+      // referred signup's own first-cycle discount is applied HERE, at
+      // checkout (never trust a client-claimed discount after the fact); the
+      // REFERRER's side is credited later in complete_signup, once we know a
+      // real account+payment actually resulted from the code. The code
+      // itself is only ever looked up, never trusted as "valid" without a
+      // real matching platform_subscriptions row.
+      const referredByCode = String(body.referredByCode || "").trim().toUpperCase();
+      if (referredByCode && serviceRoleKey) {
+        const refRow = await fetch(`${SUPABASE_URL}/rest/v1/platform_subscriptions?referralCode=eq.${encodeURIComponent(referredByCode)}&select=owner_id&limit=1`, { headers: svcHeaders });
+        const refRows = await refRow.json().catch(() => []);
+        if (Array.isArray(refRows) && refRows[0]?.owner_id) {
+          params["metadata[referredByCode]"] = referredByCode;
+          try {
+            const coupon = await stripeFetch(platformSecretKey, "POST", "coupons", { percent_off: String(REFERRAL_DISCOUNT_PERCENT), duration: "once" });
+            params["discounts[0][coupon]"] = coupon.id;
+          } catch (e: any) {
+            console.warn("[PlatformBilling] referee coupon creation failed, proceeding without discount:", e?.message);
+          }
+        }
+      }
       const session = await stripeFetch(platformSecretKey, "POST", "checkout/sessions", params);
       return json({ url: session.url });
     }
@@ -116,6 +141,74 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         stripeCustomerId: session.customer || null,
         stripeSubscriptionId: session.subscription || null,
       });
+    }
+
+    // send_trial_discount_emails — NOT owner-authenticated (no single owner
+    // to authenticate as; it emails MANY owners at once), so it must live
+    // here, before the ownerId auth gate below, same reasoning as
+    // create_signup_checkout_session/verify_signup_session above. Gated
+    // instead by a shared secret header so this can be wired to a scheduled
+    // trigger (pg_cron + pg_net calling this URL monthly, or any external
+    // scheduler) without being a publicly callable mass-email button.
+    // Requires two new Cloudflare env vars: CRON_SECRET (shared secret, also
+    // set in the pg_cron job's http_post headers) and PLATFORM_RESEND_API_KEY
+    // (the platform's OWN transactional email account — separate from every
+    // owner's individual Gmail connection, since this is CrewBoss emailing
+    // ITS OWN trial customers, not an owner emailing theirs).
+    if (action === "send_trial_discount_emails") {
+      const cronSecret = context.env.CRON_SECRET;
+      const providedSecret = context.request.headers.get("x-cron-secret") || "";
+      if (!cronSecret || providedSecret !== cronSecret) return json({ error: "Unauthorized" }, 401);
+      const resendKey = context.env.PLATFORM_RESEND_API_KEY;
+      if (!resendKey) return json({ error: "PLATFORM_RESEND_API_KEY not configured — set it in the Cloudflare Pages dashboard." }, 500);
+      if (!platformSecretKey) return json({ error: "Platform billing isn't configured yet." }, 500);
+
+      const cutoff = new Date(Date.now() - 30 * 86400000).toISOString();
+      // Only owners currently mid-trial who haven't been emailed this offer
+      // in the last 30 days — never active/paying or already-canceled owners.
+      const rowsRes = await fetch(
+        `${SUPABASE_URL}/rest/v1/platform_subscriptions?status=eq.trialing&or=(trialDiscountEmailSentAt.is.null,trialDiscountEmailSentAt.lt.${encodeURIComponent(cutoff)})&select=owner_id`,
+        { headers: svcHeaders }
+      );
+      const rows: any[] = await rowsRes.json().catch(() => []);
+      let sent = 0, skipped = 0, failed = 0;
+      for (const row of Array.isArray(rows) ? rows : []) {
+        try {
+          const userRes = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${encodeURIComponent(row.owner_id)}`, { headers: svcHeaders });
+          const user = userRes.ok ? await userRes.json().catch(() => null) as any : null;
+          const email = user?.email;
+          if (!email) { skipped++; continue; }
+          // One coupon per owner, deterministic id so a re-run of this sweep
+          // (or the owner clicking the email link twice) doesn't create
+          // duplicates — Stripe errors on a duplicate id, which is treated
+          // as "already exists, fine" rather than a failure.
+          const couponId = `TRIALOFFER-${row.owner_id}`.slice(0, 64).replace(/[^a-zA-Z0-9_-]/g, "");
+          try {
+            await stripeFetch(platformSecretKey, "POST", "coupons", { id: couponId, percent_off: "50", duration: "once", max_redemptions: "1" });
+          } catch { /* already exists — fine, reuse it */ }
+          const link = `${context.env.APP_ORIGIN || "https://app.crewboss.com"}/#/pricing?offer=${encodeURIComponent(couponId)}`;
+          const emailRes = await fetch("https://api.resend.com/emails", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${resendKey}`, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              from: context.env.PLATFORM_RESEND_FROM || "CrewBoss <billing@crewboss.com>",
+              to: email,
+              subject: "50% off your first month of CrewBoss",
+              html: `<p>Hi there,</p><p>Your CrewBoss trial is still active — as a thank-you for trying it out, here's 50% off your first month if you subscribe this week.</p><p><a href="${link}" style="display:inline-block;padding:12px 24px;background:#dc2626;color:#fff;border-radius:8px;text-decoration:none;font-weight:600">Claim 50% off</a></p><p>This offer expires once redeemed once, so grab it whenever you're ready.</p><p>— The CrewBoss Team</p>`,
+            }),
+          });
+          if (!emailRes.ok) { failed++; continue; }
+          await fetch(`${SUPABASE_URL}/rest/v1/platform_subscriptions?owner_id=eq.${encodeURIComponent(row.owner_id)}`, {
+            method: "PATCH", headers: { ...svcHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+            body: JSON.stringify({ trialDiscountEmailSentAt: new Date().toISOString() }),
+          });
+          sent++;
+        } catch (e: any) {
+          console.warn("[PlatformBilling] trial discount email failed for", row.owner_id, ":", e?.message);
+          failed++;
+        }
+      }
+      return json({ success: true, sent, skipped, failed });
     }
 
     const accessToken = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
@@ -177,7 +270,64 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         { method: isUpdate ? "PATCH" : "POST", headers: { ...svcHeaders, "Content-Type": "application/json", Prefer: "return=minimal" }, body: JSON.stringify(row) }
       );
       if (!res.ok) return json({ error: "Payment confirmed, but saving your subscription failed — " + (await res.text().catch(() => "")).slice(0, 200) }, 500);
+
+      // FEATURE — "invite another owner, both sides get a discount." This is
+      // the point a referred signup's payment is confirmed as REAL (never
+      // trust the client's word) — credit the referrer now, once, via a
+      // unique constraint on owner_referral_credits.referred_owner_id so a
+      // retried/duplicate complete_signup call can't double-credit the same
+      // referral. Applies a one-cycle percent-off coupon directly to the
+      // referrer's live Stripe subscription — best-effort; a failure here
+      // never blocks the new owner's own account/payment, which already
+      // succeeded above.
+      const referredByCode = String(session.metadata?.referredByCode || "").trim().toUpperCase();
+      if (referredByCode && serviceRoleKey) {
+        try {
+          const refRow = await fetch(`${SUPABASE_URL}/rest/v1/platform_subscriptions?referralCode=eq.${encodeURIComponent(referredByCode)}&select=owner_id,stripe_subscription_id&limit=1`, { headers: svcHeaders });
+          const refRows = await refRow.json().catch(() => []);
+          const referrer = Array.isArray(refRows) ? refRows[0] : null;
+          if (referrer?.owner_id && referrer.owner_id !== ownerId) {
+            const creditInsert = await fetch(`${SUPABASE_URL}/rest/v1/owner_referral_credits`, {
+              method: "POST", headers: { ...svcHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+              body: JSON.stringify({
+                referrer_owner_id: referrer.owner_id, referred_owner_id: ownerId, referral_code: referredByCode,
+                referrer_discount_percent: REFERRAL_DISCOUNT_PERCENT, referee_discount_percent: REFERRAL_DISCOUNT_PERCENT,
+              }),
+            });
+            // A 409/constraint failure here means this referral was already
+            // credited (the unique index on referred_owner_id) — correct,
+            // not an error, so the coupon below only applies on a genuine
+            // first credit.
+            if (creditInsert.ok && referrer.stripe_subscription_id) {
+              const coupon = await stripeFetch(platformSecretKey, "POST", "coupons", { percent_off: String(REFERRAL_DISCOUNT_PERCENT), duration: "once" });
+              await stripeFetch(platformSecretKey, "POST", `subscriptions/${encodeURIComponent(referrer.stripe_subscription_id)}`, { coupon: coupon.id });
+            }
+          }
+        } catch (e: any) {
+          console.warn("[PlatformBilling] referral credit failed (non-fatal):", e?.message);
+        }
+      }
+
       return json({ success: true, plan, interval, status: subStatus });
+    }
+
+    // get_my_referral_link — generates (once) and returns this owner's own
+    // referral code + shareable signup link. Idempotent: an existing code is
+    // never regenerated, so a link already shared/copied keeps working.
+    if (action === "get_my_referral_link") {
+      const existing = await fetch(`${SUPABASE_URL}/rest/v1/platform_subscriptions?owner_id=eq.${encodeURIComponent(ownerId)}&select=referralCode&limit=1`, { headers: svcHeaders });
+      const rows = await existing.json().catch(() => []);
+      let code = Array.isArray(rows) ? rows[0]?.referralCode : null;
+      if (!code) {
+        code = ownerId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 5).toUpperCase() + Math.random().toString(36).slice(2, 5).toUpperCase();
+        const isUpdate = Array.isArray(rows) && rows.length > 0;
+        const res2 = await fetch(
+          `${SUPABASE_URL}/rest/v1/platform_subscriptions${isUpdate ? `?owner_id=eq.${encodeURIComponent(ownerId)}` : ""}`,
+          { method: isUpdate ? "PATCH" : "POST", headers: { ...svcHeaders, "Content-Type": "application/json", Prefer: "return=minimal" }, body: JSON.stringify({ owner_id: ownerId, referralCode: code }) }
+        );
+        if (!res2.ok) return json({ error: "Couldn't generate a referral code — try again." }, 500);
+      }
+      return json({ referralCode: code, discountPercent: REFERRAL_DISCOUNT_PERCENT });
     }
 
     // start_trial — called once, right after a new owner finishes signing
@@ -235,6 +385,20 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       };
       if (existingCustomerId) params.customer = existingCustomerId;
       else if (body.email) params.customer_email = body.email;
+      // FEATURE — "email trial users a limited-time discount." The email
+      // (see send_trial_discount_emails below) links back here with a
+      // ?offer=CODE the client passes through as discountCode. Verified
+      // against Stripe itself before applying — never trusted blind, so a
+      // stale/tampered/expired code just silently doesn't discount instead
+      // of erroring the whole checkout.
+      if (body.discountCode) {
+        try {
+          const coupon = await stripeFetch(platformSecretKey, "GET", `coupons/${encodeURIComponent(body.discountCode)}`);
+          if (coupon?.valid !== false) params["discounts[0][coupon]"] = body.discountCode;
+        } catch (e: any) {
+          console.warn("[PlatformBilling] discountCode lookup failed, proceeding without it:", e?.message);
+        }
+      }
       const session = await stripeFetch(platformSecretKey, "POST", "checkout/sessions", params);
       return json({ url: session.url });
     }

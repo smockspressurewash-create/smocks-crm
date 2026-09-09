@@ -536,6 +536,52 @@ export function TrashCanPage({ jobs = [], customers = [], settings = {} as AppSe
           {stagedCount > 0 && <GBtn onClick={confirmDayAssignments} disabled={confirming} className="!text-xs !py-1.5"><Send size={11} className="inline mr-1" />{confirming ? "Saving…" : `Confirm ${stagedCount} Assignment${stagedCount !== 1 ? "s" : ""}`}</GBtn>}
         </div>
         <div className="text-[10px] text-white/40">{isMobile ? "Use \"Move to…\" on a customer card to assign their trash-can service day." : "Drag a customer card onto a day to assign their trash-can service day."} Nothing is saved until you hit Confirm — which then offers to text everyone their scheduled day.</div>
+
+        {/* FEATURE — "don't schedule trash-can routes on a holiday week."
+            Owner-configured list of holiday dates; new-signup auto-assignment
+            (see public-data.ts's submit_trashcan_signup) already skips these
+            automatically. For this MANUAL planning board, a silent auto-shift
+            behind the owner's own drag choice would be surprising — instead,
+            warn below when a staged day lands in a holiday week so the owner
+            can pick a different day themselves. */}
+        <details className="text-[11px]">
+          <summary className="cursor-pointer text-white/40 hover:text-white/60 select-none">Holiday dates to avoid ({(settings as any)?.trashCanHolidayDates?.length || 0})</summary>
+          <div className="mt-2 space-y-1.5 pl-1">
+            {((settings as any)?.trashCanHolidayDates || []).map((hd: string, i: number) => (
+              <div key={i} className="flex items-center gap-2">
+                <span className="text-white/60">{hd}</span>
+                <button onClick={() => setSettings?.((prev: any) => ({ ...prev, trashCanHolidayDates: (prev.trashCanHolidayDates || []).filter((_: any, idx: number) => idx !== i) }))} className="text-red-400/70 hover:text-red-300"><X size={11} /></button>
+              </div>
+            ))}
+            <input
+              type="date"
+              onChange={e => {
+                const v = e.target.value;
+                if (!v) return;
+                setSettings?.((prev: any) => ({ ...prev, trashCanHolidayDates: [...new Set([...(prev.trashCanHolidayDates || []), v])].sort() }));
+                e.target.value = "";
+              }}
+              className="bg-white/5 border border-white/15 rounded-lg px-2 py-1 text-[11px] text-white"
+            />
+          </div>
+        </details>
+        {(() => {
+          const holidayDates: string[] = (settings as any)?.trashCanHolidayDates || [];
+          if (holidayDates.length === 0) return null;
+          const inSameWeek = (a: string, b: string) => {
+            const startOfWeek = (s: string) => { const d = new Date(s + "T12:00:00"); d.setDate(d.getDate() - d.getDay()); d.setHours(0, 0, 0, 0); return d.getTime(); };
+            return startOfWeek(a) === startOfWeek(b);
+          };
+          const conflicts = Object.entries(staged).filter(([, date]) => holidayDates.some(hd => inSameWeek(date, hd)));
+          if (conflicts.length === 0) return null;
+          return (
+            <div className="text-[11px] text-yellow-400 bg-yellow-950/20 border border-yellow-700/30 rounded-lg px-2.5 py-1.5 flex items-center gap-1.5">
+              <AlertTriangle size={11} className="flex-shrink-0" />
+              {conflicts.length} staged assignment{conflicts.length !== 1 ? "s" : ""} land in a holiday week — pick a different day for {conflicts.length !== 1 ? "them" : "it"} before confirming.
+            </div>
+          );
+        })()}
+
         {unassigned.length === 0 ? (
           <div className="text-center py-6 text-white/40 text-xs">No unassigned trash-can customers — new signups will appear here.</div>
         ) : (

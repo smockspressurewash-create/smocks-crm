@@ -14,7 +14,7 @@ import {
   Navigation, TrendingDown, PieChart as PieIcon, Package, Wrench,
   CheckSquare, Route, Users2, Layers, ArrowRight, BarChart2, Filter,
   Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User,
-  CalendarClock, Clapperboard, Captions
+  CalendarClock, Clapperboard, Captions, Gift
 } from "lucide-react";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
@@ -137,6 +137,32 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
     })();
   }, [open, sec]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // FEATURE — "incentivize owners to invite other owners." A CrewBoss-
+  // subscriber-to-subscriber referral, distinct from the existing customer-
+  // refers-customer program on ReferralsPage.tsx. Both sides get
+  // REFERRAL_DISCOUNT_PERCENT off (see platform-billing.ts) — the referrer's
+  // applies to their live subscription once someone signs up with their
+  // code and actually pays; the referee's applies at their own checkout.
+  const [ownerReferral, setOwnerReferral] = useState<{ referralCode: string; discountPercent: number } | null>(null);
+  useEffect(() => {
+    if (!open || sec !== "billing") return;
+    (async () => {
+      try {
+        const { data: sessionData } = await (supabase as any).auth.getSession();
+        const token = sessionData?.session?.access_token;
+        if (!token) return;
+        const res = await fetch("/api/platform-billing", {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ action: "get_my_referral_link" }),
+        });
+        const data = await res.json().catch(() => null);
+        if (data?.referralCode) setOwnerReferral(data);
+      } catch (e: any) {
+        console.warn("[Billing] referral link fetch failed:", e?.message);
+      }
+    })();
+  }, [open, sec]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const startCheckout = async (plan: string) => {
     setBillingActionBusy(plan);
     try {
@@ -144,10 +170,23 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
       const token = sessionData?.session?.access_token;
       const email = sessionData?.session?.user?.email;
       if (!token) { toast?.("Please sign in again first", "red"); return; }
+      // FEATURE — "email trial users a limited-time discount." The monthly
+      // offer email (platform-billing.ts's send_trial_discount_emails) links
+      // to #/pricing?offer=CODE; Settings → Billing's "pick a plan" flow is
+      // the actual checkout entry point that offer link routes through, so
+      // read it once here rather than threading it through every nav path.
+      const offerCode = (() => {
+        try {
+          const hash = window.location.hash;
+          const q = hash.includes("?") ? hash.slice(hash.indexOf("?") + 1) : "";
+          return new URLSearchParams(q).get("offer") || "";
+        } catch { return ""; }
+      })();
       const res = await fetch("/api/platform-billing", {
         method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({
           action: "create_checkout_session", plan, interval: billingInterval, email,
+          ...(offerCode ? { discountCode: offerCode } : {}),
           successUrl: window.location.origin + window.location.pathname + "#/dashboard?billed=1",
           cancelUrl: window.location.href,
         }),
@@ -987,12 +1026,28 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                 </div>
               </div>
             </label>
-            <label className={"flex items-start gap-2.5 p-3 rounded-xl border cursor-pointer transition " + (f.clientPortalCancelReschedule ? "border-red-500/40 bg-red-950/20" : "border-white/10 bg-white/5")}>
-              <input type="checkbox" checked={!!f.clientPortalCancelReschedule} onChange={e => setF({ ...f, clientPortalCancelReschedule: e.target.checked })} className="mt-0.5 accent-red-600" />
+            {/* FEATURE — split into two independent toggles ("cancel jobs,
+                request to reschedule, reschedule jobs, etc" — the owner
+                wants finer control than one combined switch). Each falls
+                back to the legacy clientPortalCancelReschedule value in
+                ClientAuthPortal.tsx when not explicitly set, so existing
+                owners' single toggle keeps working as before until they
+                touch either of these. */}
+            <label className={"flex items-start gap-2.5 p-3 rounded-xl border cursor-pointer transition " + ((f.clientPortalCanReschedule ?? f.clientPortalCancelReschedule) ? "border-red-500/40 bg-red-950/20" : "border-white/10 bg-white/5")}>
+              <input type="checkbox" checked={!!(f.clientPortalCanReschedule ?? f.clientPortalCancelReschedule)} onChange={e => setF({ ...f, clientPortalCanReschedule: e.target.checked })} className="mt-0.5 accent-red-600" />
               <div>
-                <div className="text-xs font-semibold text-white flex items-center gap-1.5"><CalendarClock size={12} />Allow clients to cancel/reschedule in the portal</div>
+                <div className="text-xs font-semibold text-white flex items-center gap-1.5"><CalendarClock size={12} />Allow clients to reschedule directly in the portal</div>
                 <div className="text-[10px] text-white/40 mt-0.5">
-                  Off by default. When on, a client can cancel or move their own upcoming job right from the Client Portal — they must type a reason either way, and you get notified immediately. When off, they can only send a reschedule request for you to confirm.
+                  Off by default. When on, a client can move their own upcoming job right from the Client Portal — they must type a reason, and you get notified immediately. When off, they can only send a reschedule request for you to confirm.
+                </div>
+              </div>
+            </label>
+            <label className={"flex items-start gap-2.5 p-3 rounded-xl border cursor-pointer transition " + ((f.clientPortalCanCancel ?? f.clientPortalCancelReschedule) ? "border-red-500/40 bg-red-950/20" : "border-white/10 bg-white/5")}>
+              <input type="checkbox" checked={!!(f.clientPortalCanCancel ?? f.clientPortalCancelReschedule)} onChange={e => setF({ ...f, clientPortalCanCancel: e.target.checked })} className="mt-0.5 accent-red-600" />
+              <div>
+                <div className="text-xs font-semibold text-white flex items-center gap-1.5"><CalendarClock size={12} />Allow clients to cancel jobs directly in the portal</div>
+                <div className="text-[10px] text-white/40 mt-0.5">
+                  Off by default. When on, a client can cancel their own upcoming job right from the Client Portal — they must type a reason, and you get notified immediately. When off, there's no self-serve cancel button; they need to contact you.
                 </div>
               </div>
             </label>
@@ -1009,7 +1064,21 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                   for anyone who already has one set. */}
               <label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><Star size={10} />Google Maps Review Link</label>
               <GInput value={f.googleReviewLink || ""} onChange={e => setF({ ...f, googleReviewLink: e.target.value })} placeholder="https://g.page/r/.../review" className="!text-xs" />
-              <div className="text-[10px] text-white/30 mt-1">From your Google Business Profile: "Ask for reviews" → Copy link. Customers who rate 4-5 stars are sent here.</div>
+              <div className="text-[10px] text-white/30 mt-1">From your Google Business Profile: "Ask for reviews" → Copy link. Customers rating at or above the threshold below are sent here.</div>
+            </div>
+            {/* FEATURE — "let the owner set the star cutoff for Google." Was
+                hardcoded at 4-5 stars → Google, 1-3 → private feedback. Now
+                owner-configurable (e.g. tighten to 5-only) — see gm= param
+                threaded through every #/rate link builder and
+                CustomerReviewPage.tsx's googleMinStars. */}
+            <div>
+              <label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><Star size={10} />Minimum star rating sent to Google</label>
+              <GSel value={String(f.reviewGoogleMinStars || 4)} onChange={e => setF({ ...f, reviewGoogleMinStars: Number(e.target.value) })} className="!text-xs">
+                <option value="3" className="bg-black">3 stars & up</option>
+                <option value="4" className="bg-black">4 stars & up (default)</option>
+                <option value="5" className="bg-black">5 stars only</option>
+              </GSel>
+              <div className="text-[10px] text-white/30 mt-1">Below this rating, the customer never sees a Google prompt — instead they're asked two private follow-up questions and get a simple thank-you.</div>
             </div>
             <div><label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><Star size={10} />Google Place ID <span className="text-white/30 font-normal">(fallback if no review link above)</span></label><GInput value={f.googlePlaceId || ""} onChange={e => setF({ ...f, googlePlaceId: e.target.value })} placeholder="ChIJ..." className="!text-xs" /><div className="text-[10px] text-white/30 mt-1">Find at <a href="https://developers.google.com/maps/documentation/places/web-service/place-id" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">developers.google.com/maps/…/place-id</a></div></div>
             <div><label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><Clock size={10} />Max Lunch Break <span className="text-white/30 font-normal">(minutes)</span></label><GInput type="number" value={f.maxLunchMinutes ?? 30} onChange={e => setF({ ...f, maxLunchMinutes: Number(e.target.value) || 0 })} placeholder="30" className="!text-xs" /><div className="text-[10px] text-white/30 mt-1">Crew lunch breaks longer than this are flagged on the job</div></div>
@@ -1291,6 +1360,32 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                   </>
                 );
               })()}
+
+              {/* FEATURE — "invite other owners to pay for it, both sides
+                  get a discount." Distinct from ReferralsPage.tsx's
+                  customer-refers-customer program — this is one CrewBoss
+                  subscriber inviting another business owner. */}
+              {ownerReferral && (
+                <Glass className="p-4 !bg-purple-950/15 !border-purple-700/30 space-y-2">
+                  <div className="text-sm font-semibold text-purple-300 flex items-center gap-1.5"><Gift size={14} />Invite another business, save {ownerReferral.discountPercent}%</div>
+                  <div className="text-xs text-white/50">Share your code — when they subscribe, you both get {ownerReferral.discountPercent}% off your next bill.</div>
+                  <div className="flex items-center gap-2">
+                    <GInput readOnly value={`${window.location.origin}${window.location.pathname}#/login?ref=${ownerReferral.referralCode}`} className="!text-xs flex-1" />
+                    <GBtn
+                      variant="ghost"
+                      onClick={() => {
+                        navigator.clipboard.writeText(`${window.location.origin}${window.location.pathname}#/login?ref=${ownerReferral.referralCode}`).then(
+                          () => toast?.("Referral link copied ✓", "green"),
+                          () => toast?.("Couldn't copy — select and copy manually", "red")
+                        );
+                      }}
+                      className="!text-xs flex-shrink-0"
+                    >
+                      Copy
+                    </GBtn>
+                  </div>
+                </Glass>
+              )}
             </div>
           )}
 

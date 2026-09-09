@@ -684,7 +684,7 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     setSendingReview(true);
     try {
       const companyName = settings.companyName || "Crew Boss";
-      const rateLink = `${window.location.origin}${window.location.pathname}#/rate?c=${encodeURIComponent(c.id)}&n=${encodeURIComponent(c.firstName)}&g=${encodeURIComponent(settings.googlePlaceId || "")}&rl=${encodeURIComponent((settings as any).googleReviewLink || "")}&co=${encodeURIComponent(companyName)}`;
+      const rateLink = `${window.location.origin}${window.location.pathname}#/rate?c=${encodeURIComponent(c.id)}&n=${encodeURIComponent(c.firstName)}&g=${encodeURIComponent(settings.googlePlaceId || "")}&rl=${encodeURIComponent((settings as any).googleReviewLink || "")}&co=${encodeURIComponent(companyName)}&gm=${encodeURIComponent(String((settings as any).reviewGoogleMinStars || 4))}`;
       if (settings.twilioSid && c.phone) {
         await withTimeout(twilioSend(settings as any, c.phone, `Hi ${c.firstName}, thanks for choosing ${companyName}! How did we do? ${rateLink}`), 10000, "Review SMS");
         logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: `Hi ${c.firstName}, thanks for choosing ${companyName}! How did we do? ${rateLink}` }).catch(() => {});
@@ -1608,6 +1608,9 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
             <div className="text-xs text-white/60">
               <div className="font-semibold mb-0.5 text-purple-300 flex items-center gap-1"><Star size={11} />Review Request</div>
               {(job as any).reviewRequestedAt ? `Sent ${(job as any).reviewRequestedAt}` : "Ask the customer for a review — 4–5★ routes to Google, low ratings stay private."}
+              {(job as any).skipReviewRequest && !(job as any).reviewRequestedAt && (
+                <div className="text-[10px] text-yellow-400 mt-1">⚠ The crew flagged this job to skip the automated review request — sending here still works if you want to override that.</div>
+              )}
             </div>
             <GBtn onClick={sendReviewRequest} disabled={sendingReview} className="!text-xs !py-1.5 flex-shrink-0">
               {sendingReview ? "Sending…" : <><Star size={11} className="inline mr-1" />Send Review Request</>}

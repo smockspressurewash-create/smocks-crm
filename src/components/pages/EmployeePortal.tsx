@@ -29,6 +29,7 @@ import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tool
 import { fmt, uid, today, localDateStr, localDateKey, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields, reconcileCrewAfterAssign, getPollIntervalMs, getPayPeriodBounds, haversineMiles, resolveTermsForJobType, buildJobCalendarDescription, haptic, queueOfflineJobPatch, getPendingJobPatches, clearPendingJobPatch } from "../../lib/utils";
 import { useOnlineStatus } from "../../hooks/useOnlineStatus";
 import { callModel, MODELS } from "../../lib/api";
+import { matchVoiceCommand } from "../../lib/voiceCommands";
 import { usePollGate } from "../../hooks/usePollGate";
 import { usePersistent } from "../../hooks/usePersistent";
 import type { Job, Employee, Customer, AppSettings, JobChecklistItem, EmployeeOnboarding } from "../../types";
@@ -436,6 +437,23 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
   const [reportProblemOpen, setReportProblemOpen] = useState(false);
   const [reportProblemText, setReportProblemText] = useState("");
   const [sendingReportProblem, setSendingReportProblem] = useState(false);
+  // FEATURE — "if the job didn't go well, let them opt this job out of the
+  // automated review request." skipReviewRequest (migration 0094) is checked
+  // by run-automations.ts's review_request candidate filter.
+  const [savingSkipReview, setSavingSkipReview] = useState(false);
+  const toggleSkipReviewRequest = async () => {
+    setSavingSkipReview(true);
+    try {
+      const next = !(job as any).skipReviewRequest;
+      const result = await withTimeout(Promise.resolve(onUpdateJob({ skipReviewRequest: next } as any)), 15000, "Skip review request save");
+      if (result?.error) { toast("Failed to save — " + result.error.message, "red"); return; }
+      toast(next ? "Won't send a review request for this job ✓" : "Review request re-enabled for this job ✓", "green");
+    } catch (e: any) {
+      toast("Failed to save — " + (e?.message || "unknown error"), "red");
+    } finally {
+      setSavingSkipReview(false);
+    }
+  };
   // FEATURE — "mark a job not-completed/partially-complete, e.g. ran out of
   // chemicals at 90%, with a reason, optional customer message, and a
   // reschedule date." Mirrors the Report Problem pattern above: logs to
@@ -1193,10 +1211,63 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
     setVoiceTypedText("");
   };
   const cancelVoicePending = () => { setVoicePending(null); setVoiceNoMatch(null); setVoiceTypedText(""); };
+  // FEATURE — "voice typing should understand actions, not just transcribe
+  // or check off checklist items." Extends the existing voice-command
+  // recognizer (problem-keyword detection + checklist matching, above) with
+  // a fixed set of job actions — "send the invoice," "pull up the
+  // signature," "I just finished this job," etc (see lib/voiceCommands.ts).
+  // Anything that sends a real message to the customer or otherwise can't be
+  // easily undone (matchVoiceCommand's `dangerous` flag) requires a spoken-
+  // aloud confirm via window.confirm before it actually fires — a misheard
+  // "send the invoice" should never silently text a customer.
+  const dispatchVoiceAction = async (match: NonNullable<ReturnType<typeof matchVoiceCommand>>) => {
+    if (match.dangerous && !window.confirm(`Voice command heard: "${match.label}". Do this now?`)) {
+      toast("🎙️ Cancelled", "yellow");
+      return;
+    }
+    switch (match.id) {
+      case "send_invoice":
+        toast("🎙️ Sending invoice…", "yellow");
+        await sendInvoiceFromPortal();
+        break;
+      case "open_signature":
+        setShowSignOff(true);
+        toast("🎙️ Opening signature screen", "green");
+        break;
+      case "start_complete_job":
+        startCompleteFlow();
+        toast("🎙️ Starting job completion", "green");
+        break;
+      case "on_my_way":
+        await sendOtw();
+        break;
+      case "running_late":
+        // Doesn't send directly — "running late" needs a minutes value this
+        // recognizer has no reliable way to parse from speech, so it opens
+        // the existing panel for the employee to pick one and confirm there.
+        setRunningLateOpen(true);
+        toast("🎙️ Opening Running Late — pick how many minutes", "green");
+        break;
+      case "report_problem":
+        setReportProblemOpen(true);
+        toast("🎙️ Opening problem report", "green");
+        break;
+      case "clock_in":
+      case "clock_out":
+        toast("🎙️ Clock in/out isn't available from this screen — use the shift timer on the main job list.", "yellow");
+        break;
+    }
+  };
+
   const handleVoiceCommand = async (raw: string) => {
     const transcript = raw.trim();
     if (!transcript) return;
     setVoiceNoMatch(null);
+    const actionMatch = matchVoiceCommand(transcript);
+    if (actionMatch) {
+      await dispatchVoiceAction(actionMatch);
+      return;
+    }
     const norm = normalizeVoice(transcript);
     if (VOICE_PROBLEM_KEYWORDS.some(k => norm.includes(k))) {
       setReportProblemText(transcript);
@@ -2542,6 +2613,16 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
                 <AlertTriangle size={12} />Report Problem
               </button>
             )}
+            {/* FEATURE — "if the job didn't go well, don't send a review
+                request." Independent of the report-problem text box above —
+                usable even without filing a written report. */}
+            <button
+              disabled={savingSkipReview}
+              onClick={toggleSkipReviewRequest}
+              className={"w-full flex items-center justify-center gap-1.5 py-1.5 text-[11px] mt-1 pt-1.5 border-t border-red-700/20 transition disabled:opacity-40 " + ((job as any).skipReviewRequest ? "text-yellow-300 hover:text-yellow-200" : "text-white/40 hover:text-white/70")}
+            >
+              {(job as any).skipReviewRequest ? "✓ Review request won't be sent for this job (tap to undo)" : "Don't send a review request after this job"}
+            </button>
           </Glass>
         )}
 
@@ -2746,7 +2827,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
                   <button
                     type="button"
                     onClick={toggleVoiceCommands}
-                    title={voiceCmdActive ? "Stop listening" : "Say an item name (or several) to check off, or describe a problem — hands-free"}
+                    title={voiceCmdActive ? "Stop listening" : "Hands-free: check off items, describe a problem, or say \"send the invoice\" / \"pull up the signature\" / \"I just finished this job\" / \"on my way\" / \"running late\""}
                     className={"flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-medium transition " + (voiceCmdActive ? "bg-red-600/70 text-white animate-pulse" : "bg-white/5 text-white/50 hover:text-white/80 hover:bg-white/10")}
                   >
                     <Mic size={11} />{voiceCmdActive ? "Listening…" : "Voice Commands"}

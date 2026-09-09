@@ -687,6 +687,8 @@ export function ClientAuthPortal({
           <Stat icon={Gift} label="Referral Credit" value={fmt(cust.referralCreditOwed || 0)} />
         </div>
 
+        <ReviewNudgeBanner cust={cust} completedJobsCount={completedJobs.length} settings={active?.settings} />
+
         <div className="flex gap-1 p-1 bg-white/5 border border-white/10 rounded-xl overflow-x-auto">
           {/* AUDIT FIX (round 13, item 7) — added a Quotes tab (pending,
               not-yet-invoiced estimates were previously invisible here —
@@ -789,43 +791,68 @@ export function ClientAuthPortal({
                       on the header alone. */}
                   {(portalData?.accounts?.length || 0) > 1 && <div className="text-[10px] text-red-400/70 mt-0.5">{companyName}</div>}
 
-                  {/* FEATURE — self-serve cancel/reschedule (owner opt-in,
-                      settings.clientPortalCancelReschedule). Falls back to
-                      the request-only flow below when the owner hasn't
-                      turned it on. */}
-                  {settings?.clientPortalCancelReschedule && directActionJobId === j.id ? (
-                    <div className="mt-2 space-y-2">
-                      <div className="text-[11px] font-semibold text-white/70">{directActionType === "cancel" ? "Cancel this job" : "Reschedule this job"}</div>
-                      {directActionType === "reschedule" && (
-                        <div className="flex gap-2">
-                          <input type="date" value={directNewDate} onChange={e => setDirectNewDate(e.target.value)} className="flex-1 bg-white/5 border border-white/15 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-red-500/50" />
-                          <input type="time" value={directNewTime} onChange={e => setDirectNewTime(e.target.value)} className="flex-1 bg-white/5 border border-white/15 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-red-500/50" />
+                  {/* FEATURE — self-serve cancel/reschedule, independently
+                      owner-toggleable (settings.clientPortalCanCancel /
+                      clientPortalCanReschedule — see SettingsModal.tsx).
+                      Falls back to the legacy combined
+                      clientPortalCancelReschedule flag when the new per-
+                      action ones aren't set, so existing owners' choice
+                      keeps working unchanged; falls back further to the
+                      request-only flow for reschedule when direct self-serve
+                      is off for that action. There's no self-serve "request
+                      to cancel" equivalent — an owner who wants cancellation
+                      requestable-but-not-automatic should tell customers to
+                      call/text, same as before this feature existed. */}
+                  {(() => {
+                    const canCancel = (settings as any)?.clientPortalCanCancel ?? settings?.clientPortalCancelReschedule;
+                    const canReschedule = (settings as any)?.clientPortalCanReschedule ?? settings?.clientPortalCancelReschedule;
+                    if (directActionJobId === j.id) {
+                      return (
+                        <div className="mt-2 space-y-2">
+                          <div className="text-[11px] font-semibold text-white/70">{directActionType === "cancel" ? "Cancel this job" : "Reschedule this job"}</div>
+                          {directActionType === "reschedule" && (
+                            <div className="flex gap-2">
+                              <input type="date" value={directNewDate} onChange={e => setDirectNewDate(e.target.value)} className="flex-1 bg-white/5 border border-white/15 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-red-500/50" />
+                              <input type="time" value={directNewTime} onChange={e => setDirectNewTime(e.target.value)} className="flex-1 bg-white/5 border border-white/15 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-red-500/50" />
+                            </div>
+                          )}
+                          <textarea value={directReason} onChange={e => setDirectReason(e.target.value)} rows={2} placeholder="Reason (required)" className="w-full bg-white/5 border border-white/15 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-white/25 resize-none focus:outline-none focus:border-red-500/50" />
+                          <div className="flex gap-2">
+                            <button disabled={directSending} onClick={submitDirectAction} className="flex-1 py-1.5 rounded-lg bg-red-700/40 border border-red-600/50 text-white text-xs font-semibold disabled:opacity-50">{directSending ? "Sending…" : directActionType === "cancel" ? "Confirm Cancellation" : "Confirm New Date"}</button>
+                            <button disabled={directSending} onClick={() => { setDirectActionJobId(null); setDirectActionType(null); setDirectReason(""); setDirectNewDate(""); setDirectNewTime(""); }} className="px-3 text-[11px] text-white/40 hover:text-white/60">Back</button>
+                          </div>
                         </div>
-                      )}
-                      <textarea value={directReason} onChange={e => setDirectReason(e.target.value)} rows={2} placeholder="Reason (required)" className="w-full bg-white/5 border border-white/15 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-white/25 resize-none focus:outline-none focus:border-red-500/50" />
-                      <div className="flex gap-2">
-                        <button disabled={directSending} onClick={submitDirectAction} className="flex-1 py-1.5 rounded-lg bg-red-700/40 border border-red-600/50 text-white text-xs font-semibold disabled:opacity-50">{directSending ? "Sending…" : directActionType === "cancel" ? "Confirm Cancellation" : "Confirm New Date"}</button>
-                        <button disabled={directSending} onClick={() => { setDirectActionJobId(null); setDirectActionType(null); setDirectReason(""); setDirectNewDate(""); setDirectNewTime(""); }} className="px-3 text-[11px] text-white/40 hover:text-white/60">Back</button>
-                      </div>
-                    </div>
-                  ) : settings?.clientPortalCancelReschedule ? (
-                    <div className="mt-2 flex items-center gap-3">
-                      <button onClick={() => { setDirectActionJobId(j.id); setDirectActionType("reschedule"); }} className="text-[11px] text-blue-400 hover:text-blue-300 flex items-center gap-1"><CalendarClock size={11} />Reschedule</button>
-                      <button onClick={() => { setDirectActionJobId(j.id); setDirectActionType("cancel"); }} className="text-[11px] text-red-400 hover:text-red-300">Cancel Job</button>
-                    </div>
-                  ) : j.rescheduleRequested ? (
-                    <div className="text-[11px] text-yellow-300/80 mt-2">📅 Reschedule requested — we'll confirm a new date soon.</div>
-                  ) : rescheduleJobId === j.id ? (
-                    <div className="mt-2 space-y-2">
-                      <textarea value={rescheduleNote} onChange={e => setRescheduleNote(e.target.value)} rows={2} placeholder="Preferred new date/time (optional)" className="w-full bg-white/5 border border-white/15 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-white/25 resize-none focus:outline-none focus:border-red-500/50" />
-                      <div className="flex gap-2">
-                        <button disabled={reschedulingSend} onClick={() => requestReschedule(j.id)} className="flex-1 py-1.5 rounded-lg bg-red-700/40 border border-red-600/50 text-white text-xs font-semibold disabled:opacity-50">{reschedulingSend ? "Sending…" : "Send Request"}</button>
-                        <button disabled={reschedulingSend} onClick={() => { setRescheduleJobId(null); setRescheduleNote(""); }} className="px-3 text-[11px] text-white/40 hover:text-white/60">Cancel</button>
-                      </div>
-                    </div>
-                  ) : (
-                    <button onClick={() => setRescheduleJobId(j.id)} className="mt-2 text-[11px] text-blue-400 hover:text-blue-300 flex items-center gap-1"><CalendarClock size={11} />Request Reschedule</button>
-                  )}
+                      );
+                    }
+                    if (canCancel || canReschedule) {
+                      return (
+                        <div className="mt-2 flex items-center gap-3 flex-wrap">
+                          {canReschedule && <button onClick={() => { setDirectActionJobId(j.id); setDirectActionType("reschedule"); }} className="text-[11px] text-blue-400 hover:text-blue-300 flex items-center gap-1"><CalendarClock size={11} />Reschedule</button>}
+                          {canCancel && <button onClick={() => { setDirectActionJobId(j.id); setDirectActionType("cancel"); }} className="text-[11px] text-red-400 hover:text-red-300">Cancel Job</button>}
+                          {!canReschedule && (
+                            j.rescheduleRequested
+                              ? <span className="text-[11px] text-yellow-300/80">📅 Reschedule requested</span>
+                              : <button onClick={() => setRescheduleJobId(j.id)} className="text-[11px] text-blue-400 hover:text-blue-300 flex items-center gap-1"><CalendarClock size={11} />Request Reschedule</button>
+                          )}
+                        </div>
+                      );
+                    }
+                    if (j.rescheduleRequested) {
+                      return <div className="text-[11px] text-yellow-300/80 mt-2">📅 Reschedule requested — we'll confirm a new date soon.</div>;
+                    }
+                    if (rescheduleJobId === j.id) {
+                      return (
+                        <div className="mt-2 space-y-2">
+                          <textarea value={rescheduleNote} onChange={e => setRescheduleNote(e.target.value)} rows={2} placeholder="Preferred new date/time (optional)" className="w-full bg-white/5 border border-white/15 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-white/25 resize-none focus:outline-none focus:border-red-500/50" />
+                          <div className="flex gap-2">
+                            <button disabled={reschedulingSend} onClick={() => requestReschedule(j.id)} className="flex-1 py-1.5 rounded-lg bg-red-700/40 border border-red-600/50 text-white text-xs font-semibold disabled:opacity-50">{reschedulingSend ? "Sending…" : "Send Request"}</button>
+                            <button disabled={reschedulingSend} onClick={() => { setRescheduleJobId(null); setRescheduleNote(""); }} className="px-3 text-[11px] text-white/40 hover:text-white/60">Cancel</button>
+                          </div>
+                        </div>
+                      );
+                    }
+                    return <button onClick={() => setRescheduleJobId(j.id)} className="mt-2 text-[11px] text-blue-400 hover:text-blue-300 flex items-center gap-1"><CalendarClock size={11} />Request Reschedule</button>;
+                  })()}
                 </Glass>
               ))}
             </div>
@@ -1182,5 +1209,43 @@ export function ClientAuthPortal({
         </div>
       </Modal>
     </div>
+  );
+}
+
+// FEATURE — "if a customer hasn't left a review yet, prompt them in the
+// portal." Shows once the customer has at least one completed job and no
+// reviewSubmittedAt on file (see migration 0094 + public-data.ts's
+// submit_review action, which stamps this on real submission). Dismissible
+// for a week at a time (localStorage, per-customer) rather than nagging on
+// every single visit — reappears automatically if still unreviewed.
+function ReviewNudgeBanner({ cust, completedJobsCount, settings }: { cust: any; completedJobsCount: number; settings?: any }) {
+  const dismissKey = `smocks.reviewNudgeDismissed.${cust?.id || "x"}`;
+  const [dismissed, setDismissed] = useState(() => {
+    try {
+      const until = Number(localStorage.getItem(dismissKey) || 0);
+      return until > Date.now();
+    } catch { return false; }
+  });
+  if (dismissed || !cust?.id || completedJobsCount === 0 || cust.reviewSubmittedAt) return null;
+  const gm = Math.min(5, Math.max(1, Number(settings?.reviewGoogleMinStars) || 4));
+  const rateLink = `${window.location.origin}${window.location.pathname}#/rate?c=${encodeURIComponent(cust.id)}&n=${encodeURIComponent(cust.firstName || "")}&g=${encodeURIComponent(settings?.googlePlaceId || "")}&rl=${encodeURIComponent(settings?.googleReviewLink || "")}&co=${encodeURIComponent(settings?.companyName || "Crew Boss")}&gm=${gm}`;
+  const dismiss = () => {
+    try { localStorage.setItem(dismissKey, String(Date.now() + 7 * 86400000)); } catch {}
+    setDismissed(true);
+  };
+  return (
+    <Glass className="p-3.5 flex items-center justify-between gap-3 !bg-yellow-950/15 !border-yellow-700/30">
+      <div className="flex items-center gap-2.5 min-w-0">
+        <Gift size={16} className="text-yellow-400 flex-shrink-0" />
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-white truncate">Enjoying our service?</div>
+          <div className="text-[11px] text-white/50">Leave us a quick review — it takes 10 seconds.</div>
+        </div>
+      </div>
+      <div className="flex items-center gap-2 flex-shrink-0">
+        <a href={rateLink} className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-yellow-700/30 border border-yellow-600/40 text-yellow-200 hover:bg-yellow-700/40 transition">Leave a review</a>
+        <button onClick={dismiss} className="text-xs text-white/30 hover:text-white/60 px-1">Later</button>
+      </div>
+    </Glass>
   );
 }

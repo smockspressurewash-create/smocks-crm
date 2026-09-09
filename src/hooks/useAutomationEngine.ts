@@ -438,7 +438,7 @@ export function useAutomationEngine({
   const heldForNextPopupRef = useRef<PendingAutomationItem[]>([]);
 
   const reviewLink = (c: Customer, settings: AppSettings) =>
-    `${window.location.origin}${window.location.pathname}#/rate?c=${encodeURIComponent(c.id)}&n=${encodeURIComponent(c.firstName)}&g=${encodeURIComponent((settings as any).googlePlaceId ?? "")}&rl=${encodeURIComponent((settings as any).googleReviewLink ?? "")}&co=${encodeURIComponent((settings as any).companyName ?? "Crew Boss")}`;
+    `${window.location.origin}${window.location.pathname}#/rate?c=${encodeURIComponent(c.id)}&n=${encodeURIComponent(c.firstName)}&g=${encodeURIComponent((settings as any).googlePlaceId ?? "")}&rl=${encodeURIComponent((settings as any).googleReviewLink ?? "")}&co=${encodeURIComponent((settings as any).companyName ?? "Crew Boss")}&gm=${encodeURIComponent(String((settings as any).reviewGoogleMinStars || 4))}`;
   const paymentLink = (estId: string) => `${window.location.origin}${window.location.pathname}#/estimate/${estId}`;
   // Same link format ReferralsPage.tsx/ClientAuthPortal.tsx/ReferralLanding.tsx
   // already use for a customer's referral code — reused here rather than
