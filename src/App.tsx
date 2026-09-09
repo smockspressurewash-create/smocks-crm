@@ -4,7 +4,7 @@ import {
   Calendar, MessageSquare, Megaphone, Star, Zap, Share2, UserPlus,
   Bot, Database, Users2, Truck, DollarSign, FlaskConical, BarChart3, GraduationCap,
   TrendingUp, PiggyBank, Wallet, Heart, Gift, Monitor, Tag,
-  Bell, Settings, X, Lock, Globe, ChevronLeft, ChevronRight, Plus, Undo2, Redo2, CheckCircle, Eye, EyeOff, Menu, AlertTriangle, Trash2, BookOpen, UserCheck, Target, LayoutGrid
+  Bell, Settings, X, Lock, Globe, ChevronLeft, ChevronRight, Plus, Undo2, Redo2, CheckCircle, Eye, EyeOff, Menu, AlertTriangle, Trash2, BookOpen, UserCheck, Target, LayoutGrid, ClipboardCheck
 } from "lucide-react";
 
 import { useGlobalStyles } from "./hooks/useGlobalStyles";
@@ -40,6 +40,7 @@ import { AutomationsPage } from "./components/pages/AutomationsPage";
 import { SocialPage } from "./components/pages/SocialPage";
 import { LeadIntakePage } from "./components/pages/LeadIntakePage";
 import { TrashCanPage } from "./components/pages/TrashCanPage";
+import { WorkOrdersPage } from "./components/pages/WorkOrdersPage";
 import { TrashCanSignupPage } from "./components/pages/TrashCanSignupPage";
 import { AlfredPage } from "./components/pages/AlfredPage";
 import { GoogleWorkspacePage } from "./components/pages/GoogleWorkspacePage";
@@ -141,6 +142,7 @@ const navGroups = [
       { id: "estimates",  label: "Quotes",     icon: FileText   },
       { id: "invoices",   label: "Invoices",   icon: Receipt    },
       { id: "trashcans",  label: "Trash Cans", icon: Trash2     },
+      { id: "workorders", label: "Work Orders", icon: ClipboardCheck },
       { id: "calendar",   label: "Calendar",   icon: Calendar   },
       { id: "crew",       label: "Crew View",  icon: Monitor    },
     ],
@@ -5373,10 +5375,10 @@ export function App() {
                 {page === "customers"      && <CustomersPage customers={customers} setCustomers={setCustomers} estimates={estimates} jobs={jobs} employees={employees} toast={toast} timeline={timeline} setTimeline={setTimeline} settings={settings} setSettings={setSettings} autoOpenNew={fabAutoOpenNew === "customers"} onAutoOpenNewConsumed={() => setFabAutoOpenNew(null)} highlightId={alfredHighlight?.type === "customer" ? alfredHighlight.id : null} pushUndo={pushUndo} markRecentlyDeleted={markRecentlyDeleted} unmarkRecentlyDeleted={unmarkRecentlyDeleted} onSpotlight={queueAlfredSpotlight} planLimits={planLimits} onUpgrade={openBillingUpgrade} />}
                 {page === "estimates"      && <EstimatesPage estimates={estimates} setEstimates={setEstimates} customers={customers} services={services} settings={settings} toast={toast} onPortal={id => setPortalEstId(id)} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} setJobs={setJobs} onNav={setPage} autoOpenNew={fabAutoOpenNew === "estimates"} onAutoOpenNewConsumed={() => { setFabAutoOpenNew(null); setEstimatePresetCustomerId(null); }} presetCustomerId={estimatePresetCustomerId || ""} ownerId={crmUserId} highlightId={alfredHighlight?.type === "estimate" ? alfredHighlight.id : null} pushUndo={pushUndo} markRecentlyDeleted={markRecentlyDeleted} unmarkRecentlyDeleted={unmarkRecentlyDeleted} />}
                 {page === "invoices"       && <InvoicesPage estimates={estimates} setEstimates={setEstimates} customers={customers} settings={settings} toast={toast} jobs={jobs} setJobs={setJobs} ownerId={crmUserId} highlightId={alfredHighlight?.type === "invoice" ? alfredHighlight.id : null} pushUndo={pushUndo} markRecentlyDeleted={markRecentlyDeleted} unmarkRecentlyDeleted={unmarkRecentlyDeleted} />}
-                {page === "jobs"           && <JobsPage jobs={jobs} setJobs={setJobs} customers={customers} setCustomers={setCustomers} employees={employees} estimates={estimates} setEstimates={setEstimates} settings={settings} setSettings={setSettings} toast={toast} posts={socialPosts} setPosts={setSocialPosts} setTimeline={setTimeline} initialDetailId={openJobId} onInitialDetailIdConsumed={() => setOpenJobId(null)} onPortal={id => setPortalEstId(id)} ownerId={crmUserId} autoOpenNew={fabAutoOpenNew === "jobs"} onAutoOpenNewConsumed={() => setFabAutoOpenNew(null)} highlightId={alfredHighlight?.type === "job" ? alfredHighlight.id : null} pushUndo={pushUndo} markRecentlyDeleted={markRecentlyDeleted} unmarkRecentlyDeleted={unmarkRecentlyDeleted} services={services} />}
+                {page === "jobs"           && <JobsPage jobs={jobs} setJobs={setJobs} customers={customers} setCustomers={setCustomers} employees={employees} estimates={estimates} setEstimates={setEstimates} settings={settings} setSettings={setSettings} toast={toast} posts={socialPosts} setPosts={setSocialPosts} setTimeline={setTimeline} initialDetailId={openJobId} onInitialDetailIdConsumed={() => setOpenJobId(null)} onPortal={id => setPortalEstId(id)} ownerId={crmUserId} autoOpenNew={fabAutoOpenNew === "jobs"} onAutoOpenNewConsumed={() => setFabAutoOpenNew(null)} autoOpenNewWorkOrder={fabAutoOpenNew === "jobs-workorder"} onAutoOpenNewWorkOrderConsumed={() => setFabAutoOpenNew(null)} highlightId={alfredHighlight?.type === "job" ? alfredHighlight.id : null} pushUndo={pushUndo} markRecentlyDeleted={markRecentlyDeleted} unmarkRecentlyDeleted={unmarkRecentlyDeleted} services={services} />}
                 {page === "pipeline"       && <PipelinePage jobs={jobs} setJobs={setJobs} customers={customers} toast={toast} />}
                 {page === "calendar"       && <CalendarPage jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} settings={settings} setSettings={setSettings} ownerId={crmUserId} />}
-                {page === "inbox"          && (managerBlocked("inbox") ? <RestrictedNotice label="the Inbox" /> : <InboxPage threads={inboxThreads} setThreads={setInboxThreads} customers={customers} setCustomers={setCustomers} settings={settings} toast={toast} ownerId={crmUserId} />)}
+                {page === "inbox"          && (managerBlocked("inbox") ? <RestrictedNotice label="the Inbox" /> : <InboxPage threads={inboxThreads} setThreads={setInboxThreads} customers={customers} setCustomers={setCustomers} setJobs={setJobs} settings={settings} toast={toast} ownerId={crmUserId} onNav={setPage} />)}
                 {page === "campaigns"      && <CampaignsPage campaigns={campaigns} setCampaigns={setCampaigns} customers={customers} estimates={estimates} jobs={jobs} settings={settings} setSettings={setSettings} inboxThreads={inboxThreads} setInboxThreads={setInboxThreads} automations={automations} setAutomations={setAutomations} toast={toast} />}
                 {page === "reviews"        && <ReviewsPage reviews={reviews} setReviews={setReviews} jobs={jobs} customers={customers} toast={toast} negativeAlerts={negativeAlerts} setNegativeAlerts={setNegativeAlerts} settings={settings} setSettings={setSettings} />}
                 {page === "automations"    && <AutomationsPage automations={automations} setAutomations={setAutomations} jobs={jobs} customers={customers} estimates={estimates} settings={settings} setSettings={setSettings} toast={toast} />}
@@ -5400,6 +5402,7 @@ export function App() {
                 {page === "referrals"      && <ReferralsPage customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} settings={settings} setSettings={setSettings} />}
                 {page === "promotions"     && <PromotionsPage promotions={promotions} setPromotions={setPromotions} customers={customers} services={services} settings={settings} toast={toast} />}
                 {page === "trashcans"      && <TrashCanPage jobs={jobs} setJobs={setJobs} customers={customers} settings={settings} setSettings={setSettings} toast={toast} ownerId={crmUserId} />}
+                {page === "workorders"     && <WorkOrdersPage jobs={jobs} setJobs={setJobs} customers={customers} setCustomers={setCustomers} employees={employees} settings={settings} toast={toast} ownerId={crmUserId} onOpenJob={id => queueAlfredSpotlight({ page: "jobs", type: "job", id })} onNewWorkOrder={() => { setFabAutoOpenNew("jobs-workorder"); setPage("jobs"); }} />}
                 {page === "crew"           && <CrewView jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} settings={settings} setSettings={setSettings} estimates={estimates} setEstimates={setEstimates} refetchEmployees={refetchEmployees} ownerId={crmUserId} />}
               </SafePage>
             </PageFade>

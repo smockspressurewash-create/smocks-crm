@@ -80,7 +80,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = (() => {}) as any, employees = [], estimates = [], setEstimates = () => {}, settings = {} as AppSettings, setSettings, toast, posts = [], setPosts = () => {}, setTimeline = () => {}, initialDetailId = null, onInitialDetailIdConsumed = () => {}, onPortal = (_id: string) => {}, ownerId = "", autoOpenNew = false, onAutoOpenNewConsumed, highlightId = null, pushUndo = (_desc: string, _fn: () => void, _redoFn?: () => void) => {}, markRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[]) => {}, unmarkRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[]) => {}, services = [] as any[] }: { jobs?: any[]; setJobs?: any; customers?: any[]; setCustomers?: any; employees?: any[]; estimates?: any[]; setEstimates?: any; settings?: AppSettings; setSettings?: any; toast?: any; posts?: any[]; setPosts?: any; setTimeline?: any; initialDetailId?: string | null; onInitialDetailIdConsumed?: () => void; onPortal?: (id: string) => void; ownerId?: string; autoOpenNew?: boolean; onAutoOpenNewConsumed?: () => void; highlightId?: string | null; pushUndo?: (desc: string, fn: () => void, redoFn?: () => void) => void; markRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void; unmarkRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void; services?: any[] }) {
+export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = (() => {}) as any, employees = [], estimates = [], setEstimates = () => {}, settings = {} as AppSettings, setSettings, toast, posts = [], setPosts = () => {}, setTimeline = () => {}, initialDetailId = null, onInitialDetailIdConsumed = () => {}, onPortal = (_id: string) => {}, ownerId = "", autoOpenNew = false, onAutoOpenNewConsumed, autoOpenNewWorkOrder = false, onAutoOpenNewWorkOrderConsumed, highlightId = null, pushUndo = (_desc: string, _fn: () => void, _redoFn?: () => void) => {}, markRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[]) => {}, unmarkRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[]) => {}, services = [] as any[] }: { jobs?: any[]; setJobs?: any; customers?: any[]; setCustomers?: any; employees?: any[]; estimates?: any[]; setEstimates?: any; settings?: AppSettings; setSettings?: any; toast?: any; posts?: any[]; setPosts?: any; setTimeline?: any; initialDetailId?: string | null; onInitialDetailIdConsumed?: () => void; onPortal?: (id: string) => void; ownerId?: string; autoOpenNew?: boolean; onAutoOpenNewConsumed?: () => void; autoOpenNewWorkOrder?: boolean; onAutoOpenNewWorkOrderConsumed?: () => void; highlightId?: string | null; pushUndo?: (desc: string, fn: () => void, redoFn?: () => void) => void; markRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void; unmarkRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void; services?: any[] }) {
   const [tab, setTab] = useState("scheduled");
   // FEATURE — "Alfred spotlight": jump to whichever tab the highlighted job
   // actually lives on (it may not be the currently-open tab), then glow +
@@ -204,6 +204,15 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
     setNewJobOpen(true);
     onAutoOpenNewConsumed?.();
   }, [autoOpenNew]); // eslint-disable-line react-hooks/exhaustive-deps
+  // FEATURE — WorkOrdersPage.tsx's "New Work Order" button lands here with
+  // the work-order toggle already on, instead of duplicating the whole New
+  // Job form a second time in a separate page.
+  useEffect(() => {
+    if (!autoOpenNewWorkOrder) return;
+    setNewJobForm({ ...emptyNewJobForm(), isWorkOrder: true, jobType: "commercial" } as any);
+    setNewJobOpen(true);
+    onAutoOpenNewWorkOrderConsumed?.();
+  }, [autoOpenNewWorkOrder]); // eslint-disable-line react-hooks/exhaustive-deps
   // FIX 4 — recurring options weren't reachable from job CREATION at all
   // (JobDetailModal has a full recurring editor, but that's post-creation
   // only). One shared factory for the "empty form" shape so the initial

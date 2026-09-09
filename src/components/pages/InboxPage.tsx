@@ -80,7 +80,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function InboxPage({ threads = [], setThreads, customers = [], setCustomers, settings = {} as AppSettings, toast, ownerId = "" }: { threads?: any[]; setThreads?: any; customers?: any[]; setCustomers?: any; settings?: AppSettings; toast?: any; ownerId?: string }) {
+export function InboxPage({ threads = [], setThreads, customers = [], setCustomers, setJobs, settings = {} as AppSettings, toast, ownerId = "", onNav }: { threads?: any[]; setThreads?: any; customers?: any[]; setCustomers?: any; setJobs?: any; settings?: AppSettings; toast?: any; ownerId?: string; onNav?: (page: string) => void }) {
   const [active, setActive] = useState(threads[0]?.id || null);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -961,6 +961,69 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
     setCustomers((prev: Customer[]) => [newCustomer, ...prev]);
     toast("✅ Lead created for " + (t.contactName || "contact"));
   };
+  // FEATURE — "convert to work order" button for an incoming email/text —
+  // same idea as convertToLead above, but reads the thread's own message
+  // text with an AI model (text-only extraction, so any configured provider
+  // works, unlike WorkOrdersPage.tsx's photo-scan flow which needs Claude
+  // specifically for vision) and creates a real commercial work-order Job
+  // (migration 0094 fields) instead of a customer lead.
+  const [convertingWorkOrderId, setConvertingWorkOrderId] = useState<string | null>(null);
+  const convertToWorkOrder = async (t: any) => {
+    setMenuOpenId(null);
+    if (!setJobs) { toast("Can't create jobs from this view", "error"); return; }
+    if (convertingWorkOrderId) return;
+    const priority: string[] = (settings as any)?.modelPriority || ["claude", "openai", "gemini", "groq", "mistral"];
+    const modelKeys = (settings as any)?.modelKeys || {};
+    const modelId = priority.find((mid: string) => { const m = (MODELS as any)[mid]; return m && (!m.needsKey || !!modelKeys[mid]); });
+    if (!modelId) { toast("Add an AI model key in Settings → AI Models first.", "red"); return; }
+    setConvertingWorkOrderId(t.id);
+    try {
+      const text = (t.messages || []).map((m: any) => m.body).filter(Boolean).join("\n---\n").slice(0, 6000);
+      if (!text.trim()) { toast("This conversation has no message text to read.", "red"); return; }
+      const res = await callModel({
+        modelId,
+        systemPrompt: "You read a commercial-client email/text conversation for a pressure-washing/commercial-services business and extract a work order. Reply with ONLY compact JSON, no prose, no markdown fences: {\"workOrderNumber\":string,\"workOrderClient\":string,\"address\":string,\"requestedDate\":string (YYYY-MM-DD if a real date is stated, else empty),\"requiresManagerSignoff\":boolean,\"notes\":string,\"photoRequirements\":[{\"label\":string,\"kind\":\"photo\"|\"video\",\"minCount\":number,\"instructions\":string}]}. Never invent a work order number, date, or requirement that isn't actually stated in the text — leave those fields empty/omit them rather than guessing.",
+        messages: [{ role: "user", content: `Conversation:\n${text}` }],
+        maxTokens: 1200,
+      });
+      const raw = (res?.text || "").trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
+      let parsed: any;
+      try { parsed = JSON.parse(raw); } catch { throw new Error("Couldn't read a valid response from the model — try Convert to Work Order again, or create it manually in Work Orders."); }
+      let existing = findCustomer(t);
+      let customerId = existing?.id;
+      if (!customerId) {
+        const name = nicknameOverrides[t.id] || t.contactName || "Unknown";
+        const nameParts = (name || "").trim().split(/\s+/);
+        const newCustomer: any = { id: uid(), firstName: nameParts[0] || name, lastName: nameParts.slice(1).join(" ") || "", phone: t.contactPhone || "", email: t.contactEmail || "", createdAt: new Date().toISOString(), owner_id: ownerId };
+        const { data, error } = await (supabase as any).from("customers").insert(newCustomer).select().single();
+        if (error || !data) throw new Error(error?.message || "Couldn't create a customer for this contact");
+        customerId = data.id;
+        setCustomers?.((prev: Customer[]) => [data, ...prev]);
+      }
+      const photoRequirements = Array.isArray(parsed.photoRequirements)
+        ? parsed.photoRequirements.map((r: any) => ({ id: uid(), label: String(r.label || ""), kind: r.kind === "video" ? "video" : "photo", minCount: Math.max(1, Number(r.minCount) || 1), instructions: String(r.instructions || "") })).filter((r: any) => r.label)
+        : [];
+      const newJob: any = {
+        id: uid(), customerId,
+        address: String(parsed.address || ""), amount: 0, status: "scheduled",
+        scheduledDate: /^\d{4}-\d{2}-\d{2}$/.test(parsed.requestedDate) ? parsed.requestedDate : today(),
+        scheduledTime: "", priority: "normal", jobType: "commercial", notes: String(parsed.notes || ""),
+        crew: [], checklist: [], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
+        loggedHours: 0, createdAt: today(), owner_id: ownerId,
+        isWorkOrder: true, workOrderNumber: String(parsed.workOrderNumber || ""), workOrderClient: String(parsed.workOrderClient || ""),
+        requiresManagerSignoff: !!parsed.requiresManagerSignoff, photoRequirements,
+      };
+      const { data: saved, error: saveErr } = await (supabase as any).from("jobs").insert(newJob).select().single();
+      if (saveErr || !saved) throw new Error(saveErr?.message || "Couldn't save the job");
+      setJobs((prev: any[]) => [...prev, saved]);
+      toast("✅ Work order created — review it in Work Orders", "green");
+      onNav?.("workorders");
+    } catch (e: any) {
+      toast("Couldn't create work order — " + (e?.message || "unknown error"), "red");
+    } finally {
+      setConvertingWorkOrderId(null);
+    }
+  };
   // ISSUE 5 — a thread only ever showed contactName; the matching customer
   // record's tags (set up in CustomersPage — see its folder/tag system)
   // never surfaced here, so there was no way to tell at a glance who's a
@@ -1135,6 +1198,7 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
                       {!findCustomer(t) && (
                         <button onClick={() => convertToLead(t)} className="w-full flex items-center gap-2 px-3 py-2 text-[11px] text-white/80 hover:bg-white/10 text-left"><UserCheck size={11} />Convert to lead</button>
                       )}
+                      <button onClick={() => convertToWorkOrder(t)} disabled={convertingWorkOrderId === t.id} className="w-full flex items-center gap-2 px-3 py-2 text-[11px] text-white/80 hover:bg-white/10 text-left disabled:opacity-40"><FileText size={11} />{convertingWorkOrderId === t.id ? "Reading conversation…" : "Convert to work order"}</button>
                       <button onClick={() => deleteThread(t)} className="w-full flex items-center gap-2 px-3 py-2 text-[11px] text-red-400 hover:bg-red-950/40 text-left"><Trash2 size={11} />Delete</button>
                     </div>
                   </>
@@ -1194,11 +1258,14 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
                 {activeThread.contactEmail && <span>{activeThread.contactEmail}</span>}
               </div>
             </div>
-            {findCustomer(activeThread) ? (
-              <GBtn variant="ghost" className="!text-xs !py-1"><Users size={11} className="inline mr-1" />View CRM</GBtn>
-            ) : (
-              <GBtn variant="ghost" onClick={() => convertToLead(activeThread)} className="!text-xs !py-1"><UserCheck size={11} className="inline mr-1" />Convert to Lead</GBtn>
-            )}
+            <div className="flex items-center gap-2 flex-wrap">
+              {findCustomer(activeThread) ? (
+                <GBtn variant="ghost" className="!text-xs !py-1"><Users size={11} className="inline mr-1" />View CRM</GBtn>
+              ) : (
+                <GBtn variant="ghost" onClick={() => convertToLead(activeThread)} className="!text-xs !py-1"><UserCheck size={11} className="inline mr-1" />Convert to Lead</GBtn>
+              )}
+              <GBtn variant="ghost" disabled={convertingWorkOrderId === activeThread?.id} onClick={() => convertToWorkOrder(activeThread)} className="!text-xs !py-1"><FileText size={11} className="inline mr-1" />{convertingWorkOrderId === activeThread?.id ? "Reading…" : "Convert to Work Order"}</GBtn>
+            </div>
           </div>
           {/* Messages */}
           <div className="flex-1 overflow-y-auto p-4 space-y-3">
