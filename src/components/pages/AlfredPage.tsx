@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, withTimeoutRetry, reconcileCrewAfterAssign, getPollIntervalMs, buildJobCalendarDescription, mediaSrc } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, withTimeoutRetry, reconcileCrewAfterAssign, getPollIntervalMs, buildJobCalendarDescription, mediaSrc, computeDiscountsTotal } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, emailShell, emailButton, logOutboundSmsToInbox, getFreshOwnerGoogleToken } from "../../lib/messaging";
 import { fetchCalendarEvents, createGCalEvent, updateGCalEvent, deleteGCalEvent } from "../../lib/googleApi";
@@ -2103,6 +2103,94 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         // status "approved" on the estimate, paymentStatus "Paid" mirrored
         // onto the linked job if there is one) — a genuinely common
         // request Alfred had no tool for at all until now.
+        // FEATURE — "if I bill a customer for 5 different items, I can ask
+        // Alfred what's the breakdown on that quote." No tool returned the
+        // actual line items before — list_estimates only ever returned
+        // totals. Resolves the most recent matching estimate/invoice by
+        // customer if no id is given.
+        case "get_estimate_breakdown": {
+          let est: any = inputs.estimateId ? estimates.find(e => e.id === inputs.estimateId) : null;
+          if (!est && inputs.customerName) {
+            const c = customers.find(x => (x.firstName + " " + x.lastName).trim().toLowerCase() === (inputs.customerName || "").trim().toLowerCase());
+            if (!c) {
+              const suggestions = suggestNames(inputs.customerName || "", customers, x => `${x.firstName} ${x.lastName}`);
+              return suggestions.length
+                ? { error: "Customer not found", suggestions, instruction: "Ask the user 'Do you mean " + suggestions.join(", or ") + "?' — do not ask a generic follow-up question." }
+                : { error: "Customer not found." };
+            }
+            const candidates = estimates.filter(e => e.customerId === c.id).sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+            est = candidates[0];
+            if (!est) return { error: `${inputs.customerName} has no quotes or invoices on file.` };
+          }
+          if (!est) return { error: "Need either estimateId or customerName." };
+          const discountTotal = computeDiscountsTotal((est as any).discounts, est.subtotal) + (Number(est.discount) || 0);
+          return {
+            success: true,
+            isInvoice: !!(est as any).invoiced,
+            status: est.status,
+            lineItems: (est.lineItems || []).map((li: any) => ({ description: li.description, quantity: li.quantity, unitPrice: li.unitPrice, lineTotal: (Number(li.quantity) || 1) * (Number(li.unitPrice) || 0) })),
+            subtotal: est.subtotal,
+            discountTotal,
+            tax: est.tax,
+            total: est.total,
+            paid: !!est.paidAt,
+          };
+        }
+        // FEATURE — "Alfred should be able to change the price for
+        // invoices, quotes, and jobs" / "can you give a discount on this
+        // quote." Adds a real, itemized Discount entry (never mutates
+        // lineItems/subtotal directly — keeps the original pricing visible,
+        // matching JobDetailModal's own stackable-discounts UI) and
+        // recomputes the real total the same way computeDiscountsTotal
+        // does everywhere else in the app.
+        case "apply_discount_to_estimate": {
+          let est: any = inputs.estimateId ? estimates.find(e => e.id === inputs.estimateId) : null;
+          if (!est && inputs.customerName) {
+            const c = customers.find(x => (x.firstName + " " + x.lastName).trim().toLowerCase() === (inputs.customerName || "").trim().toLowerCase());
+            if (!c) return { error: "Customer not found." };
+            const candidates = estimates.filter(e => e.customerId === c.id && e.status !== "rejected").sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+            est = candidates[0];
+            if (!est) return { error: `${inputs.customerName} has no quotes or invoices on file.` };
+          }
+          if (!est) return { error: "Need either estimateId or customerName." };
+          if (est.paidAt) return { error: "That invoice is already paid — can't discount it after the fact. Issue a refund instead if needed." };
+          if (!inputs.discountType || inputs.discountValue == null) return { error: "discountType and discountValue required." };
+          const newDiscount = { id: uid(), label: inputs.label || "Discount", type: inputs.discountType === "percent" ? "percent" as const : "amount" as const, value: Number(inputs.discountValue) };
+          const nextDiscounts = [...((est as any).discounts || []), newDiscount];
+          const discountTotal = computeDiscountsTotal(nextDiscounts, est.subtotal) + (Number(est.discount) || 0);
+          const nextTotal = Math.max(0, est.subtotal - discountTotal + (Number(est.tax) || 0));
+          const patch = { discounts: nextDiscounts, total: nextTotal };
+          setEstimates((prev: any[]) => prev.map(e => e.id === est.id ? { ...e, ...patch } : e));
+          const { data, error } = await (supabase as any).from("estimates").update(patch).eq("id", est.id).select("id");
+          if (error) return { error: "Failed to apply discount — " + error.message };
+          if (!Array.isArray(data) || data.length === 0) return { error: "Couldn't save the discount (permissions or it no longer exists)." };
+          if (inputs.notifyCustomer && inputs.customerMessage) {
+            const c = customers.find(x => x.id === est.customerId);
+            if (c?.phone && settings?.twilioSid) {
+              try {
+                await twilioSend(settings, c.phone, inputs.customerMessage);
+                logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: inputs.customerMessage }).catch(() => {});
+              } catch (e: any) {
+                return { success: true, newTotal: nextTotal, notifyWarning: "Discount applied, but couldn't text the customer — " + (e?.message || String(e)) };
+              }
+            }
+          }
+          toast(`Alfred applied a discount — new total ${fmt(nextTotal)}`);
+          return { success: true, estimateId: est.id, newTotal: nextTotal, discountTotal };
+        }
+        // FEATURE — same price-modification ability, for a scheduled JOB's
+        // own amount (distinct from an estimate/invoice's line items).
+        case "update_job_price": {
+          const j = await findJobFresh({ jobId: inputs.jobId, customerName: inputs.customerName });
+          if (!j) return { error: "Job not found." };
+          if (inputs.newAmount == null) return { error: "newAmount required." };
+          const newAmount = Math.max(0, Number(inputs.newAmount));
+          const result = await (supabase as any).from("jobs").update({ amount: newAmount }).eq("id", j.id).select("id");
+          if (result?.error || !Array.isArray(result?.data) || result.data.length === 0) return { error: "Failed to update the job's price — " + (result?.error?.message || "it may belong to a different account") };
+          setJobs((prev: any[]) => prev.map((x: any) => x.id === j.id ? { ...x, amount: newAmount } : x));
+          toast(`Alfred updated the job's price to ${fmt(newAmount)}`);
+          return { success: true, jobId: j.id, newAmount };
+        }
         case "mark_invoice_paid": {
           let inv: any = inputs.invoiceId ? estimates.find(e => e.id === inputs.invoiceId) : null;
           if (!inv && inputs.customerName) {
@@ -3158,6 +3246,21 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       name: "generate_work_order_summary",
       description: "Send a branded work-order completion summary email — used after a commercial/night job is done and the owner needs to respond to the client (Home Depot, Lowe's, etc). Write summaryText yourself as natural, professional prose describing what was done, drawing on the job's checklist/notes/address you already have — follow the owner's own workOrderEmailTemplate settings (word limit, tone) if given in your context. Do not fabricate details not actually in the job's notes/checklist.",
       input_schema: { type: "object", properties: { jobId: { type: "string" }, customerName: { type: "string" }, recipientEmail: { type: "string", description: "Who at the client company receives this" }, subject: { type: "string" }, summaryText: { type: "string", description: "The written summary — plain text, newlines allowed" } }, required: ["recipientEmail", "summaryText"] }
+    },
+    {
+      name: "get_estimate_breakdown",
+      description: "Get the full itemized breakdown of a quote or invoice — every line item, subtotal, discounts, tax, and total. Use for 'what's the breakdown on that quote', 'what did I quote them for', or similar. Resolves the customer's most recent quote/invoice if no estimateId is given.",
+      input_schema: { type: "object", properties: { estimateId: { type: "string" }, customerName: { type: "string" } } }
+    },
+    {
+      name: "apply_discount_to_estimate",
+      description: "Apply a discount to an existing quote or invoice — use for 'give them a discount', 'knock 10% off that quote', 'take $50 off'. Adds a real discount line (doesn't touch the original line items) and recomputes the total. Can also text the customer about it in the same call — write the message yourself if the owner wants them notified.",
+      input_schema: { type: "object", properties: { estimateId: { type: "string" }, customerName: { type: "string" }, discountType: { type: "string", enum: ["percent", "amount"] }, discountValue: { type: "number" }, label: { type: "string", description: "e.g. 'Loyalty discount' — shown on the quote/invoice" }, notifyCustomer: { type: "boolean" }, customerMessage: { type: "string", description: "Required if notifyCustomer is true" } }, required: ["discountType", "discountValue"] }
+    },
+    {
+      name: "update_job_price",
+      description: "Change the price (amount) of an already-scheduled job directly — distinct from apply_discount_to_estimate, which is for quotes/invoices. Use for 'change the price on that job to $X'.",
+      input_schema: { type: "object", properties: { jobId: { type: "string" }, customerName: { type: "string" }, newAmount: { type: "number" } }, required: ["newAmount"] }
     },
     {
       name: "update_job_priority",

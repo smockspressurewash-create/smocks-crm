@@ -275,7 +275,32 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
           last_message_at: allMessages[allMessages.length - 1]?.ts || canonical.last_message_at,
           updated_at: new Date().toISOString(),
         }).eq("id", canonical.id);
+        // BUG FIX — "sometimes it looks like it deletes messages... the
+        // Alfred response disappears." The `others` rows below get
+        // permanently DELETED, but `allMessages` was computed from the
+        // initial SELECT at the top of this function — if Twilio's inbound
+        // webhook or the Alfred SMS agent wrote a NEW message into one of
+        // these `others` rows in the gap between that SELECT and this
+        // DELETE (a real, not-rare window: this merge is triggered by
+        // texting Alfred, which is exactly when Alfred's own reply lands
+        // moments later), that message was never in `allMessages` and this
+        // deleted the only row that had it — gone, not just delayed. Re-fetch
+        // each `other` row immediately before deleting it and fold in any
+        // message it gained since the initial snapshot.
         for (const other of others) {
+          const { data: freshOther } = await (supabase as any).from("inbox_threads").select("messages").eq("id", other.id).maybeSingle();
+          const freshMsgs: any[] = Array.isArray(freshOther?.messages) ? freshOther.messages : [];
+          const staleMsgs: any[] = Array.isArray(other.messages) ? other.messages : [];
+          const newSinceSnapshot = freshMsgs.filter(m => !staleMsgs.some((s: any) => (m.id && s.id === m.id) || (m.sid && s.sid === m.sid)));
+          if (newSinceSnapshot.length > 0) {
+            const { data: canonNow } = await (supabase as any).from("inbox_threads").select("messages,last_message_at").eq("id", canonical.id).maybeSingle();
+            const mergedAgain = dedupeMessages([...(Array.isArray(canonNow?.messages) ? canonNow.messages : allMessages), ...newSinceSnapshot]).sort((a: any, b: any) => (a.ts || 0) - (b.ts || 0));
+            await (supabase as any).from("inbox_threads").update({
+              messages: mergedAgain,
+              last_message_at: mergedAgain[mergedAgain.length - 1]?.ts || canonNow?.last_message_at,
+              updated_at: new Date().toISOString(),
+            }).eq("id", canonical.id);
+          }
           await (supabase as any).from("inbox_threads").delete().eq("id", other.id);
         }
       }

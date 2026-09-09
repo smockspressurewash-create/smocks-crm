@@ -5736,7 +5736,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     setMarkingPeriodPaid(period.start);
     const nextPaidPeriods = { ...currentPaidPeriods, [period.start]: "paid" };
     const currentLog = Array.isArray((myEmployee as any).paymentLog) ? (myEmployee as any).paymentLog : [];
-    const logEntry = { id: uid(), at: new Date().toISOString(), type: "period", periodStart: period.start, periodEnd: period.end, amount: period.pay, markedBy: "employee" };
+    // BUG FIX — "Payroll crashed: Invalid time value." This entry used `at`
+    // (an ISO string), but every other employee paymentLog entry (EmployeesPage.tsx's
+    // togglePeriod/toggleDay) writes `paidAt` as a numeric Date.now() —
+    // PayrollCalendar's `new Date(p.paidAt).toISOString()` got `undefined`
+    // for every employee-confirmed entry and threw, crashing the whole
+    // Payroll tab. Matches the existing convention now.
+    const logEntry = { id: uid(), paidAt: Date.now(), type: "period", periodStart: period.start, periodEnd: period.end, amount: period.pay, markedBy: "employee" };
     const nextLog = [...currentLog, logEntry];
     try {
       const result = await (supabase as any).from("employees").update({ paidPeriods: nextPaidPeriods, paymentLog: nextLog }).eq("id", empId).select("id");

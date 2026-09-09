@@ -199,7 +199,10 @@ const navGroups = [
     label: "Account & More",
     items: [
       { id: "google", label: "Workspace",   icon: Database },
-      { id: "portal", label: "Team Portal", icon: Monitor  },
+      // REMOVED — "Team Portal" nav item (owner-preview of the employee field
+      // portal, page==="portal") duplicated Crew View's job — kept the real
+      // page/route intact (still reachable for actual employee logins) but
+      // dropped this redundant CRM sidebar entry point into it.
     ],
   },
 ];
@@ -1973,7 +1976,17 @@ export function App() {
       else if (cur.paid && !prev.paid) newEvents.push({ id: e.id + ":paid", text: `💰 ${custName} paid invoice ${fmt(e.total)}`, at: Date.now(), customerId: e.customerId });
       else if (cur.failed && cur.failed !== prev.failed) newEvents.push({ id: e.id + ":failed", text: `⚠️ ${custName}'s payment failed on ${fmt(e.total)}`, at: Date.now(), customerId: e.customerId });
       else if (cur.viewed && !prev.viewed) newEvents.push({ id: e.id + ":viewed", text: `👀 ${custName} opened ${(e as any).invoiced ? "invoice" : "estimate"} ${fmt(e.total)}`, at: Date.now(), customerId: e.customerId });
-      else if (cur.status === "rejected" && prev.status !== "rejected") newEvents.push({ id: e.id + ":rejected", text: `❌ ${custName} declined estimate ${fmt(e.total)}`, at: Date.now(), customerId: e.customerId });
+      else if (cur.status === "rejected" && prev.status !== "rejected") {
+        // BUG FIX — "if a customer rejects a quote, make sure we can see
+        // [the reason] as an owner." The customer-facing decline form
+        // (ClientPortal.tsx) already asks why and saves declineReason/
+        // declineReasonCategory — this notification just never included it,
+        // so the reason only ever reached the owner via the one-off SMS
+        // ClientPortal fires at decline time, not the persistent bell/
+        // Notifications page record.
+        const reasonSuffix = (e as any).declineReason ? ` — "${(e as any).declineReason}"` : (e as any).declineReasonCategory ? ` — ${(e as any).declineReasonCategory}` : "";
+        newEvents.push({ id: e.id + ":rejected", text: `❌ ${custName} declined estimate ${fmt(e.total)}${reasonSuffix}`, at: Date.now(), customerId: e.customerId });
+      }
       // FIX 17 — accepting a quote previously only fired the toast the CLIENT's
       // own browser showed itself (worthless to the owner, a different
       // session entirely) — nothing told the owner a quote was accepted.
@@ -5230,7 +5243,18 @@ export function App() {
                 </div>
                 <div className="flex-1 overflow-y-auto p-2 space-y-1">
                   {notifications.slice(0, 8).map(n => (
-                    <button key={n.id + n.at} onClick={() => { markNotificationRead(n.id); setPage(n.page || "notifications"); if (n.openType && n.openId) setAlfredHighlight({ type: n.openType, id: n.openId }); setNotifOpen(false); }} className={"w-full flex items-center gap-3 p-2.5 hover:bg-white/5 rounded-xl text-left " + (n.read ? "opacity-50" : "")}>
+                    <button key={n.id + n.at} onClick={() => {
+                      markNotificationRead(n.id);
+                      // BUG FIX — "clicking the notification takes me to a
+                      // blank page." "settings" was never a real routed
+                      // page (Settings is a modal, opened via
+                      // setSettingsOpen), so setPage("settings") landed on
+                      // nothing — exactly the referral nudge notification's
+                      // reported bug. Open the actual modal instead.
+                      if (n.page === "settings") { openBillingUpgrade(); }
+                      else { setPage(n.page || "notifications"); if (n.openType && n.openId) setAlfredHighlight({ type: n.openType, id: n.openId }); }
+                      setNotifOpen(false);
+                    }} className={"w-full flex items-center gap-3 p-2.5 hover:bg-white/5 rounded-xl text-left " + (n.read ? "opacity-50" : "")}>
                       <div className={"p-1.5 rounded-lg " + (n.category === "issue" ? "bg-red-950/30 text-red-400" : n.category === "crew" ? "bg-blue-950/30 text-blue-400" : "bg-green-950/30 text-green-400")}>
                         {n.category === "issue" ? <AlertTriangle size={12} /> : n.category === "crew" ? <Users2 size={12} /> : <Receipt size={12} />}
                       </div>

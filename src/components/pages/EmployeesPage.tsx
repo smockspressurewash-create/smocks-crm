@@ -162,7 +162,14 @@ function PayrollCalendar({ employees, jobs = [] }: { employees: any[]; jobs?: an
   const paymentsByDay: Record<string, { id: string; empName: string; amount: number; periodStart: string; periodEnd: string }[]> = {};
   employees.forEach((e: any) => {
     (e.paymentLog || []).forEach((p: any) => {
-      const dateKey = new Date(p.paidAt).toISOString().slice(0, 10);
+      // BUG FIX — "Payroll crashed: Invalid time value." A missing/malformed
+      // paidAt (legacy rows, or a future write using the wrong field name
+      // again) threw inside new Date(...).toISOString() and crashed the
+      // WHOLE Payroll tab for every employee, not just the bad row. Skip
+      // just that one entry instead.
+      const d = new Date(p.paidAt ?? p.at ?? NaN);
+      if (isNaN(d.getTime())) return;
+      const dateKey = d.toISOString().slice(0, 10);
       (paymentsByDay[dateKey] ||= []).push({ id: p.id, empName: `${e.firstName} ${e.lastName}`, amount: Number(p.amount) || 0, periodStart: p.periodStart, periodEnd: p.periodEnd });
     });
   });
