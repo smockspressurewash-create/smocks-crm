@@ -6,7 +6,7 @@
 // pricing/timing settings, the filtered job list, a same-day route builder
 // (see lib/utils.ts's buildOptimizedRoute), and the public signup link.
 import React, { useState, useEffect } from "react";
-import { Trash2, Copy, DollarSign, Clock, Route as RouteIcon, Users, Calendar, GripVertical, Send, Plus, X, Check, Edit2, ChevronUp, ChevronDown, CreditCard, AlertTriangle, FileText } from "lucide-react";
+import { Trash2, Copy, DollarSign, Clock, Route as RouteIcon, Users, Calendar, GripVertical, Send, Plus, X, Check, Edit2, ChevronUp, ChevronDown, CreditCard, AlertTriangle, FileText, MapPin } from "lucide-react";
 import { fmt, uid, today, daysFromNow, buildOptimizedRoute } from "../../lib/utils";
 import type { Job, Customer, AppSettings } from "../../types";
 import { supabase } from "../../lib/supabase";
@@ -18,13 +18,74 @@ import { GInput } from "../ui/GInput";
 import { GSel } from "../ui/GSel";
 import { Badge } from "../ui/Badge";
 import { Stat } from "../ui/Stat";
+import { Modal } from "../ui/Modal";
+import { AddressAutocomplete } from "../ui/AddressAutocomplete";
 import { useIsMobile } from "../../hooks/useIsMobile";
 
-export function TrashCanPage({ jobs = [], customers = [], settings = {} as AppSettings, setSettings, setJobs, toast, ownerId }: { jobs?: Job[]; customers?: Customer[]; settings?: AppSettings; setSettings?: any; setJobs?: any; toast?: any; ownerId?: string }) {
+export function TrashCanPage({ jobs = [], customers = [], setCustomers, settings = {} as AppSettings, setSettings, setJobs, toast, ownerId }: { jobs?: Job[]; customers?: Customer[]; setCustomers?: any; settings?: AppSettings; setSettings?: any; setJobs?: any; toast?: any; ownerId?: string }) {
   const trashJobs = jobs.filter((j: any) => j.serviceCategory === "trash_can");
   const upcoming = trashJobs.filter(j => j.status !== "cancelled" && j.status !== "completed").sort((a, b) => (a.scheduledDate || "").localeCompare(b.scheduledDate || ""));
   const [routeDate, setRouteDate] = useState(today());
   const [route, setRoute] = useState<any[] | null>(null);
+
+  // FEATURE — "add a button inside the trash can job section to add a new
+  // customer... include their current location, and a button that says
+  // 'Add to route' which automatically finds the best spot, or allows
+  // manual addition." Auto-place reuses the SAME server-side least-loaded-
+  // day + holiday-skip logic the public signup page already uses
+  // (public-data.ts's submit_trashcan_signup) rather than reimplementing
+  // it here; manual just inserts unassigned so it lands in the existing
+  // Planning board below for a drag-to-day placement.
+  const [newCustOpen, setNewCustOpen] = useState(false);
+  const emptyNewCustForm = () => ({ firstName: "", lastName: "", phone: "", email: "", address: "", lat: undefined as number | undefined, lng: undefined as number | undefined, cansCount: 1 });
+  const [newCustForm, setNewCustForm] = useState(emptyNewCustForm());
+  const [addingCustomer, setAddingCustomer] = useState(false);
+  const addTrashCanCustomer = async (mode: "auto" | "manual") => {
+    if (!newCustForm.firstName.trim() || !newCustForm.address.trim()) { toast?.("Name and address are required", "red"); return; }
+    setAddingCustomer(true);
+    try {
+      const customerPayload = {
+        id: uid(), firstName: newCustForm.firstName.trim(), lastName: newCustForm.lastName.trim(),
+        phone: newCustForm.phone.trim(), email: newCustForm.email.trim(), address: newCustForm.address.trim(),
+        ...(newCustForm.lat != null ? { lat: newCustForm.lat, lng: newCustForm.lng } : {}),
+        totalSpent: 0, createdAt: today(), notes: "", gateCode: "", hasDog: false, dogName: "", sensitivePlants: "",
+      };
+      const jobPayload = {
+        customerId: customerPayload.id,
+        address: newCustForm.address.trim(), amount: costPerCan * Math.max(1, newCustForm.cansCount),
+        status: "scheduled", scheduledDate: today(), scheduledTime: "", priority: "normal",
+        serviceCategory: "trash_can", cansCount: Math.max(1, newCustForm.cansCount),
+        crew: [], checklist: [], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
+        loggedHours: 0, createdAt: today(),
+        recurringFreq: (settings as any)?.trashCanDefaultFrequency || "weekly", isRecurring: true,
+        dayAssignmentConfirmed: mode === "manual" ? false : undefined,
+      };
+      if (mode === "auto") {
+        const res = await fetch("/api/public-data", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "submit_trashcan_signup", ownerId, customer: customerPayload, job: { id: uid(), ...jobPayload, owner_id: ownerId } }),
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok || data?.error) throw new Error(data?.error || "Couldn't add customer");
+        setCustomers?.((prev: any[]) => [...prev, { ...customerPayload, owner_id: ownerId }]);
+        toast?.(data?.assignedDay ? `Added ✓ — placed on the ${data.assignedDay} route, first service ${data.scheduledDate}` : "Added — no existing route to auto-place on yet, assign a day in Planning below", data?.assignedDay ? "green" : "yellow");
+      } else {
+        const { data: savedCust, error: custErr } = await (supabase as any).from("customers").insert({ ...customerPayload, owner_id: ownerId }).select().single();
+        if (custErr || !savedCust) throw new Error(custErr?.message || "Couldn't save customer");
+        const { data: savedJob, error: jobErr } = await (supabase as any).from("jobs").insert({ id: uid(), ...jobPayload, customerId: savedCust.id, owner_id: ownerId }).select().single();
+        if (jobErr || !savedJob) throw new Error(jobErr?.message || "Couldn't save job");
+        setCustomers?.((prev: any[]) => [...prev, savedCust]);
+        setJobs?.((prev: any[]) => [...prev, savedJob]);
+        toast?.("Added ✓ — drag them onto a day in Planning below", "green");
+      }
+      setNewCustOpen(false);
+      setNewCustForm(emptyNewCustForm());
+    } catch (e: any) {
+      toast?.("Couldn't add customer — " + (e?.message || "unknown error"), "red");
+    } finally {
+      setAddingCustomer(false);
+    }
+  };
 
   const costPerCan = Number((settings as any)?.trashCanCostPerCan) || 5;
   const minutesPerCan = Number((settings as any)?.trashCanMinutesPerCan) || 5;
@@ -368,8 +429,63 @@ export function TrashCanPage({ jobs = [], customers = [], settings = {} as AppSe
         <Stat icon={Trash2} label="Active Routes" value={String(upcoming.length)} />
         <Stat icon={DollarSign} label="Cost / Can" value={fmt(costPerCan)} />
         <Stat icon={Clock} label="Est. Min / Can" value={String(minutesPerCan)} />
-        <Stat icon={Users} label="Customers" value={String(new Set(trashJobs.map(j => j.customerId)).size)} />
+        <Stat icon={Users} label="Customers" value={String(trashCanCustomers.length)} />
       </div>
+
+      <Glass className="p-4 space-y-3">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div className="font-semibold text-sm flex items-center gap-2"><Users size={14} className="text-red-400" />Trash Can Customers</div>
+          <GBtn onClick={() => setNewCustOpen(true)} className="!text-xs"><Plus size={12} className="inline mr-1" />New Customer</GBtn>
+        </div>
+        <div className="text-[10px] text-white/40">Only customers with a trash-can service on file — they also appear in the normal Customers page like anyone else.</div>
+        {trashCanCustomers.length === 0 ? (
+          <div className="text-center py-6 text-white/30 text-xs">No trash-can customers yet.</div>
+        ) : (
+          <div className="grid sm:grid-cols-2 gap-2 max-h-72 overflow-y-auto">
+            {trashCanCustomers.map(c => {
+              const custJob = trashJobs.find((j: any) => j.customerId === c.id && j.status !== "cancelled");
+              return (
+                <div key={c.id} className="p-2.5 rounded-lg bg-black/30 border border-white/10 text-xs">
+                  <div className="font-medium text-white/80 truncate">{c.firstName} {c.lastName}</div>
+                  <div className="text-[10px] text-white/40 flex items-center gap-1 truncate"><MapPin size={9} className="flex-shrink-0" />{c.address || "No address"}</div>
+                  {custJob && <div className="text-[10px] text-white/30 mt-0.5">{(custJob as any).dayAssignmentConfirmed ? `Next: ${custJob.scheduledDate}` : "Unassigned — see Planning below"}</div>}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Glass>
+
+      <Modal open={newCustOpen} onClose={() => setNewCustOpen(false)} title="New Trash Can Customer" maxW="max-w-md">
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-2">
+            <GInput placeholder="First name" value={newCustForm.firstName} onChange={e => setNewCustForm(f => ({ ...f, firstName: e.target.value }))} />
+            <GInput placeholder="Last name" value={newCustForm.lastName} onChange={e => setNewCustForm(f => ({ ...f, lastName: e.target.value }))} />
+          </div>
+          <GInput placeholder="Phone" value={newCustForm.phone} onChange={e => setNewCustForm(f => ({ ...f, phone: e.target.value }))} />
+          <GInput placeholder="Email (optional)" value={newCustForm.email} onChange={e => setNewCustForm(f => ({ ...f, email: e.target.value }))} />
+          <div>
+            <label className="text-[10px] text-white/50 mb-1 block flex items-center gap-1"><MapPin size={10} />Current location</label>
+            <AddressAutocomplete
+              value={newCustForm.address}
+              onChange={v => setNewCustForm(f => ({ ...f, address: v }))}
+              onPlaceSelect={p => setNewCustForm(f => ({ ...f, lat: p.lat, lng: p.lng }))}
+              mapsKey={(settings as any)?.googleMapsKey || (settings as any)?.mapsKey || ""}
+              placeholder="123 Main St, York PA"
+              knownAddresses={customers.map((c: any) => c.address).filter(Boolean)}
+            />
+          </div>
+          <div>
+            <label className="text-[10px] text-white/50 mb-1 block">Number of cans</label>
+            <GInput type="number" min="1" value={newCustForm.cansCount} onChange={e => setNewCustForm(f => ({ ...f, cansCount: Math.max(1, Number(e.target.value) || 1) }))} className="!w-24" />
+          </div>
+          <div className="flex gap-2 pt-1">
+            <GBtn onClick={() => addTrashCanCustomer("auto")} disabled={addingCustomer} className="flex-1 !justify-center">{addingCustomer ? "Adding…" : "Add to Route (Auto)"}</GBtn>
+            <GBtn variant="ghost" onClick={() => addTrashCanCustomer("manual")} disabled={addingCustomer}>Add Manually</GBtn>
+          </div>
+          <div className="text-[10px] text-white/30">Auto finds the least-loaded existing service day and skips holiday weeks. Manual leaves them unassigned in Planning below for you to drag onto a day yourself.</div>
+        </div>
+      </Modal>
 
       <Glass className="p-4 space-y-3">
         <div className="font-semibold text-sm flex items-center gap-2"><Trash2 size={14} className="text-red-400" />Pricing & Scheduling</div>

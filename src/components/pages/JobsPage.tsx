@@ -788,6 +788,10 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                   <input type="checkbox" checked={!!(newJobForm as any).requiresManagerSignoff} onChange={e => setNewJobForm(f => ({ ...f, requiresManagerSignoff: e.target.checked } as any))} className="accent-purple-600 w-3.5 h-3.5" />
                   <span className="text-xs text-white/70">Requires a manager digital sign-off on completion</span>
                 </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={!!(newJobForm as any).isNightJob} onChange={e => setNewJobForm(f => ({ ...f, isNightJob: e.target.checked } as any))} className="accent-purple-600 w-3.5 h-3.5" />
+                  <span className="text-xs text-white/70">Night job (shows on the Calendar's separate Night Jobs view)</span>
+                </label>
                 <div>
                   <div className="flex items-center justify-between mb-1.5">
                     <label className="text-[10px] text-white/50">Required Photos/Videos</label>
@@ -1066,6 +1070,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 // FEATURE — commercial/night job work orders (migration 0094).
                 ...((newJobForm as any).isWorkOrder ? {
                   isWorkOrder: true,
+                  isNightJob: !!(newJobForm as any).isNightJob,
                   workOrderNumber: (newJobForm as any).workOrderNumber || "",
                   workOrderClient: (newJobForm as any).workOrderClient || "",
                   requiresManagerSignoff: !!(newJobForm as any).requiresManagerSignoff,

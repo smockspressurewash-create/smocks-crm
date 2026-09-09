@@ -454,6 +454,10 @@ export interface Job {
   // ordinary Job row — see JobsPage.tsx's "This is a work order" section and
   // EmployeePortal.tsx's photo-requirement gating on Complete.
   isWorkOrder?: boolean;
+  // FEATURE — Calendar page's separate "Commercial" vs "Night Jobs" views
+  // (CalendarPage.tsx) split isWorkOrder jobs on this flag — both are still
+  // ordinary work-order jobs, just scheduled during the day vs. overnight.
+  isNightJob?: boolean;
   workOrderNumber?: string;
   workOrderClient?: string;
   requiresManagerSignoff?: boolean;

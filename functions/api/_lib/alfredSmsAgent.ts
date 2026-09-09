@@ -415,14 +415,18 @@ const sendSms = async (ctx: Ctx, toPhone: string, bodyRaw: string, isOwnerReply 
         p_owner_id: ctx.ownerId || null,
         p_channel: "sms",
         p_contact_phone: toPhone,
-        // this used to name the owner's own conversation-with-Alfred
-        // thread literally "Alfred" in the Inbox, which the owner
-        // explicitly asked to stop — a conversation is still with/about a
-        // real contact (here, the owner's own number), not a fake
-        // pseudo-contact. The per-message "from Alfred" badge (via:"alfred"
-        // on the message itself, see InboxPage.tsx) already distinguishes
-        // an Alfred-sent message from a manually-typed one.
-        p_contact_name: (!isOwnerReply && contact?.name) || toPhone,
+        // BUG FIX — "make sure it shows the text thread the owner has with
+        // Alfred and labels it 'you'." A previous round named this thread by
+        // the owner's own raw phone number instead of "Alfred" (per that
+        // round's own reasoning: it's a conversation with a real contact,
+        // not a fake pseudo-contact) — but a bare phone number is just as
+        // unclear in the Inbox list as "Alfred" was. "You" is accurate from
+        // the owner's own point of view looking at their own Inbox (this
+        // thread is literally their own texts to/from Alfred) and reads
+        // clearly at a glance. The per-message "from Alfred" badge
+        // (via:"alfred", see InboxPage.tsx) still distinguishes which
+        // bubbles are Alfred's replies vs. the owner's own typed texts.
+        p_contact_name: (!isOwnerReply && contact?.name) || (isOwnerReply ? "You" : toPhone),
         p_customer_id: !isOwnerReply ? (contact?.customerId || null) : null,
         p_message: msg,
         p_unread: !!isOwnerReply,

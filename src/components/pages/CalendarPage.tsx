@@ -102,6 +102,14 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
   const touchDragMovedRef = useRef(false);
   const [showBuffer, setShowBuffer] = useState(false);
   const [calSource, setCalSource] = useState<"crm" | "google" | "both">("crm");
+  // FEATURE — "switch between all jobs, trash-can, commercial, and night
+  // jobs views." Filters the CRM job set this page already renders (works
+  // alongside calSource above — e.g. "Night Jobs" + "Both" shows night
+  // work orders overlaid with Google events). Not separate Google
+  // calendars per category — see this feature's own note in JobsPage.tsx/
+  // types/index.ts for why that's a larger, separate undertaking; this is
+  // the CRM-side filtered view, which is what matters for day-to-day use.
+  const [jobCategory, setJobCategory] = useState<"all" | "trash_can" | "commercial" | "night">("all");
   const [gEvents, setGEvents] = useState<GCalEvent[]>([]);
   const [gLoading, setGLoading] = useState(false);
   const [dragHoverArrow, setDragHoverArrow] = useState<"prev" | "next" | null>(null);
@@ -145,8 +153,12 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
   const m = vd.getMonth();
   const fd = new Date(y, m, 1).getDay();
   const dim = new Date(y, m + 1, 0).getDate();
+  const categoryFilteredJobs = jobCategory === "all" ? jobs
+    : jobCategory === "trash_can" ? jobs.filter((j: any) => j.serviceCategory === "trash_can")
+    : jobCategory === "night" ? jobs.filter((j: any) => j.isWorkOrder && j.isNightJob)
+    : jobs.filter((j: any) => j.isWorkOrder && !j.isNightJob); // "commercial"
   const byDate = {};
-  jobs.forEach(j => { if (j.scheduledDate) (byDate[j.scheduledDate] = byDate[j.scheduledDate] || []).push(j); });
+  categoryFilteredJobs.forEach(j => { if (j.scheduledDate) (byDate[j.scheduledDate] = byDate[j.scheduledDate] || []).push(j); });
 
   // ITEM 2 — real travel/buffer time between same-day jobs, replacing the old
   // "showBuffer" toggle which just printed a static "🚗 travel" / "⏸ buffer"
@@ -541,6 +553,21 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
       )}
       <div className="flex items-center gap-2 flex-wrap">
         {["month", "week", "agenda"].map(v => <button key={v} onClick={() => { setView(v); setOff(0); }} className={"px-4 py-2 rounded-xl text-sm font-medium transition border capitalize " + (view === v ? "bg-gradient-to-r from-red-600 to-red-800 border-red-500/50 text-white" : "bg-black/40 border-red-900/30 text-white/60 hover:text-white")}>{v}</button>)}
+
+        {/* FEATURE — "switch between all jobs, trash-can cleaning, commercial
+            jobs, and night jobs" views on the Calendar page. */}
+        <div className="flex items-center gap-1 px-1 py-1 bg-black/40 border border-white/10 rounded-xl text-xs">
+          {(["all", "trash_can", "commercial", "night"] as const).map(cat => (
+            <button
+              key={cat}
+              onClick={() => setJobCategory(cat)}
+              className={"px-2.5 py-1 rounded-lg transition font-medium whitespace-nowrap " +
+                (jobCategory === cat ? "bg-white/10 text-white" : "text-white/40 hover:text-white")}
+            >
+              {cat === "all" ? "All Jobs" : cat === "trash_can" ? "🗑️ Trash Cans" : cat === "commercial" ? "🏢 Commercial" : "🌙 Night Jobs"}
+            </button>
+          ))}
+        </div>
 
         {/* Google calendar source toggle — only shown when Google is connected */}
         {(settings as any)?.googleConnected && gToken && (

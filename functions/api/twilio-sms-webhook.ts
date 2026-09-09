@@ -724,9 +724,11 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           // both insert one, permanently splitting the conversation.
           await fetch(`${SUPABASE_URL}/rest/v1/rpc/find_or_create_inbox_thread`, {
             method: "POST", headers: { ...authHeaders, "Content-Type": "application/json" },
-            // Named by the real phone number, not "Alfred" — the owner
-            // asked threads to never be relabeled that way.
-            body: JSON.stringify({ p_owner_id: ownerId || null, p_channel: "sms", p_contact_phone: from, p_contact_name: from, p_customer_id: null, p_message: newMsg, p_unread: true }),
+            // BUG FIX — "label the Alfred thread 'you'." A raw phone number
+            // was just as unclear in the Inbox list as "Alfred" (see
+            // alfredSmsAgent.ts's matching fix) — "You" is what this thread
+            // actually is from the owner's own point of view.
+            body: JSON.stringify({ p_owner_id: ownerId || null, p_channel: "sms", p_contact_phone: from, p_contact_name: "You", p_customer_id: null, p_message: newMsg, p_unread: true }),
           });
         } catch (e: any) { console.error("[TwilioSmsWebhook] failed to log inbound Alfred text:", e?.message); }
       })());

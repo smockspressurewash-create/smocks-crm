@@ -4013,24 +4013,39 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       }
       appendMessage({ id: uid(), role: "alfred", content: displayText, timestamp: Date.now(), toolTraces, modelUsed, failoverChain });
 
-      // ElevenLabs TTS — read response aloud if enabled and key set
-      if (settings.elevenlabsKey && settings.ttsEnabled) {
-        try {
-          const voiceId = "21m00Tcm4TlvDq8ikWAM"; // Rachel voice
-          const ttsText = finalText.replace(/\*\*?([^*]+)\*\*?/g, "$1").replace(/\n+/g, " ").slice(0, 500);
-          const ttsRes = await fetch("https://api.elevenlabs.io/v1/text-to-speech/" + voiceId, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "xi-api-key": settings.elevenlabsKey },
-            body: JSON.stringify({ text: ttsText, model_id: "eleven_monolingual_v1", voice_settings: { stability: 0.5, similarity_boost: 0.75 } })
-          });
-          if (ttsRes.ok) {
-            const blob = await ttsRes.blob();
-            const url = URL.createObjectURL(blob);
-            const audio = new Audio(url);
-            audio.play().catch(() => {});
-            audio.onended = () => URL.revokeObjectURL(url);
+      // TTS — read Alfred's response aloud when enabled. BUG FIX — "you can
+      // send a voice message, but there's no toggle for whether Alfred talks
+      // back." settings.ttsEnabled/elevenlabsKey were both already read here,
+      // but nothing in the whole app ever set ttsEnabled — no UI existed to
+      // turn it on at all (see the new toggle button in this page's header).
+      // ElevenLabs (paid key) still wins when configured for higher quality;
+      // otherwise falls back to the browser's free built-in speechSynthesis
+      // so the toggle actually works with zero setup.
+      if (settings.ttsEnabled) {
+        const ttsText = finalText.replace(/\*\*?([^*]+)\*\*?/g, "$1").replace(/\n+/g, " ").slice(0, 500);
+        if (settings.elevenlabsKey) {
+          try {
+            const voiceId = "21m00Tcm4TlvDq8ikWAM"; // Rachel voice
+            const ttsRes = await fetch("https://api.elevenlabs.io/v1/text-to-speech/" + voiceId, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "xi-api-key": settings.elevenlabsKey },
+              body: JSON.stringify({ text: ttsText, model_id: "eleven_monolingual_v1", voice_settings: { stability: 0.5, similarity_boost: 0.75 } })
+            });
+            if (ttsRes.ok) {
+              const blob = await ttsRes.blob();
+              const url = URL.createObjectURL(blob);
+              const audio = new Audio(url);
+              audio.play().catch(() => {});
+              audio.onended = () => URL.revokeObjectURL(url);
+            } else if (typeof window !== "undefined" && window.speechSynthesis) {
+              window.speechSynthesis.speak(new SpeechSynthesisUtterance(ttsText));
+            }
+          } catch {
+            if (typeof window !== "undefined" && window.speechSynthesis) window.speechSynthesis.speak(new SpeechSynthesisUtterance(ttsText));
           }
-        } catch { /* TTS failure is silent */ }
+        } else if (typeof window !== "undefined" && window.speechSynthesis) {
+          window.speechSynthesis.speak(new SpeechSynthesisUtterance(ttsText));
+        }
       }
 
       // Self-learning: auto-extract memory from patterns
@@ -4194,6 +4209,15 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             <div className="p-1.5 rounded bg-purple-900/30"><Bot size={11} className="text-purple-400" /></div>
             <span className="flex-1 text-left">Memory</span>
             <span className="text-[10px] text-white/40">{memory.length}</span>
+          </button>
+          {/* FEATURE — "you need a toggle for whether Alfred talks back."
+              Reads Alfred's reply aloud via ElevenLabs (if a key's set in
+              Settings → AI Models) or the browser's free built-in voice
+              otherwise — either way this is the one place that turns it on. */}
+          <button onClick={() => setSettings((prev: any) => ({ ...prev, ttsEnabled: !prev.ttsEnabled }))} className="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg hover:bg-white/5 text-xs text-white/70 hover:text-white transition">
+            <div className={"p-1.5 rounded " + ((settings as any)?.ttsEnabled ? "bg-green-900/30" : "bg-white/5")}><Volume2 size={11} className={(settings as any)?.ttsEnabled ? "text-green-400" : "text-white/40"} /></div>
+            <span className="flex-1 text-left">Voice Replies</span>
+            <span className={"text-[10px] font-semibold " + ((settings as any)?.ttsEnabled ? "text-green-400" : "text-white/30")}>{(settings as any)?.ttsEnabled ? "ON" : "OFF"}</span>
           </button>
           <div className="px-2.5 py-2">
             <div className="text-[10px] uppercase tracking-wider text-white/40 mb-1.5">Personality</div>
