@@ -750,6 +750,64 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
               <option value="commercial" className="bg-black">Commercial</option>
             </GSel>
           </div>
+          {/* FEATURE — commercial/night job work orders (e.g. Home Depot,
+              Lowe's). Still an ordinary Job row (same portal, same crew
+              assignment, same checklist/photo machinery — see CLAUDE.md's
+              "invoices are just estimates" convention for the same pattern)
+              with extra fields for the stricter commercial workflow: a real
+              work order number, per-section photo/video count requirements
+              the field portal enforces before Complete, and an optional
+              manager digital sign-off. See migration 0094 for the columns. */}
+          <div className="p-3 rounded-xl border border-white/10 bg-black/20 space-y-2">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={!!(newJobForm as any).isWorkOrder} onChange={e => setNewJobForm(f => ({ ...f, isWorkOrder: e.target.checked, jobType: e.target.checked ? "commercial" : f.jobType } as any))} className="accent-red-600 w-3.5 h-3.5" />
+              <span className="text-xs font-semibold text-white/80 flex items-center gap-1.5"><FileText size={12} />This is a work order (commercial/night job)</span>
+            </label>
+            {(newJobForm as any).isWorkOrder && (
+              <div className="p-3 rounded-xl border border-purple-700/30 bg-purple-950/10 space-y-2.5">
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] text-white/50 mb-1 block">Work Order #</label>
+                    <GInput placeholder="WO-4521" value={(newJobForm as any).workOrderNumber || ""} onChange={e => setNewJobForm(f => ({ ...f, workOrderNumber: e.target.value } as any))} />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-white/50 mb-1 block">Client</label>
+                    <GInput placeholder="Home Depot #4521" value={(newJobForm as any).workOrderClient || ""} onChange={e => setNewJobForm(f => ({ ...f, workOrderClient: e.target.value } as any))} />
+                  </div>
+                </div>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={!!(newJobForm as any).requiresManagerSignoff} onChange={e => setNewJobForm(f => ({ ...f, requiresManagerSignoff: e.target.checked } as any))} className="accent-purple-600 w-3.5 h-3.5" />
+                  <span className="text-xs text-white/70">Requires a manager digital sign-off on completion</span>
+                </label>
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-[10px] text-white/50">Required Photos/Videos</label>
+                    <button
+                      type="button"
+                      onClick={() => setNewJobForm(f => ({ ...f, photoRequirements: [...((f as any).photoRequirements || []), { id: uid(), label: "", kind: "photo", minCount: 1, instructions: "" }] } as any))}
+                      className="text-[10px] text-purple-300 hover:text-purple-200"
+                    >
+                      + Add requirement
+                    </button>
+                  </div>
+                  <div className="space-y-2">
+                    {((newJobForm as any).photoRequirements || []).map((req: any, i: number) => (
+                      <div key={req.id} className="flex items-center gap-1.5 bg-black/30 border border-white/10 rounded-lg p-1.5">
+                        <GInput placeholder="Section (e.g. loading dock)" value={req.label} onChange={e => setNewJobForm(f => ({ ...f, photoRequirements: ((f as any).photoRequirements || []).map((r: any, idx: number) => idx === i ? { ...r, label: e.target.value } : r) } as any))} className="!text-xs flex-1" />
+                        <GSel value={req.kind} onChange={e => setNewJobForm(f => ({ ...f, photoRequirements: ((f as any).photoRequirements || []).map((r: any, idx: number) => idx === i ? { ...r, kind: e.target.value } : r) } as any))} className="!text-xs !w-24">
+                          <option value="photo" className="bg-black">Photo</option>
+                          <option value="video" className="bg-black">Video</option>
+                        </GSel>
+                        <GInput type="number" min="1" value={req.minCount} onChange={e => setNewJobForm(f => ({ ...f, photoRequirements: ((f as any).photoRequirements || []).map((r: any, idx: number) => idx === i ? { ...r, minCount: Math.max(1, Number(e.target.value) || 1) } : r) } as any))} className="!text-xs !w-14" />
+                        <button type="button" onClick={() => setNewJobForm(f => ({ ...f, photoRequirements: ((f as any).photoRequirements || []).filter((_: any, idx: number) => idx !== i) } as any))} className="text-red-400/70 hover:text-red-300 p-1"><X size={12} /></button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
           <div>
             <label className="text-xs text-white/60 mb-1 block">Est. Duration <span className="text-white/30">(hours)</span></label>
             <GInput type="number" step="0.25" min="0" placeholder="e.g. 3.5" value={newJobForm.duration || ""} onChange={e => setNewJobForm(f => ({ ...f, duration: e.target.value }))} />
@@ -995,6 +1053,14 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                   recurringFreq: newJobForm.recurringFreq,
                   recurringInterval: newJobForm.recurringInterval,
                   recurringWeekdays: newJobForm.recurringWeekdays,
+                } : {}),
+                // FEATURE — commercial/night job work orders (migration 0094).
+                ...((newJobForm as any).isWorkOrder ? {
+                  isWorkOrder: true,
+                  workOrderNumber: (newJobForm as any).workOrderNumber || "",
+                  workOrderClient: (newJobForm as any).workOrderClient || "",
+                  requiresManagerSignoff: !!(newJobForm as any).requiresManagerSignoff,
+                  photoRequirements: ((newJobForm as any).photoRequirements || []).filter((r: any) => r.label.trim()),
                 } : {}),
               };
               if (job.isRecurring) console.log("[Verify] recurring jobs with custom schedules — working — mode:", job.recurringMode);

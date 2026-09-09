@@ -447,6 +447,32 @@ export interface Job {
   invoiceSentAt?: string;
   estimateId?: string;
   jobType?: "residential" | "commercial";
+  // FEATURE — "don't send a review request after this job" (EmployeePortal's
+  // Report Problem panel) — migration 0094.
+  skipReviewRequest?: boolean;
+  // FEATURE — commercial/night job work orders (migration 0094). Still an
+  // ordinary Job row — see JobsPage.tsx's "This is a work order" section and
+  // EmployeePortal.tsx's photo-requirement gating on Complete.
+  isWorkOrder?: boolean;
+  workOrderNumber?: string;
+  workOrderClient?: string;
+  requiresManagerSignoff?: boolean;
+  photoRequirements?: PhotoRequirement[];
+  photoRequirementTags?: Record<string, string>; // photoId -> requirement id
+  managerSignatureDataUrl?: string;
+  managerSignedAt?: string;
+  managerSignedBy?: string;
+  workOrderSummary?: string;
+  workOrderSummarySentAt?: string;
+  workOrderNotes?: { id: string; text: string; at: string; by?: string }[];
+}
+
+export interface PhotoRequirement {
+  id: string;
+  label: string;
+  kind: "photo" | "video";
+  minCount: number;
+  instructions?: string;
 }
 
 // ─── Employee ─────────────────────────────────────────────────────────────────
@@ -999,6 +1025,7 @@ export interface AppSettings {
   googleReviewLink?: string;
   reviewGoogleMinStars?: number;
   trashCanHolidayDates?: string[];
+  workOrderEmailTemplate?: { subject?: string; instructions?: string; maxWords?: number; includeSignature?: boolean };
   // ITEM 10 — the owner's OAuth provider token/refresh token, distinct from
   // googleToken above (legacy/mock field). googleTokenExpiresAt lets Gmail
   // sends proactively refresh before the access token actually expires

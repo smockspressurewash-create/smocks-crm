@@ -909,7 +909,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
     }
   };
 
-  const addPhoto = async (type: "before" | "after", dataUrl: string, explicitPairIndex?: number) => {
+  const addPhoto = async (type: "before" | "after", dataUrl: string, explicitPairIndex?: number, requirementId?: string) => {
     const id = uid();
     const caption = (type === "before" ? "Before" : "After") + " — " + today();
     const url = await uploadJobMedia(dataUrlToBlob(dataUrl), `${job.id}/photo-${id}.jpg`, "image/jpeg");
@@ -928,10 +928,15 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
     const pairIndex = explicitPairIndex ?? (job.photos || []).filter((p: any) => p.type === type).length;
     const newPhoto = url ? { id, type, pairIndex, caption, url, uploadedAt: today() } : { id, type, pairIndex, caption, dataUrl, uploadedAt: today() };
     const nextPhotos = [...(job.photos || []), newPhoto];
+    // FEATURE — commercial work-order photo requirements (migration 0094):
+    // tags this photo against the requirement it satisfies so
+    // WorkOrderRequirementsCard can compute real progress, without touching
+    // the existing before/after slider logic above at all.
+    const nextTags = requirementId ? { ...((job as any).photoRequirementTags || {}), [id]: requirementId } : (job as any).photoRequirementTags;
     try {
       // BUG FIX — same outer-shorter-than-inner-timeout bug as Report
       // Problem/Reschedule above.
-      const result = await withTimeout(Promise.resolve(onUpdateJob({ photos: nextPhotos })), 45000, "Photo upload");
+      const result = await withTimeout(Promise.resolve(onUpdateJob({ photos: nextPhotos, ...(requirementId ? { photoRequirementTags: nextTags } : {}) } as any)), 45000, "Photo upload");
       if (result?.error) {
         console.error("[PhotoSync] — error:", result.error.message);
         toast("Photo saved locally, but failed to sync — " + result.error.message, "red");
@@ -945,7 +950,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
     }
   };
 
-  const addVideo = async (file: File) => {
+  const addVideo = async (file: File, requirementId?: string) => {
     // ITEM 11 — shared with PortalChecklistSection's checklist-item video
     // capture (see checkVideoLimits) so both paths enforce the same cap.
     const limitErr = await checkVideoLimits(file);
@@ -957,7 +962,8 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
       const ext = (file.type.split("/")[1] || "mp4").replace("quicktime", "mov");
       const url = await uploadJobMedia(file, `${job.id}/video-${id}.${ext}`, file.type);
       const newVideo = url ? { id, url, caption: "Field video", addedAt: today() } : { id, dataUrl, caption: "Field video", addedAt: today() };
-      onUpdateJob({ videos: [...(job.videos || []), newVideo] });
+      const nextTags = requirementId ? { ...((job as any).photoRequirementTags || {}), [id]: requirementId } : (job as any).photoRequirementTags;
+      onUpdateJob({ videos: [...(job.videos || []), newVideo], ...(requirementId ? { photoRequirementTags: nextTags } : {}) } as any);
       toast("Video added ✓");
     };
     r.readAsDataURL(file);
@@ -1005,6 +1011,20 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
         if (sigMode === "draw" && sigDrawData) {
           sigUrl = (await uploadJobMedia(dataUrlToBlob(sigDrawData), `${job.id}/signoff-${uid()}.png`, "image/png")) || undefined;
         }
+        // FEATURE — manager sign-off (commercial work orders) writes to its
+        // own separate fields instead of the customer signOff object, so a
+        // customer's own sign-off (if this job also has one) is never
+        // overwritten by a manager's, or vice versa.
+        if (sigTarget === "manager") {
+          const patch: Partial<Job> = {
+            managerSignedAt: new Date().toISOString(),
+            managerSignedBy: signerName.trim() || "Manager",
+            managerSignatureDataUrl: sigMode === "draw" ? (sigUrl || sigDrawData || undefined) : undefined,
+          };
+          const result = await onUpdateJob(patch);
+          if (result?.error) throw new Error(result.error.message);
+          return;
+        }
         const signOff: any = {
           signerName: signerName.trim() || "Drawn signature",
           timestamp: new Date().toISOString(),
@@ -1020,8 +1040,9 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
         const result = await onUpdateJob({ signOff });
         if (result?.error) throw new Error(result.error.message);
       })(), 25000, "Sign-off save");
-      toast("Sign-off saved ✓", "green");
+      toast(sigTarget === "manager" ? "Manager sign-off saved ✓" : "Sign-off saved ✓", "green");
       setShowSignOff(false);
+      setSigTarget("customer");
       if (signOffReturnToComplete) {
         setSignOffReturnToComplete(false);
         setCompleteStep("review");
@@ -1323,6 +1344,13 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
   // Draw-mode signature canvas
   const [sigMode, setSigMode] = useState<"type" | "draw">("type");
   const [sigDrawData, setSigDrawData] = useState<string | null>(null);
+  // FEATURE — commercial work orders sometimes need a MANAGER sign-off,
+  // distinct from the customer sign-off this whole screen was built for.
+  // Reuses the exact same drawing canvas/type-name UI rather than building a
+  // second one — sigTarget just decides which job fields get written on
+  // save (managerSignatureDataUrl/managerSignedAt/managerSignedBy vs the
+  // existing signOff object).
+  const [sigTarget, setSigTarget] = useState<"customer" | "manager">("customer");
   // FEATURE — "make sure you can assign a before photo to an after photo."
   // addPhoto("after", ...) used to always just get the next sequential
   // pairIndex — correct when there's exactly one open "before" waiting,
@@ -1395,7 +1423,27 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
 
   // "Complete Job" flow — review status, collect payment info, finalize.
   const checklistRemaining = allItems.filter(i => !i.done).length;
-  const startCompleteFlow = () => { setCompleteStep("review"); setPaidChoice(""); setPaymentMethod(""); };
+  const startCompleteFlow = () => {
+    // FEATURE — "before they finish a job they need to make sure they have
+    // [required photos/videos] done." A soft gate, not a hard block — a
+    // real field situation (equipment failure, safety issue) shouldn't trap
+    // someone in an unfinishable job, but it should require them to
+    // consciously say "continue anyway" rather than silently skipping it.
+    if (job.isWorkOrder && Array.isArray(job.photoRequirements) && job.photoRequirements.length > 0) {
+      const tags = (job as any).photoRequirementTags || {};
+      const unmet = job.photoRequirements.filter((req: any) => {
+        const count = req.kind === "video"
+          ? (job.videos || []).filter((v: any) => tags[v.id] === req.id).length
+          : (job.photos || []).filter((p: any) => tags[p.id] === req.id).length;
+        return count < req.minCount;
+      });
+      if (unmet.length > 0) {
+        const list = unmet.map((r: any) => r.label || (r.kind === "video" ? "video" : "photo")).join(", ");
+        if (!window.confirm(`This work order is still missing required photos/videos for: ${list}. Complete anyway?`)) return;
+      }
+    }
+    setCompleteStep("review"); setPaidChoice(""); setPaymentMethod("");
+  };
 
   const sendInvoiceFromPortal = async (customSubject?: string, customNote?: string) => {
     console.log("[SendInvoice] sendInvoiceFromPortal called — channel:", invoiceChannel, "job:", job.id, "customer:", customer?.id);
@@ -1579,9 +1627,18 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
           <button onClick={() => { setShowSignOff(false); if (signOffReturnToComplete) { setSignOffReturnToComplete(false); setCompleteStep("review"); } }} className="p-2 rounded-xl hover:bg-white/10 text-white/60 -ml-2">
             <ChevronLeft size={20} />
           </button>
-          <div className="font-semibold">Customer Sign-Off</div>
+          <div className="font-semibold">{sigTarget === "manager" ? "Manager Sign-Off" : "Customer Sign-Off"}</div>
         </div>
         <div className="flex-1 min-h-0 overflow-y-auto p-4 max-w-lg mx-auto space-y-4">
+          {/* FEATURE — commercial work orders sometimes need a MANAGER
+              sign-off separate from the customer's — this toggle picks
+              which one the canvas below actually saves to. */}
+          {job.requiresManagerSignoff && (
+            <div className="flex gap-1 p-1 rounded-xl bg-white/5 border border-white/10">
+              <button onClick={() => setSigTarget("customer")} className={"flex-1 py-1.5 rounded-lg text-xs font-medium transition " + (sigTarget === "customer" ? "bg-red-700/40 text-white border border-red-700/50" : "text-white/50")}>Customer</button>
+              <button onClick={() => setSigTarget("manager")} className={"flex-1 py-1.5 rounded-lg text-xs font-medium transition " + (sigTarget === "manager" ? "bg-purple-700/40 text-white border border-purple-700/50" : "text-white/50")}>Manager</button>
+            </div>
+          )}
           {/* Services summary */}
           <Glass className="p-4 !bg-black/40">
             <div className="text-xs text-white/50 uppercase tracking-wider mb-2 font-semibold">Services Completed</div>
@@ -2715,6 +2772,70 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
         )}
 
         {/* Photos & Videos */}
+        {/* FEATURE — commercial/night job work orders. Per-section photo/
+            video count requirements (owner-defined at scheduling, JobsPage.tsx)
+            the field crew must actually meet, not just a generic "attach
+            photos" reminder — matches the owner's example ("5 photos of this
+            section, 10 of this section, a video of this"). Photos/videos
+            uploaded here tag job.photoRequirementTags so progress is real,
+            not just a count of everything ever uploaded to the job. */}
+        {job.isWorkOrder && Array.isArray(job.photoRequirements) && job.photoRequirements.length > 0 && (
+          <Glass className="p-4 !bg-purple-950/10 !border-purple-700/30">
+            <div className="text-xs text-purple-300 uppercase tracking-wider mb-1 flex items-center gap-1">
+              <FileText size={12} />Work Order Requirements
+              {job.workOrderNumber && <span className="text-white/40 normal-case tracking-normal ml-1">#{job.workOrderNumber}</span>}
+            </div>
+            {job.workOrderClient && <div className="text-[11px] text-white/40 mb-2">{job.workOrderClient}</div>}
+            <div className="space-y-2">
+              {job.photoRequirements.map((req: any) => {
+                const tags = (job as any).photoRequirementTags || {};
+                const photoCount = (job.photos || []).filter((p: any) => tags[p.id] === req.id).length;
+                const videoCount = (job.videos || []).filter((v: any) => tags[v.id] === req.id).length;
+                const count = req.kind === "video" ? videoCount : photoCount;
+                const met = count >= req.minCount;
+                return (
+                  <div key={req.id} className={"flex items-center justify-between gap-2 p-2 rounded-lg border " + (met ? "bg-green-950/15 border-green-700/30" : "bg-black/30 border-white/10")}>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs text-white/80 truncate flex items-center gap-1.5">
+                        {met && <CheckCircle size={11} className="text-green-400 flex-shrink-0" />}
+                        {req.label || (req.kind === "video" ? "Video" : "Photo")}
+                      </div>
+                      {req.instructions && <div className="text-[10px] text-white/40 truncate">{req.instructions}</div>}
+                      <div className="text-[10px] text-white/40">{count} / {req.minCount} {req.kind}{req.minCount !== 1 ? "s" : ""}</div>
+                    </div>
+                    {effPerms.can_upload_photos && (
+                      <label className="cursor-pointer flex-shrink-0">
+                        <input
+                          type="file"
+                          accept={req.kind === "video" ? "video/*" : "image/*"}
+                          capture="environment"
+                          className="hidden"
+                          onChange={e => {
+                            const f = e.target.files?.[0];
+                            if (!f) return;
+                            if (req.kind === "video") addVideo(f, req.id);
+                            else compressImageFile(f).then(dataUrl => addPhoto("after", dataUrl, undefined, req.id));
+                            e.target.value = "";
+                          }}
+                        />
+                        <div className="px-2.5 py-1.5 rounded-lg bg-purple-900/40 hover:bg-purple-800/50 border border-purple-700/40 text-purple-200 text-[10px] font-medium flex items-center gap-1">
+                          <Plus size={11} />{req.kind === "video" ? "Video" : "Photo"}
+                        </div>
+                      </label>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {job.requiresManagerSignoff && (
+              <div className="mt-2 text-[10px] text-white/40 flex items-center gap-1.5">
+                <AlertTriangle size={10} />
+                {job.managerSignedAt ? `Manager signed off ${job.managerSignedAt.slice(0, 10)} ✓` : "This work order also requires a manager sign-off — see Sign-Off below."}
+              </div>
+            )}
+          </Glass>
+        )}
+
         <Glass className="p-4 !bg-black/40">
           <div className="text-xs text-white/60 uppercase tracking-wider mb-3 flex items-center gap-1">
             <Image size={12} />Photos & Videos

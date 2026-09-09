@@ -1051,6 +1051,35 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                 </div>
               </div>
             </label>
+            {/* FEATURE — "Alfred should know how each company wants their
+                work order emails written — word limit, tone, branding."
+                Consumed by AlfredPage.tsx's generate_work_order_summary
+                tool (passed into its system prompt context) and by
+                functions/api-side templates if that's ever added later —
+                lives in app_settings.data like every other setting, no
+                migration needed. */}
+            <div className="p-3 rounded-xl border border-purple-700/20 bg-purple-950/10 space-y-2">
+              <div className="text-xs font-semibold text-purple-300 flex items-center gap-1.5"><FileText size={12} />Work Order Email Style (used by Alfred)</div>
+              <div>
+                <label className="text-[10px] text-white/50 mb-1 block">Default subject template</label>
+                <GInput placeholder="Work Order {{number}} Complete" value={(f as any).workOrderEmailTemplate?.subject || ""} onChange={e => setF({ ...f, workOrderEmailTemplate: { ...(f as any).workOrderEmailTemplate, subject: e.target.value } })} className="!text-xs" />
+              </div>
+              <div>
+                <label className="text-[10px] text-white/50 mb-1 block">Tone/style instructions for Alfred</label>
+                <GTxt rows={2} placeholder="e.g. Keep it under 150 words, formal tone, no exclamation points." value={(f as any).workOrderEmailTemplate?.instructions || ""} onChange={e => setF({ ...f, workOrderEmailTemplate: { ...(f as any).workOrderEmailTemplate, instructions: e.target.value } })} className="!text-xs" />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] text-white/50 mb-1 block">Max words</label>
+                  <GInput type="number" min="0" placeholder="e.g. 150" value={(f as any).workOrderEmailTemplate?.maxWords || ""} onChange={e => setF({ ...f, workOrderEmailTemplate: { ...(f as any).workOrderEmailTemplate, maxWords: Number(e.target.value) || undefined } })} className="!text-xs" />
+                </div>
+                <label className="flex items-center gap-2 cursor-pointer mt-4">
+                  <input type="checkbox" checked={(f as any).workOrderEmailTemplate?.includeSignature !== false} onChange={e => setF({ ...f, workOrderEmailTemplate: { ...(f as any).workOrderEmailTemplate, includeSignature: e.target.checked } })} className="accent-purple-600 w-3.5 h-3.5" />
+                  <span className="text-[10px] text-white/60">Include manager signature</span>
+                </label>
+              </div>
+            </div>
+
             <div>
               {/* FIX 13 — the review landing page (#/rate) falls back to a
                   hardcoded "smocks-pressure-washing" Google review link when
