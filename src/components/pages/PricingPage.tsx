@@ -87,7 +87,12 @@ function MobileCompareCard({ planName, planKey, highlighted }: { planName: strin
         <div className="px-4 pb-4 space-y-2 animate-fade-in">
           {COMPARISON_ROWS.map(row => (
             <div key={row.label} className="flex items-center justify-between gap-3 text-xs py-1 border-b border-white/5 last:border-0">
-              <span className="text-white/60">{row.label}</span>
+              {/* BUG FIX (mobile) — no min-w-0 on a flex child lets long
+                  labels ("SMS & email follow-ups (OTW, Running Late,
+                  reviews)") force this row wider than the phone screen
+                  instead of wrapping, cutting the row off / forcing
+                  horizontal scroll on narrow devices. */}
+              <span className="text-white/60 flex-1 min-w-0">{row.label}</span>
               <span className="flex-shrink-0"><CompareCell value={row[planKey]} /></span>
             </div>
           ))}

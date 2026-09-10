@@ -2,12 +2,18 @@
 // clips, trim/reorder/crop/color-grade them on a real visual timeline,
 // auto-detect+strip silence, add styled captions with a live preview, and
 // export a real rendered MP4 — all via ffmpeg.wasm in the browser
-// (src/lib/videoEditor.ts), genuinely free with no per-render cost. An
-// optional "Auto-Edit with AI" button appears only when the owner has
-// configured their own video-API key in Settings (see functions/api/
-// video-autoedit.ts) — kept fully separate from the free path so nothing
-// here silently starts costing money without the owner explicitly opting
-// in with their own account.
+// (src/lib/videoEditor.ts), genuinely free with no per-render cost.
+// FEATURE — "works without an API key, automatically editing and adding
+// captions." Auto-Edit's caption step defaults to the "local" provider
+// (src/lib/localTranscription.ts) — real speech-to-text running entirely
+// on-device via transformers.js, no account/key/server call required. An
+// owner who already has a paid transcription key (OpenAI/Groq/Deepgram) can
+// still pick it from the same dropdown for faster/more accurate results,
+// and a fully separate, opt-in "Auto-Edit with AI" button appears only when
+// the owner has configured their own video-editing API key in Settings (see
+// functions/api/video-autoedit.ts) — kept fully separate from the free path
+// so nothing here silently starts costing money without the owner
+// explicitly opting in with their own account.
 //
 // FEATURE — "make the editor full screen, not just a pop-up... based off
 // of CapCut." Portals straight to document.body as its own fixed
@@ -119,10 +125,15 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
   // just OpenAI's." Defaults to whichever provider the owner already has a
   // key for (OpenAI, then Groq, then Deepgram), but is fully switchable.
   const [transcribing, setTranscribing] = useState(false);
-  const [captionProvider, setCaptionProvider] = useState<CaptionProvider>("openai");
+  // FEATURE — "works without an API key." CAPTION_PROVIDERS lists "local"
+  // (on-device, always available) first, so both this initial state and the
+  // effect below default to it — captions work with zero setup. An owner
+  // who already has a paid transcription key configured still gets that one
+  // pre-selected instead (see the effect), since it's genuinely faster.
+  const [captionProvider, setCaptionProvider] = useState<CaptionProvider>("local");
   useEffect(() => {
     if (!open) return;
-    const withKey = CAPTION_PROVIDERS.find(p => !!p.keyFrom(settings));
+    const withKey = CAPTION_PROVIDERS.find(p => !!p.keyFrom(settings) && p.id !== "local");
     if (withKey) setCaptionProvider(withKey.id);
   }, [open]);
   const getCaptionApiKey = (provider: CaptionProvider): string | undefined => CAPTION_PROVIDERS.find(p => p.id === provider)?.keyFrom(settings);
@@ -655,9 +666,10 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
     const apiKey = getCaptionApiKey(captionProvider);
     if (!apiKey) { toast?.(`Add a ${CAPTION_PROVIDERS.find(p => p.id === captionProvider)?.label} key to use auto-captions (or just type captions manually below — free, no key needed)`, "yellow"); return; }
     setTranscribing(true);
+    setAutoEditPhase("Transcribing…");
     try {
       const audioBlob = await extractAudioForTranscription(activeClip);
-      const segments = await requestTranscription(audioBlob, captionProvider, apiKey);
+      const segments = await requestTranscription(audioBlob, captionProvider, apiKey, msg => setAutoEditPhase(msg));
       if (segments.length === 0) { toast?.("No speech detected in this clip", "yellow"); return; }
       const clipIndex = clips.findIndex(c => c.id === activeClip.id);
       const offsetSec = clips.slice(0, clipIndex).reduce((s, c) => s + Math.max(0, c.endSec - c.startSec), 0);
@@ -670,6 +682,7 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
       toast?.("Auto-captions failed — " + (e?.message || "unknown error"), "red");
     } finally {
       setTranscribing(false);
+      setAutoEditPhase("");
     }
   };
 
@@ -709,7 +722,7 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
           setAutoEditPhase(`Transcribing (${i + 1}/${cutClips.length})…`);
           try {
             const audioBlob = await extractAudioForTranscription(c);
-            const segments = await requestTranscription(audioBlob, captionProvider, apiKey);
+            const segments = await requestTranscription(audioBlob, captionProvider, apiKey, msg => setAutoEditPhase(msg));
             for (const seg of segments) newCaptions.push({ id: uid(), text: seg.text, startSec: offset + seg.start, endSec: offset + seg.end, styleId: autoEditCaptionStyle });
           } catch (e: any) {
             console.warn("[Auto-Edit] transcription failed for a clip, continuing:", e?.message);
@@ -827,7 +840,7 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
 
   if (!open) return null;
 
-  const busy = rendering || autoEditRunning;
+  const busy = rendering || autoEditRunning || transcribing;
   const previewFilterCss = activeClip
     ? `brightness(${1 + (activeClip.brightness || 0) / 100}) contrast(${1 + (activeClip.contrast || 0) / 100}) saturate(${Math.max(0, 1 + (activeClip.saturation || 0) / 100)})`
     : undefined;
@@ -1561,7 +1574,7 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
                     every clip in the timeline (not just the active one). */}
                 <div className="p-3 rounded-xl bg-purple-950/15 border border-purple-700/30 space-y-2.5">
                   <div className="text-xs font-semibold text-purple-300 flex items-center gap-1.5"><Sparkles size={13} />Auto-Edit</div>
-                  <div className="text-[10px] text-white/40">Cuts dead air out of every clip, stitches what's left together, and captions it in one pass — you still get to review and tweak everything after.</div>
+                  <div className="text-[10px] text-white/40">Cuts dead air out of every clip, stitches what's left together, and captions it in one pass — free, runs on this device, no API key needed. You still get to review and tweak everything after.</div>
                   <div className="grid grid-cols-2 gap-1.5">
                     <div>
                       <label className="text-[9px] text-white/40 block mb-1">Captions from</label>

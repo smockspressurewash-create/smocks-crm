@@ -10,6 +10,7 @@ import { FFmpeg } from "@ffmpeg/ffmpeg";
 import { toBlobURL, fetchFile } from "@ffmpeg/util";
 import { getCaptionStyle, getTransition, type CaptionStyle } from "./captionStyles";
 import { uid } from "./utils";
+import { transcribeAudioLocally } from "./localTranscription";
 
 const CORE_VERSION = "0.12.6";
 const CORE_BASE = `https://unpkg.com/@ffmpeg/core@${CORE_VERSION}/dist/esm`;
@@ -292,29 +293,39 @@ export const extractAudioForTranscription = async (clip: EditorClip): Promise<Bl
   return new Blob([data as any], { type: "audio/mpeg" });
 };
 
-// FEATURE — "make it so it uses any API, not just OpenAI's for auto
-// captions." Three real, independently-selectable transcription providers
-// (see functions/api/transcribe-audio.ts for what actually calls each one).
-// OpenAI and Groq reuse whichever key the owner already has set in
-// Settings → AI Models (Groq's Whisper endpoint is genuinely a different
-// vendor/host, not just a relabeled OpenAI call); Deepgram is a fully
-// separate API with its own key, for an owner who doesn't want to depend
-// on OpenAI at all.
-export type CaptionProvider = "openai" | "groq" | "deepgram";
+// FEATURE — "build a video editor that works without an API key,
+// automatically editing and adding captions." "local" runs real speech
+// recognition entirely in the browser (lib/localTranscription.ts, via
+// transformers.js) — no account, no key, no server call, genuinely free
+// regardless of usage, same "free, runs on-device" positioning as ffmpeg.wasm
+// itself. Listed FIRST (and always reports a truthy keyFrom) so it's the
+// provider Auto-Edit picks by default for an owner who hasn't configured any
+// paid transcription key — captions now work out of the box with zero
+// setup. openai/groq/deepgram remain available as opt-in upgrades (an owner
+// who already has one of those keys may prefer its speed/accuracy) — see
+// functions/api/transcribe-audio.ts for what actually calls each of those.
+export type CaptionProvider = "local" | "openai" | "groq" | "deepgram";
 export const CAPTION_PROVIDERS: { id: CaptionProvider; label: string; keyFrom: (settings: any) => string | undefined }[] = [
+  { id: "local", label: "Built-in (free, no API key)", keyFrom: () => "local-whisper" },
   { id: "openai", label: "OpenAI Whisper", keyFrom: (s: any) => s?.modelKeys?.openai },
   { id: "groq", label: "Groq Whisper (fast)", keyFrom: (s: any) => s?.modelKeys?.groq },
   { id: "deepgram", label: "Deepgram", keyFrom: (s: any) => s?.deepgramApiKey },
 ];
 
 // Thin fetcher shared by the per-clip "Auto-Captions" button and the
-// full "Auto-Edit" pipeline below — same proxy endpoint, provider passed
-// through so the server picks the right upstream API.
+// full "Auto-Edit" pipeline below. The "local" provider transcribes
+// on-device and never touches the network at all; every other provider
+// proxies through /api/transcribe-audio with the owner's own key, same as
+// before. onProgress is only ever used by the local path (model download/
+// transcribe phase text) — the network providers are a single request with
+// no meaningful sub-progress to report.
 export const requestTranscription = async (
   audioBlob: Blob,
   provider: CaptionProvider,
-  apiKey: string
+  apiKey: string,
+  onProgress?: (msg: string) => void
 ): Promise<{ text: string; start: number; end: number }[]> => {
+  if (provider === "local") return transcribeAudioLocally(audioBlob, onProgress);
   const form = new FormData();
   form.append("audio", audioBlob, "audio.mp3");
   form.append("apiKey", apiKey);

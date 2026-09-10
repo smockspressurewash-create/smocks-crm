@@ -2,10 +2,15 @@
 // paid." This is the PLATFORM's own billing (CrewBoss charging a signed-up
 // business owner a subscription) — completely separate from stripe-action.ts
 // (that file is per-owner, for THEIR business charging ITS OWN customers).
-// Requires two NEW Cloudflare Pages env vars, distinct from the existing
+// Requires NEW Cloudflare Pages env vars, distinct from the existing
 // STRIPE_SECRET_KEY/STRIPE_PUBLISHABLE_KEY (which stay per-owner):
 //   PLATFORM_STRIPE_SECRET_KEY      — the CrewBoss platform's own Stripe secret key
 //   PLATFORM_STRIPE_WEBHOOK_SECRET  — see platform-billing-webhook.ts
+//   PLATFORM_STRIPE_PUBLISHABLE_KEY — safe to expose client-side (it's a "pk_"
+//     key, not a secret) — enables the embedded, in-app checkout UI
+//     (CheckoutPage.tsx) instead of a full redirect to Stripe's hosted page.
+//     Optional: if unset, create_signup_checkout_session silently falls back
+//     to the original hosted-redirect flow, so nothing breaks without it.
 // Plan prices are defined server-side below (PLANS), matching
 // src/components/pages/LandingPage.tsx's PLANS export — kept as the same
 // numbers, not fetched from Stripe, so pricing-page copy and what's
@@ -81,12 +86,25 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       const interval = body.interval === "year" ? "year" : "month";
       const priceDef = PLANS[plan];
       if (!priceDef) return json({ error: `Unknown plan "${body.plan}".` }, 400);
-      if (!body.successUrl || !body.cancelUrl) return json({ error: "Missing successUrl/cancelUrl." }, 400);
+      // FEATURE — "make the checkout page look like a real payment flow with
+      // a good-looking custom UI." Stripe's `ui_mode: "embedded"` renders the
+      // same PCI-compliant Stripe iframe INSIDE our own branded page
+      // (CheckoutPage.tsx) instead of a full-page redirect to
+      // checkout.stripe.com — no card data ever reaches this app's servers
+      // either way (still well within PCI SAQ-A). Only used when a
+      // publishable key is actually configured; otherwise this silently
+      // behaves exactly as before (hosted redirect via `url`), so it's a
+      // pure additive upgrade, never a breaking change.
+      const publishableKey = context.env.PLATFORM_STRIPE_PUBLISHABLE_KEY;
+      const embedded = body.uiMode === "embedded" && !!publishableKey;
+      if (embedded) {
+        if (!body.returnUrl) return json({ error: "Missing returnUrl." }, 400);
+      } else {
+        if (!body.successUrl || !body.cancelUrl) return json({ error: "Missing successUrl/cancelUrl." }, 400);
+      }
       const amountCents = Math.round((interval === "year" ? priceDef.annual : priceDef.monthly) * 100);
       const params: Record<string, string> = {
         mode: "subscription",
-        success_url: body.successUrl,
-        cancel_url: body.cancelUrl,
         "line_items[0][price_data][currency]": "usd",
         "line_items[0][price_data][product_data][name]": `CrewBoss — ${plan[0].toUpperCase() + plan.slice(1)} (${interval === "year" ? "Annual" : "Monthly"})`,
         "line_items[0][price_data][unit_amount]": String(amountCents),
@@ -96,10 +114,13 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         "metadata[interval]": interval,
         "subscription_data[metadata][plan]": plan,
         "subscription_data[metadata][interval]": interval,
-        // Real card capture happens on Stripe's own hosted page — no card
-        // data ever reaches this app's servers (keeps this well within
-        // PCI SAQ-A, the same reasoning as every other Stripe Checkout use
-        // in this codebase).
+        // Real card capture happens inside Stripe's own iframe/hosted page —
+        // no card data ever reaches this app's servers (keeps this well
+        // within PCI SAQ-A, the same reasoning as every other Stripe
+        // Checkout use in this codebase).
+        ...(embedded
+          ? { ui_mode: "embedded", return_url: body.returnUrl }
+          : { success_url: body.successUrl, cancel_url: body.cancelUrl }),
       };
       // FEATURE — "invite another owner, both sides get a discount." A
       // referred signup's own first-cycle discount is applied HERE, at
@@ -123,7 +144,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         }
       }
       const session = await stripeFetch(platformSecretKey, "POST", "checkout/sessions", params);
-      return json({ url: session.url });
+      return embedded ? json({ clientSecret: session.client_secret, publishableKey }) : json({ url: session.url });
     }
 
     if (action === "verify_signup_session") {

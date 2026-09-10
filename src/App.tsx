@@ -75,6 +75,7 @@ import { OnboardingChecklist } from "./components/ui/OnboardingChecklist";
 import { ProductTour } from "./components/ui/ProductTour";
 import { FeaturesPage } from "./components/pages/FeaturesPage";
 import { PricingPage } from "./components/pages/PricingPage";
+import { CheckoutPage } from "./components/pages/CheckoutPage";
 import { AboutPage } from "./components/pages/AboutPage";
 import { EmployeePortal } from "./components/pages/EmployeePortal";
 import { saveEmpGoogleToken, refreshEmpGoogleToken } from "./lib/googleApi";
@@ -534,6 +535,13 @@ export function App() {
   const [ownerLoginError, setOwnerLoginError] = useState("");
   const [ownerLoginLoading, setOwnerLoginLoading] = useState(false);
   const [ownerLoginMode, setOwnerLoginMode] = useState<"login" | "register">("login");
+  // FEATURE — "improve the sign-up page so it has a polished UI and
+  // transitions, similar to the wizard." Splits registration into two short
+  // steps (business identity, then account credentials) with the same
+  // animated dot-progress/slide-in language as OnboardingFlow.tsx, instead
+  // of dumping four fields on screen at once. Login mode is unaffected —
+  // this only applies while ownerLoginMode === "register".
+  const [registerStep, setRegisterStep] = useState<1 | 2>(1);
   const [ownerCompanyName, setOwnerCompanyName] = useState("");
   const [ownerFullName, setOwnerFullName] = useState("");
 
@@ -638,6 +646,11 @@ export function App() {
     if (hash === "features") return "features";
     if (hash === "pricing") return "pricing";
     if (hash === "about") return "about";
+    // FEATURE — branded, embedded-payment checkout page (CheckoutPage.tsx),
+    // reached from Pricing/Landing's "Get Started" instead of an immediate
+    // redirect to Stripe's hosted page. Carries plan/interval as query params
+    // the same way estimate/rate links carry their own ids.
+    if (hash === "checkout" || hash.startsWith("checkout?")) return "checkout";
     const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","goals","referrals","promotions","trashcans","sops","expenses","reports","analytics","budget","personal","accountability","employees","hiring","fleet","chemicals","google","portal","reset-password","client","referral","rate","welcome","login","features","pricing","about","cockpit","feedback","roadmap"];
     return valid.includes(hash) ? hash : "dashboard";
   });
@@ -977,6 +990,7 @@ export function App() {
       if (hash === "apply" || hash.startsWith("apply?")) { setPage("apply"); return; }
       if (hash === "terms" || hash.startsWith("terms?")) { setPage("terms"); return; }
       if (hash === "privacy" || hash.startsWith("privacy?")) { setPage("privacy"); return; }
+      if (hash === "checkout" || hash.startsWith("checkout?")) { setPage("checkout"); return; }
       if (hash.startsWith("estimate/")) { setPage("estimate"); return; }
       if (hash === "reset-password" || hash.startsWith("reset-password&") || hash.startsWith("reset-password?")) { setPage("reset-password"); return; }
       if (hash === "" || hash === "home") { setPage("welcome"); return; }
@@ -4436,37 +4450,17 @@ export function App() {
       return new URLSearchParams(q).get("ref") || "";
     } catch { return ""; }
   });
-  const startPaidSignup = async (plan: string, interval: "month" | "year") => {
-    setChoosingPlan(true);
-    try {
-      const res = await fetch("/api/platform-billing", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "create_signup_checkout_session",
-          plan, interval,
-          ...(referredByCode ? { referredByCode } : {}),
-          successUrl: `${window.location.origin}${window.location.pathname}#/signup-complete?session_id={CHECKOUT_SESSION_ID}`,
-          cancelUrl: `${window.location.origin}${window.location.pathname}#/pricing`,
-        }),
-      });
-      // BUG FIX — "start free trial / sign up and pay doesn't work." A non-
-      // JSON response (Cloudflare Function crashed, missing env var returned
-      // an HTML error page, etc) made `res.json()` throw a cryptic "Unexpected
-      // token <" that surfaced as-is — not actionable. Parse defensively so a
-      // real error message reaches the user (or at least a clear "server
-      // returned something unexpected" instead of a raw parse exception).
-      const data = await res.json().catch(() => null as any);
-      if (!res.ok || !data?.url) {
-        toast(data?.error || `Couldn't start checkout (server returned ${res.status}) — try again or contact support.`, "red");
-        setChoosingPlan(false);
-        return;
-      }
-      window.location.href = data.url;
-    } catch (e: any) {
-      toast("Couldn't start checkout — " + (e?.message || "unknown error"), "red");
-      setChoosingPlan(false);
-    }
+  // FEATURE — "make the checkout page look like a real payment flow with a
+  // good-looking custom UI." This used to fetch a Stripe Checkout session
+  // and immediately hard-redirect to checkout.stripe.com. Now it just
+  // navigates to the in-app #/checkout page (CheckoutPage.tsx), which does
+  // its own fetch and mounts Stripe's embedded payment form inside our own
+  // branded layout — see that file's header comment. Kept the name
+  // `startPaidSignup` at call sites (LandingPage/PricingPage's onChoosePlan
+  // prop) unchanged to avoid touching their signatures.
+  const startPaidSignup = (plan: string, interval: "month" | "year") => {
+    window.location.hash = `/checkout?plan=${encodeURIComponent(plan.toLowerCase())}&interval=${interval}`;
+    setPage("checkout");
   };
 
   // BUG FIX — "not showing I'm logged in when I go to the landing page" —
@@ -4496,6 +4490,14 @@ export function App() {
   }
   if (page === "pricing" && (marketingPreview || (!empSession && !hasCrmSession))) {
     return <PricingPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} onChoosePlan={startPaidSignup} choosingPlan={choosingPlan} isLoggedIn={hasCrmSession} onGoToDashboard={goToDashboardFromMarketing} onRoadmap={goToRoadmap} />;
+  }
+  if (page === "checkout" && (marketingPreview || (!empSession && !hasCrmSession))) {
+    const hash = window.location.hash;
+    const q = hash.includes("?") ? hash.slice(hash.indexOf("?") + 1) : "";
+    const cp = new URLSearchParams(q);
+    const chosenPlan = cp.get("plan") || "crew";
+    const chosenInterval: "month" | "year" = cp.get("interval") === "year" ? "year" : "month";
+    return <CheckoutPage plan={chosenPlan} interval={chosenInterval} referredByCode={referredByCode} onBack={() => navigateMarketing("pricing")} />;
   }
   if (page === "about" && (marketingPreview || (!empSession && !hasCrmSession))) {
     return <AboutPage onGetStarted={() => navigateMarketing("login")} onNavigate={navigateMarketing} isLoggedIn={hasCrmSession} onGoToDashboard={goToDashboardFromMarketing} onRoadmap={goToRoadmap} />;
@@ -4895,76 +4897,115 @@ export function App() {
           )}
 
           <div className="w-full space-y-3">
-            {/* Email/password owner login */}
-            <div className="space-y-2.5">
-              {ownerLoginMode === "register" && (
-                <>
-                  <div>
-                    <label className="text-xs text-white/50 mb-1 block">Full Name</label>
-                    <input
-                      type="text" value={ownerFullName} onChange={e => setOwnerFullName(e.target.value)}
-                      placeholder="Will Smock"
-                      className="w-full bg-white/5 border border-white/20 rounded-xl px-4 py-3.5 text-base text-white placeholder-white/30 focus:outline-none focus:border-red-500/50"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-white/50 mb-1 block">Company Name</label>
-                    <input
-                      type="text" value={ownerCompanyName} onChange={e => setOwnerCompanyName(e.target.value)}
-                      placeholder="Crew Boss"
-                      className="w-full bg-white/5 border border-white/20 rounded-xl px-4 py-3.5 text-base text-white placeholder-white/30 focus:outline-none focus:border-red-500/50"
-                    />
-                  </div>
-                </>
-              )}
-              <div>
-                <label className="text-xs text-white/50 mb-1 block">Email</label>
-                <input
-                  type="email" inputMode="email" autoCapitalize="none" autoCorrect="off" value={ownerEmail} onChange={e => setOwnerEmail(e.target.value)}
-                  onKeyDown={e => e.key === "Enter" && handleOwnerLogin()}
-                  placeholder="owner@example.com"
-                  className="w-full bg-white/5 border border-white/20 rounded-xl px-4 py-3.5 text-base text-white placeholder-white/30 focus:outline-none focus:border-red-500/50"
-                />
+            <style>{`
+              @keyframes auth-step-in { 0% { opacity: 0; transform: translateX(10px); } 100% { opacity: 1; transform: translateX(0); } }
+              .auth-step { animation: auth-step-in 0.3s cubic-bezier(0.16,1,0.3,1); }
+            `}</style>
+
+            {/* UI POLISH — "improve the sign-up page so it has a polished UI
+                and transitions, similar to the wizard." Two short steps
+                (business identity, then account credentials) instead of four
+                fields at once, with the same dot-progress language as
+                OnboardingFlow.tsx's post-signup wizard. */}
+            {ownerLoginMode === "register" && (
+              <div className="flex items-center justify-center gap-1.5 pb-1">
+                {[1, 2].map(n => (
+                  <div key={n} className={"h-1.5 rounded-full transition-all duration-300 " + (n === registerStep ? "w-8 bg-red-500" : n < registerStep ? "w-4 bg-green-600" : "w-4 bg-white/15")} />
+                ))}
               </div>
-              <div>
-                <label className="text-xs text-white/50 mb-1 block">Password</label>
-                <div className="relative">
+            )}
+
+            {ownerLoginMode === "register" && registerStep === 1 && (
+              <div key="reg-step1" className="auth-step space-y-2.5">
+                <div>
+                  <label className="text-xs text-white/50 mb-1 block">Full Name</label>
                   <input
-                    type={showOwnerPassword ? "text" : "password"} value={ownerPassword} onChange={e => setOwnerPassword(e.target.value)}
-                    onKeyDown={e => e.key === "Enter" && handleOwnerLogin()}
-                    placeholder="••••••••"
-                    className="w-full bg-white/5 border border-white/20 rounded-xl px-4 py-3.5 pr-12 text-base text-white placeholder-white/30 focus:outline-none focus:border-red-500/50"
+                    type="text" value={ownerFullName} onChange={e => setOwnerFullName(e.target.value)}
+                    onKeyDown={e => e.key === "Enter" && setRegisterStep(2)}
+                    placeholder="Will Smock"
+                    className="w-full bg-white/5 border border-white/20 rounded-xl px-4 py-3.5 text-base text-white placeholder-white/30 focus:outline-none focus:border-red-500/50"
                   />
-                  <button
-                    type="button"
-                    onClick={() => setShowOwnerPassword(s => !s)}
-                    aria-label={showOwnerPassword ? "Hide password" : "Show password"}
-                    className="absolute right-1 top-1/2 -translate-y-1/2 w-11 h-11 flex items-center justify-center text-white/40 hover:text-white/80"
-                  >
-                    {showOwnerPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-                  </button>
                 </div>
-              </div>
-              {ownerLoginMode === "login" && (
+                <div>
+                  <label className="text-xs text-white/50 mb-1 block">Company Name</label>
+                  <input
+                    type="text" value={ownerCompanyName} onChange={e => setOwnerCompanyName(e.target.value)}
+                    onKeyDown={e => e.key === "Enter" && setRegisterStep(2)}
+                    placeholder="Crew Boss"
+                    className="w-full bg-white/5 border border-white/20 rounded-xl px-4 py-3.5 text-base text-white placeholder-white/30 focus:outline-none focus:border-red-500/50"
+                  />
+                </div>
                 <button
                   type="button"
-                  onClick={handleForgotPassword}
-                  className="text-right w-full text-sm text-white/40 hover:text-white/70 transition py-1 -mt-1"
+                  onClick={() => setRegisterStep(2)}
+                  className="w-full min-h-[52px] py-4 rounded-2xl bg-gradient-to-r from-red-600 to-red-800 text-white font-semibold text-base hover:from-red-500 hover:to-red-700 active:scale-95 transition-all"
                 >
-                  Forgot password?
+                  Continue
                 </button>
-              )}
-              {ownerLoginError && (
-                <div className="p-3 bg-red-950/40 border border-red-700/40 rounded-xl text-sm text-red-300">{ownerLoginError}</div>
-              )}
-              <button
-                onClick={handleOwnerLogin}
-                disabled={ownerLoginLoading || (ownerLoginMode === "register" && pendingCheckoutSession?.status === "verifying")}
-                className="w-full min-h-[52px] py-4 rounded-2xl bg-gradient-to-r from-red-600 to-red-800 text-white font-semibold text-base hover:from-red-500 hover:to-red-700 active:scale-95 transition-all disabled:opacity-50"
-              >
-                {ownerLoginLoading ? "Please wait…" : ownerLoginMode === "login" ? "Sign In" : "Create Owner Account"}
-              </button>
-            </div>
+              </div>
+            )}
+
+            {/* Email/password owner login */}
+            {(ownerLoginMode === "login" || registerStep === 2) && (
+              <div key={ownerLoginMode === "register" ? "reg-step2" : "login-step"} className="auth-step space-y-2.5">
+                {ownerLoginMode === "register" && (
+                  <button
+                    type="button"
+                    onClick={() => setRegisterStep(1)}
+                    className="flex items-center gap-1 text-xs text-white/40 hover:text-white/70 transition -mt-0.5 mb-0.5"
+                  >
+                    <ChevronLeft size={13} /> Back
+                  </button>
+                )}
+                <div>
+                  <label className="text-xs text-white/50 mb-1 block">Email</label>
+                  <input
+                    type="email" inputMode="email" autoCapitalize="none" autoCorrect="off" value={ownerEmail} onChange={e => setOwnerEmail(e.target.value)}
+                    onKeyDown={e => e.key === "Enter" && handleOwnerLogin()}
+                    placeholder="owner@example.com"
+                    className="w-full bg-white/5 border border-white/20 rounded-xl px-4 py-3.5 text-base text-white placeholder-white/30 focus:outline-none focus:border-red-500/50"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-white/50 mb-1 block">Password</label>
+                  <div className="relative">
+                    <input
+                      type={showOwnerPassword ? "text" : "password"} value={ownerPassword} onChange={e => setOwnerPassword(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && handleOwnerLogin()}
+                      placeholder="••••••••"
+                      className="w-full bg-white/5 border border-white/20 rounded-xl px-4 py-3.5 pr-12 text-base text-white placeholder-white/30 focus:outline-none focus:border-red-500/50"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowOwnerPassword(s => !s)}
+                      aria-label={showOwnerPassword ? "Hide password" : "Show password"}
+                      className="absolute right-1 top-1/2 -translate-y-1/2 w-11 h-11 flex items-center justify-center text-white/40 hover:text-white/80"
+                    >
+                      {showOwnerPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                    </button>
+                  </div>
+                </div>
+                {ownerLoginMode === "login" && (
+                  <button
+                    type="button"
+                    onClick={handleForgotPassword}
+                    className="text-right w-full text-sm text-white/40 hover:text-white/70 transition py-1 -mt-1"
+                  >
+                    Forgot password?
+                  </button>
+                )}
+                {ownerLoginError && (
+                  <div className="p-3 bg-red-950/40 border border-red-700/40 rounded-xl text-sm text-red-300">{ownerLoginError}</div>
+                )}
+                <button
+                  onClick={handleOwnerLogin}
+                  disabled={ownerLoginLoading || (ownerLoginMode === "register" && pendingCheckoutSession?.status === "verifying")}
+                  className="w-full min-h-[52px] py-4 rounded-2xl bg-gradient-to-r from-red-600 to-red-800 text-white font-semibold text-base hover:from-red-500 hover:to-red-700 active:scale-95 transition-all disabled:opacity-50"
+                >
+                  {ownerLoginLoading ? "Please wait…" : ownerLoginMode === "login" ? "Sign In" : "Create Owner Account"}
+                </button>
+              </div>
+            )}
 
             <div className="flex items-center gap-3">
               <div className="flex-1 h-px bg-white/10" />
@@ -4982,7 +5023,7 @@ export function App() {
             </button>
 
             <button
-              onClick={() => { setOwnerLoginMode(m => m === "login" ? "register" : "login"); setOwnerLoginError(""); }}
+              onClick={() => { setOwnerLoginMode(m => m === "login" ? "register" : "login"); setOwnerLoginError(""); setRegisterStep(1); }}
               className="w-full min-h-[44px] text-center text-sm text-white/40 hover:text-white/70 transition py-2"
             >
               {ownerLoginMode === "login" ? "Create account" : "← Back to sign in"}
