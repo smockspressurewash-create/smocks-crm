@@ -933,6 +933,15 @@ const TOOLS = [
     },
   },
   {
+    name: "forget",
+    description: "Remove a previously saved memory — use when the owner says 'forget that' or a remembered fact is wrong/outdated.",
+    input_schema: {
+      type: "object",
+      properties: { fact: { type: "string", description: "The exact or approximate text of the memory to remove" } },
+      required: ["fact"],
+    },
+  },
+  {
     name: "enable_review_request_automation",
     description: "Turn on automatically texting customers a review-request link a couple days after their job is marked complete — a normal rule-based automation (no AI involved in the actual sends, so no ongoing API usage), not something Alfred has to remember to do manually each time. Use for 'automatically send review requests after jobs are done' / 'ask customers for reviews after we finish'.",
     input_schema: { type: "object", properties: {} },
@@ -2066,10 +2075,33 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
       }
       case "remember": {
         if (!input.fact) return { error: "fact required" };
+        // BUG FIX (memory-system audit, shared with the in-app chat's
+        // remember_fact) — no duplicate check meant asking twice (or the
+        // owner naturally restating something across separate texts)
+        // created two identical rows, both injected into every future
+        // conversation's system prompt on both channels (this table is
+        // shared — see runAlfredSmsAgent's crossChannelBlock).
+        const existing = await sbGet(ctx, `alfred_memory?select=id,text${ownerScope(ctx)}&limit=500`);
+        if (existing.some((m: any) => (m.text || "").toLowerCase() === String(input.fact).toLowerCase())) {
+          return { success: true, note: "Already remembered — didn't duplicate it." };
+        }
         const row = { id: crypto.randomUUID(), text: input.fact, category: input.category || "general" };
         const res = await sbWrite(ctx, "alfred_memory", "POST", row);
         if (!res.ok) return { error: res.error };
         return { success: true, remembered: input.fact };
+      }
+      case "forget": {
+        // FEATURE (memory-system audit) — symmetry with remember: "forget
+        // that" over text now works, same as the in-app chat's forget_fact.
+        if (!input.fact) return { error: "fact required — the exact or approximate text to forget" };
+        const q = String(input.fact).toLowerCase();
+        const rows = await sbGet(ctx, `alfred_memory?select=id,text${ownerScope(ctx)}&limit=500`);
+        const match = rows.find((m: any) => (m.text || "").toLowerCase() === q || (m.text || "").toLowerCase().includes(q));
+        if (!match) return { error: "Couldn't find a memory matching that — try recall first to see the exact wording." };
+        // sbWrite is POST/PATCH-only (no delete verb) — issue the delete directly.
+        const delRes = await fetch(`${SUPABASE_URL}/rest/v1/alfred_memory?id=eq.${encodeURIComponent(match.id)}`, { method: "DELETE", headers: ctx.authHeaders });
+        if (!delRes.ok) return { error: "Failed to delete that memory." };
+        return { success: true, forgot: match.text };
       }
       case "recall": {
         const rows = await sbGet(ctx, `alfred_memory?select=text,category,created_at${ownerScope(ctx)}&order=created_at.desc&limit=100`);

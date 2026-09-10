@@ -2657,10 +2657,37 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         }
         case "remember_fact": {
           if (!inputs.fact) return { error: "fact required" };
+          // BUG FIX (memory-system audit) — no duplicate check meant asking
+          // Alfred to remember the same thing twice (a common way people
+          // actually talk — restating something for emphasis, or across
+          // separate conversations) created two identical rows, both
+          // injected into every future prompt.
+          if (memory.some((m: any) => m.text.toLowerCase() === String(inputs.fact).toLowerCase())) {
+            return { success: true, note: "Already remembered — didn't duplicate it." };
+          }
           const newMem = { id: uid(), text: inputs.fact, category: inputs.category || "general", createdAt: today() };
           setMemory(prev => [...prev, newMem]);
           toast("Alfred remembered something");
           return { success: true, remembered: inputs.fact };
+        }
+        // FEATURE (memory-system audit) — symmetry with remember_fact: the
+        // owner could only remove a bad/outdated memory through the manual
+        // Memory management UI before; "Alfred, forget that" now works too.
+        case "forget_fact": {
+          if (!inputs.fact) return { error: "fact required — the exact or approximate text to forget" };
+          const q = String(inputs.fact).toLowerCase();
+          const match = memory.find((m: any) => m.text.toLowerCase() === q || m.text.toLowerCase().includes(q));
+          if (!match) return { error: "Couldn't find a memory matching that — try recall_facts first to see the exact wording." };
+          setMemory((prev: any[]) => prev.filter((m: any) => m.id !== match.id));
+          (supabase as any).from("alfred_memory").delete().eq("id", match.id).then((r: any) => { if (r?.error) console.warn("[Alfred Memory] forget_fact delete failed:", r.error.message); });
+          toast("Alfred forgot: " + match.text.slice(0, 60));
+          return { success: true, forgot: match.text };
+        }
+        case "recall_facts": {
+          const q = (inputs.search || "").toLowerCase().trim();
+          const filtered = q ? memory.filter((m: any) => m.text.toLowerCase().includes(q) || (m.category || "").toLowerCase().includes(q)) : memory;
+          if (filtered.length === 0) return { success: true, memories: [], summary: q ? `Nothing saved matching "${inputs.search}".` : "Nothing saved yet." };
+          return { success: true, count: filtered.length, memories: filtered.slice(0, 30).map((m: any) => ({ text: m.text, category: m.category })) };
         }
         case "set_vacation_mode": {
           if (inputs.active === false) {
@@ -3399,8 +3426,18 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     },
     {
       name: "remember_fact",
-      description: "Save an important fact to long-term memory. Use when the user shares preferences, business info, or wants something remembered. Categories: preferences, business, facts, goals.",
+      description: "Save an important fact to long-term memory — a real standing preference, recurring business rule, or fact worth knowing in every future conversation (e.g. 'always give repeat customers 10% off', 'my slow season is January-February'). Every saved memory gets shown to you at the start of every future conversation, so ONLY save things that should genuinely apply going forward — never a one-off request, a passing remark, or something that's only true for right now ('I don't have time today' is not a fact to remember; 'I'm always slammed on Mondays, don't schedule big jobs then' is).",
       input_schema: { type: "object", properties: { fact: { type: "string" }, category: { type: "string", enum: ["preferences", "business", "facts", "goals", "general"] } }, required: ["fact"] }
+    },
+    {
+      name: "forget_fact",
+      description: "Remove a previously saved memory — use when the user says something like 'forget that' or a remembered fact is wrong/outdated.",
+      input_schema: { type: "object", properties: { fact: { type: "string", description: "The exact or approximate text of the memory to remove" } }, required: ["fact"] }
+    },
+    {
+      name: "recall_facts",
+      description: "List saved memories, optionally filtered by a search term — use for 'what do you remember about X' or 'what have I told you to remember'.",
+      input_schema: { type: "object", properties: { search: { type: "string" } } }
     },
     {
       name: "set_vacation_mode",
@@ -4048,7 +4085,10 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         }
       }
 
-      // Self-learning: auto-extract memory from patterns
+      // Explicit, user-signaled memory shortcut — the ONLY text-pattern
+      // auto-save left. The user must deliberately start a message with
+      // "remember"/"note that"/"don't forget", so this can't misfire on
+      // ordinary conversation the way the removed heuristic below did.
       if (/^(remember (that |this:? ?)?|note that |don'?t forget )/i.test(text)) {
         const fact = text.replace(/^(remember (that |this:? ?)?|note that |don'?t forget )/i, "").trim();
         if (fact && !memory.some(m => m.text.toLowerCase() === fact.toLowerCase())) {
@@ -4056,22 +4096,23 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           toast("Saved to memory");
         }
       }
-      // Extra self-learning — learn from preference patterns
-      const prefPatterns = [
-        { re: /i (prefer|like|want|need) (.+)/i, cat: "preferences" },
-        { re: /my (favorite|go-?to) (.+) is (.+)/i, cat: "preferences" },
-        { re: /i (never|don'?t|can'?t) (.+)/i, cat: "preferences" },
-        { re: /(charge|price|rate|quote) (.+) for (.+)/i, cat: "business" }
-      ];
-      for (const p of prefPatterns) {
-        if (p.re.test(text) && text.length < 200) {
-          const lower = text.toLowerCase();
-          if (!memory.some(m => m.text.toLowerCase() === lower)) {
-            setMemory(m => [...m, { id: uid(), text: text, category: p.cat, createdAt: today(), autoLearned: true }]);
-          }
-          break;
-        }
-      }
+      // REMOVED — "the memory system randomly adds random stuff." This
+      // block auto-saved ANY message matching broad patterns like
+      // /i (never|don'?t|can'?t) (.+)/ or /i (prefer|like|want|need) (.+)/
+      // as a permanent memory — which matches enormous swaths of completely
+      // ordinary conversation ("I don't know", "I can't find that
+      // customer", "I want to schedule a job Tuesday") with no way to tell
+      // a genuine standing preference apart from a one-off sentence. Every
+      // stored memory (see memoryContext below) gets injected verbatim into
+      // EVERY future conversation's system prompt, so this was silently
+      // polluting Alfred's context on every single message going forward —
+      // exactly "random stuff" appearing in memory. Replaced with real
+      // remember/recall/set_standing_preference TOOLS (see executeTool and
+      // the tool definitions below) — the model decides, using actual
+      // judgment about what the owner actually wants remembered, the same
+      // pattern alfredSmsAgent.ts (the SMS channel) already used correctly.
+      // A one-time cleanup effect (below, on mount) removes the bad
+      // `autoLearned: true` rows this block already created.
     } catch (err) {
       appendMessage({ id: uid(), role: "alfred", content: "⚠️ " + (err.message || "Connection failed") + "\n\nSlash commands still work without a connection. Try /help.", timestamp: Date.now() });
     } finally {

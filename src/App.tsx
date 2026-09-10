@@ -1741,10 +1741,23 @@ export function App() {
                 }
               } catch { /* fall through to the notification below */ }
             }
+            // BUG FIX — "settings payload is 4KB; a large embedded image is
+            // the most likely cause" is actively misleading on a small
+            // payload — it blames something that plainly isn't true and
+            // gives the owner nowhere useful to look. This already retried
+            // ONCE at 30s before even reaching here, so a small payload
+            // still failing twice points at something else: a genuinely
+            // dropped connection, or two tabs/devices saving at the same
+            // moment and lock-contending on the same app_settings row (the
+            // upsert briefly waits on the other write to finish). Large-
+            // payload wording only fires when the payload is actually large.
+            const LARGE_PAYLOAD_KB = 50;
             const hint = isSchemaErr
               ? " — run supabase/migrations/0011_owner_settings_and_alfred_schema_fixes.sql in the Supabase SQL editor"
-              : isTimeout
+              : isTimeout && sizeKb >= LARGE_PAYLOAD_KB
               ? ` — settings payload is ${sizeKb}KB; a slow/unstable connection or a large embedded image (logo, template photo) is the most likely cause, not your Supabase account. Will retry automatically on the next change.`
+              : isTimeout
+              ? ` — payload is only ${sizeKb}KB, so size isn't the cause; most likely a dropped connection, or another tab/device saving settings at the same moment. Will retry automatically on the next change.`
               : " — if this keeps happening, check your Supabase project isn't paused or over its usage quota (Supabase dashboard → Usage)";
             console.warn("[Settings Sync] error:", firstErr?.message + hint, `(payload ${sizeKb}KB)`);
             toast("Settings saved to this device but not to the server — " + (firstErr?.message || "check connection") + hint, "red");
