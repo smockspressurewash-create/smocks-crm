@@ -589,8 +589,11 @@ export function LandingPage({
             deal and the whole point of adding it was to surface the
             discount, not bury it behind a monthly-first default. */}
         <div className="flex items-center justify-center gap-3 mb-10">
-          <button onClick={() => setBilling("monthly")} className={"px-4 py-2 rounded-xl text-sm font-semibold transition " + (billing === "monthly" ? "bg-white/10 text-white" : "text-white/40 hover:text-white/70")}>Monthly</button>
-          <button onClick={() => setBilling("annual")} className={"px-4 py-2 rounded-xl text-sm font-semibold transition flex items-center gap-2 " + (billing === "annual" ? "bg-white/10 text-white" : "text-white/40 hover:text-white/70")}>
+          {/* BUG FIX (mobile audit) — py-2 gave a ~36px-tall control, under
+              the ~44px touch-target guideline every other CTA on this page
+              already follows. */}
+          <button onClick={() => setBilling("monthly")} className={"px-4 py-3 rounded-xl text-sm font-semibold transition " + (billing === "monthly" ? "bg-white/10 text-white" : "text-white/40 hover:text-white/70")}>Monthly</button>
+          <button onClick={() => setBilling("annual")} className={"px-4 py-3 rounded-xl text-sm font-semibold transition flex items-center gap-2 " + (billing === "annual" ? "bg-white/10 text-white" : "text-white/40 hover:text-white/70")}>
             Annual
             <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-green-900/40 border border-green-600/40 text-green-300 font-bold">Save 20%</span>
           </button>

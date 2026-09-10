@@ -454,7 +454,9 @@ export function MarketingNav({
           )}
         </nav>
 
-        <button className="md:hidden p-2 -mr-2 text-white/80" onClick={() => setNavOpen(o => !o)} aria-label="Toggle menu">
+        {/* BUG FIX (mobile audit) — p-2 around a 22px icon is a ~38px tap
+            target, under the ~44px guideline. */}
+        <button className="md:hidden p-3 -mr-2 text-white/80" onClick={() => setNavOpen(o => !o)} aria-label="Toggle menu">
           {navOpen ? <X size={22} /> : <Menu size={22} />}
         </button>
       </div>
@@ -512,13 +514,17 @@ export function MarketingFooter({
             <span className="font-black text-lg tracking-tight text-white/80">Crew<span className="text-red-500">Boss</span></span>
           </button>
 
-          <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-xs text-white/40">
-            <button onClick={() => onNavigate("features")} className="hover:text-white/70 transition-colors">Features</button>
-            <button onClick={() => onNavigate("pricing")} className="hover:text-white/70 transition-colors">Pricing</button>
-            <button onClick={() => onNavigate("about")} className="hover:text-white/70 transition-colors">About</button>
-            <a href="#/terms" className="hover:text-white/70 transition-colors">Terms</a>
-            <a href="#/privacy" className="hover:text-white/70 transition-colors">Privacy</a>
-            <button onClick={onGetStarted} className="hover:text-white/70 transition-colors">Log In</button>
+          {/* BUG FIX (mobile audit) — bare text links with no vertical
+              padding had an effective tap target of just the text's own
+              line-height, well under the ~44px guideline. py-2 pads the tap
+              area without changing how the text looks. */}
+          <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-1 text-xs text-white/40">
+            <button onClick={() => onNavigate("features")} className="py-2 hover:text-white/70 transition-colors">Features</button>
+            <button onClick={() => onNavigate("pricing")} className="py-2 hover:text-white/70 transition-colors">Pricing</button>
+            <button onClick={() => onNavigate("about")} className="py-2 hover:text-white/70 transition-colors">About</button>
+            <a href="#/terms" className="py-2 hover:text-white/70 transition-colors">Terms</a>
+            <a href="#/privacy" className="py-2 hover:text-white/70 transition-colors">Privacy</a>
+            <button onClick={onGetStarted} className="py-2 hover:text-white/70 transition-colors">Log In</button>
           </div>
 
           <div className="text-[11px] text-white/25">

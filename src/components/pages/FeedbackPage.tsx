@@ -118,13 +118,19 @@ export function FeedbackPage({ userEmail, userName, isAdmin, toast, publicMode =
     // Optimistic
     setVotes(prev => ({ ...prev, [itemId]: { total: (prev[itemId]?.total || 0) - current + next, mine: next } }));
     try {
-      if (next === 0) {
-        await (supabase as any).from("feedback_votes").delete().eq("feedback_id", itemId).eq("voter_id", myUid);
-      } else {
-        await (supabase as any).from("feedback_votes").upsert({ feedback_id: itemId, voter_id: myUid, value: next }, { onConflict: "feedback_id,voter_id" });
-      }
+      // BUG FIX — "voting doesn't work." Neither branch ever checked the
+      // write's own {error} — a failed delete/upsert (RLS rejection, a
+      // dropped connection that resolves rather than throws) left the
+      // optimistic UI update in place looking like the vote landed, while
+      // nothing was actually saved server-side. Silent until the next load
+      // reverted it with no explanation, which is exactly what "doesn't
+      // work" looks like from the outside.
+      const result = next === 0
+        ? await (supabase as any).from("feedback_votes").delete().eq("feedback_id", itemId).eq("voter_id", myUid).select("feedback_id")
+        : await (supabase as any).from("feedback_votes").upsert({ feedback_id: itemId, voter_id: myUid, value: next }, { onConflict: "feedback_id,voter_id" }).select("feedback_id");
+      if (result?.error) throw new Error(result.error.message);
     } catch (e: any) {
-      toast?.("Vote failed to save — " + (e?.message || ""), "red");
+      toast?.("Vote failed to save — " + (e?.message || "unknown error"), "red");
       load();
     }
   };
