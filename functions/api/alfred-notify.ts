@@ -161,12 +161,20 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     };
     if (!message || !message.trim()) return json({ error: "Missing message" }, 400);
 
-    // 1. Authenticated owner session (App.tsx check-in/briefing effects).
+    // 1. Authenticated owner session (App.tsx check-in/briefing/goal-tracking
+    // effects — all four now attach the caller's own session token).
     const accessToken = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
     let ownerId: string | null = accessToken ? await resolveCallerOwnerId(accessToken) : null;
-    // 1b. Fallback for the same owner-authenticated callers when no token was
-    // sent — see comment above.
-    if (!ownerId && bodyOwnerId) ownerId = bodyOwnerId;
+    // SECURITY FIX (audit finding) — this used to fall back to a bare
+    // client-supplied ownerId with NO verification at all whenever no
+    // (or an invalid) token was sent, letting anyone who knew/guessed a
+    // business's owner_id inject fake "Alfred" notifications into that
+    // business's trusted in-app feed — pure spoofing/phishing surface, no
+    // login required. Every real caller now sends a real session token
+    // (see App.tsx) or resolves ownerId from an estimateId/jobId/customerId
+    // it's already legitimately acting on (path 2/3 below) — bodyOwnerId is
+    // no longer trusted on its own for anything (kept in the destructure
+    // above only so an old cached client sending it doesn't 400).
 
     // 2. Unauthenticated customer-facing pages — resolve via the row they're
     // already legitimately acting on (see resolveOwnerIdFromRow above).

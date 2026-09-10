@@ -478,16 +478,22 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
       // functions/api/employee-calendar-sync.ts. Fire-and-forget: a sync
       // failure (not connected, token expired) must never block the actual
       // crew assignment, which already succeeded above.
-      fetch("/api/employee-calendar-sync", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          employeeId: eid, ownerId, jobId, action: adding ? "upsert" : "delete",
-          title: (customers.find(x => x.id === job.customerId)?.firstName ? customers.find(x => x.id === job.customerId).firstName + " " + customers.find(x => x.id === job.customerId).lastName + " — " : "") + "Pressure Washing",
-          date: job.scheduledDate, time: job.scheduledTime, durationMinutes: (Number(job.duration) || 2) * 60,
-          location: job.address,
-          notes: buildJobCalendarDescription(job, customers.find(x => x.id === job.customerId), `${window.location.origin}${window.location.pathname}#/portal?job=${encodeURIComponent(job.id)}`, "View job in Crew Portal"),
-        }),
-      }).catch(() => {});
+      // SECURITY FIX (audit finding) — employee-calendar-sync.ts now requires
+      // a real session and derives ownerId from it server-side, never from
+      // the request body — attach the caller's own token here.
+      (async () => {
+        const { data: { session: syncSession } } = await supabase.auth.getSession();
+        return fetch("/api/employee-calendar-sync", {
+          method: "POST", headers: { "Content-Type": "application/json", ...(syncSession?.access_token ? { Authorization: `Bearer ${syncSession.access_token}` } : {}) },
+          body: JSON.stringify({
+            employeeId: eid, jobId, action: adding ? "upsert" : "delete",
+            title: (customers.find(x => x.id === job.customerId)?.firstName ? customers.find(x => x.id === job.customerId).firstName + " " + customers.find(x => x.id === job.customerId).lastName + " — " : "") + "Pressure Washing",
+            date: job.scheduledDate, time: job.scheduledTime, durationMinutes: (Number(job.duration) || 2) * 60,
+            location: job.address,
+            notes: buildJobCalendarDescription(job, customers.find(x => x.id === job.customerId), `${window.location.origin}${window.location.pathname}#/portal?job=${encodeURIComponent(job.id)}`, "View job in Crew Portal"),
+          }),
+        });
+      })().catch(() => {});
       if (adding) {
         // reconcileCrewAfterAssign — `newCrew` was computed from this
         // modal's own possibly-stale `job.crew` prop. If an employee accepted

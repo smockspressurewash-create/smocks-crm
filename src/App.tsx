@@ -2120,18 +2120,18 @@ export function App() {
     toRemind.forEach((g: any) => {
       const msg = `You're at ${g.pct}% of your goal "${g.text}" — almost there! 🔥`;
       toast?.(`🤖 ${msg}`, "yellow");
-      fetch("/api/alfred-notify", {
-        method: "POST", headers: { "Content-Type": "application/json" },
+      supabase.auth.getSession().then(({ data: { session } }) => fetch("/api/alfred-notify", {
+        method: "POST", headers: { "Content-Type": "application/json", ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
         body: JSON.stringify({ title: "Alfred Notifications", message: msg, ownerId: crmUserId }),
-      }).catch((e: any) => console.warn("[GoalTracking] near-goal alfred-notify threw:", e?.message));
+      })).catch((e: any) => console.warn("[GoalTracking] near-goal alfred-notify threw:", e?.message));
     });
     toCelebrate.forEach((g: any) => {
       const msg = `🎉 Goal hit! You reached "${g.text}"${g.hasReward || g.rewardAmount || g.rewardDescription ? ` — reward unlocked: ${g.rewardDescription || (g.rewardAmount ? "$" + g.rewardAmount : "")}` : ""}. Nice work!`;
       toast?.(msg, "green");
-      fetch("/api/alfred-notify", {
-        method: "POST", headers: { "Content-Type": "application/json" },
+      supabase.auth.getSession().then(({ data: { session } }) => fetch("/api/alfred-notify", {
+        method: "POST", headers: { "Content-Type": "application/json", ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
         body: JSON.stringify({ title: "Alfred Notifications", message: msg, ownerId: crmUserId }),
-      }).catch((e: any) => console.warn("[GoalTracking] goal-hit alfred-notify threw:", e?.message));
+      })).catch((e: any) => console.warn("[GoalTracking] goal-hit alfred-notify threw:", e?.message));
       const ownerEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail || crmUserEmail;
       if (ownerEmail) {
         const html = emailShell(settings as any, "Goal Reached! 🎉", `<p>${msg}</p>` + emailButton("View Goals", `${window.location.origin}${window.location.pathname}#/goals`));
@@ -2508,12 +2508,12 @@ export function App() {
       ].filter(Boolean);
       const msg = lines.join("\n");
       console.log("[AlfredCheckin] firing check-in", countToday + 1, "of 3 for", todayStr);
-      fetch("/api/alfred-notify", {
+      supabase.auth.getSession().then(({ data: { session } }) => fetch("/api/alfred-notify", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
         body: JSON.stringify({ title: "Alfred Notifications", message: msg, ownerId: crmUserId }),
       })
-        .then(r => { if (!r.ok) console.warn("[AlfredCheckin] alfred-notify failed:", r.status); })
+        .then(r => { if (!r.ok) console.warn("[AlfredCheckin] alfred-notify failed:", r.status); }))
         .catch((e: any) => console.warn("[AlfredCheckin] alfred-notify threw:", e?.message));
       setSettings?.((prev: any) => ({ ...prev, alfredCheckinDate: todayStr, alfredCheckinsToday: countToday + 1, alfredLastCheckinAt: Date.now() }));
       toast?.("🤖 Alfred checked in — see Alfred Notifications", "green");
@@ -2577,12 +2577,12 @@ export function App() {
       // problem the check-in effect above already got fixed for (see its own
       // comment) — route through the same persistent "Alfred Notifications"
       // thread (functions/api/alfred-notify.ts) instead of setAlfredConversations.
-      fetch("/api/alfred-notify", {
+      supabase.auth.getSession().then(({ data: { session } }) => fetch("/api/alfred-notify", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
         body: JSON.stringify({ title: "Alfred Notifications", message: briefing, ownerId: crmUserId }),
       })
-        .then(r => { if (!r.ok) console.warn("[AlfredBriefing] alfred-notify failed:", r.status); })
+        .then(r => { if (!r.ok) console.warn("[AlfredBriefing] alfred-notify failed:", r.status); }))
         .catch((e: any) => console.warn("[AlfredBriefing] alfred-notify threw:", e?.message));
       // FEATURE — "proactive daily check-ins, but only if the owner wants
       // them" (Settings → AI Models → "Text me a daily check-in" toggle,

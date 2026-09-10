@@ -208,11 +208,15 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
   } else {
     // No session — this is the external cron pinger path, gated by the
     // secret instead (see this file's own setup comment).
+    // SECURITY FIX (audit finding) — an unset AUTOMATIONS_CRON_SECRET used to
+    // leave this branch wide open: any anonymous caller could trigger a full
+    // outbound SMS/email automation pass for EVERY owner on this deployment,
+    // on demand, repeatable at will. Fail closed instead — no secret
+    // configured means no unauthenticated cron access, not "allow anyone."
     const secret = context.env.AUTOMATIONS_CRON_SECRET;
-    if (secret) {
-      const key = new URL(context.request.url).searchParams.get("key");
-      if (key !== secret) return json({ error: "Invalid key" }, 403);
-    }
+    if (!secret) return json({ error: "AUTOMATIONS_CRON_SECRET is not configured — set it in the Cloudflare Pages dashboard to enable the cron endpoint, or call this with an owner's own session token instead." }, 403);
+    const key = new URL(context.request.url).searchParams.get("key");
+    if (key !== secret) return json({ error: "Invalid key" }, 403);
   }
 
   // One owner at a time, oldest-updated automations first, so a large

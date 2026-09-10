@@ -3,6 +3,7 @@ import { CreditCard, X, AlertCircle, CheckCircle } from "lucide-react";
 import { loadStripeJs, createPaymentIntent } from "../../lib/stripe";
 import { Modal } from "./Modal";
 import { GBtn } from "./GBtn";
+import { supabase } from "../../lib/supabase";
 
 // Real Stripe Payment Element flow: loads Stripe.js, creates a PaymentIntent
 // via the same-origin functions/api/stripe-action.ts proxy (the secret key
@@ -83,7 +84,15 @@ export function StripePaymentModal({
         // functions/api/stripe-action.ts also re-derives the real amount from
         // the invoice itself when invoiceId is present, ignoring whatever
         // amount this client claims.
-        const intent = await createPaymentIntent(Math.round(amount * 100), currency, description, invoiceId ? { invoiceId } : undefined, allowSaveCard && saveCard, Math.round(tipCents));
+        // SECURITY FIX (audit finding) — a no-invoiceId charge (e.g. "charge
+        // a card" for a job with no linked invoice yet) needs the caller's
+        // own session token so the server can verify who's actually charging
+        // through their own Stripe account, rather than trusting a claimed
+        // ownerId — see lib/stripe.ts's createPaymentIntent comment. Harmless
+        // to always fetch: when invoiceId IS present, the server resolves the
+        // owner from the invoice itself and never looks at this token.
+        const { data: { session } } = await supabase.auth.getSession();
+        const intent = await createPaymentIntent(Math.round(amount * 100), currency, description, invoiceId ? { invoiceId } : undefined, allowSaveCard && saveCard, Math.round(tipCents), session?.access_token);
         if (cancelled) return;
         intentIdRef.current = intent.id;
         clientSecretRef.current = intent.client_secret;

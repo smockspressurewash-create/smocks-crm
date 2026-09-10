@@ -188,13 +188,28 @@ export interface StripePaymentIntent {
   crmCustomerId?: string;
 }
 
+// SECURITY FIX (audit finding) — this never accepted/forwarded an
+// accessToken at all, for ANY caller. With no invoiceId (a real, supported
+// case — see StripePaymentModal's "Job payment" description fallback for a
+// job with no linked invoice yet), stripe-action.ts had nothing to resolve
+// the calling owner from except a client-claimed body.ownerId — which this
+// function never even sent, so that no-invoice charge was silently landing
+// on the PLATFORM's own Stripe key/account instead of the job's real
+// owner's, AND (since the raw endpoint has no such restriction) let anyone
+// calling /api/stripe-action directly pass an arbitrary ownerId+amountCents
+// to charge a real card against any business's Stripe account. Passing the
+// caller's own session token (StripePaymentModal now fetches it) lets the
+// server resolve the REAL caller identity via resolveCallerOwnerId, the
+// same trustworthy path create_checkout_session/charge_saved_payment_method
+// already require.
 export const createPaymentIntent = async (
   amountCents: number,
   currency: string,
   description: string,
   metadata?: Record<string, string>,
   saveCard?: boolean,
-  tipCents?: number
+  tipCents?: number,
+  accessToken?: string
 ): Promise<StripePaymentIntent> =>
   stripeAction("create_payment_intent", {
     amountCents,
@@ -203,7 +218,7 @@ export const createPaymentIntent = async (
     invoiceId: metadata?.invoiceId,
     saveCard: !!saveCard,
     tipCents: tipCents || 0,
-  });
+  }, accessToken);
 
 export const retrievePaymentIntent = async (id: string): Promise<StripePaymentIntent> =>
   stripeAction("retrieve_payment_intent", { id });

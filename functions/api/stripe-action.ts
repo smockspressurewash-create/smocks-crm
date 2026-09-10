@@ -637,6 +637,24 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
 
     switch (action) {
       case "create_payment_intent": {
+        // SECURITY FIX (audit finding) — with no invoiceId, resolvedOwnerIdOuter
+        // (computed above, used to pick which business's Stripe key/account
+        // this charge goes through) fell all the way back to a client-claimed
+        // body.ownerId with zero verification — an unauthenticated caller
+        // could pass an arbitrary ownerId + amountCents and get a real,
+        // confirmable PaymentIntent created against that business's Stripe
+        // account. Same guard create_checkout_session already uses: require a
+        // real verified session whenever there's no invoiceId to anchor the
+        // owner/amount instead. (If this passes, the earlier resolvedOwnerId
+        // block already resolved the SAME accessToken to the SAME ownerId —
+        // it never actually reached the body.ownerId fallback at all.)
+        if (!body.invoiceId) {
+          const accessTokenGuard = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+          const verifiedOwnerId = await resolveCallerOwnerId(accessTokenGuard);
+          if (!verifiedOwnerId) {
+            return new Response(JSON.stringify({ error: "Not authenticated — sign in and try again." }), { status: 401, headers: { "Content-Type": "application/json" } });
+          }
+        }
         // BUG FIX — "payment security in general." The invoiceId-verified
         // amount ignored any tip entirely, which meant a customer paying
         // with a tip could ONLY be trusted for the raw client-supplied

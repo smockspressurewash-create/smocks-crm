@@ -180,8 +180,16 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         const accessTokenHdr = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
         if (accessTokenHdr) ownerId = await resolveCallerOwnerId(accessTokenHdr);
       }
-      if (!ownerId && body.ownerId) ownerId = body.ownerId;
-      if (!ownerId) return json({ error: "Could not resolve which business to charge" }, 400);
+      // SECURITY FIX (audit finding) — this used to fall back to a client-
+      // claimed body.ownerId with zero verification whenever there was no
+      // invoiceId and no session — an unauthenticated caller could pass an
+      // arbitrary ownerId + a card token/amountCents and push a REAL charge
+      // (unlike Stripe's create_payment_intent, this actually moves money
+      // immediately, no separate confirm step) against any business's Square
+      // account. There is no legitimate caller of this action that has
+      // neither an invoiceId nor a real session — removed entirely rather
+      // than narrowed, matching stripe-action.ts's equivalent fix.
+      if (!ownerId) return json({ error: "Could not resolve which business to charge — sign in and try again, or use a payment link with an invoice." }, 401);
       const acct = await getOwnerSquareAccount(ownerId, serviceRoleKey);
       if (!acct?.accessToken || !acct?.locationId) {
         return json({ error: "Square isn't configured for this business yet — add keys in Settings → Integrations → Square." }, 500);

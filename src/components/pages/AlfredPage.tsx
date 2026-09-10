@@ -1770,10 +1770,13 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
                 // Same employee-calendar push the standalone assign_employee
                 // tool already does — this inline assignment path (crew
                 // named directly in the schedule_job call) was skipping it.
-                fetch("/api/employee-calendar-sync", {
-                  method: "POST", headers: { "Content-Type": "application/json" },
+                // SECURITY FIX (audit finding) — employee-calendar-sync.ts
+                // now requires a real session and derives ownerId from it
+                // server-side, never from the request body.
+                supabase.auth.getSession().then(({ data: { session: syncSession } }) => fetch("/api/employee-calendar-sync", {
+                  method: "POST", headers: { "Content-Type": "application/json", ...(syncSession?.access_token ? { Authorization: `Bearer ${syncSession.access_token}` } : {}) },
                   body: JSON.stringify({
-                    employeeId: emp.id, ownerId, jobId: newJ.id, action: "upsert",
+                    employeeId: emp.id, jobId: newJ.id, action: "upsert",
                     title: c.firstName + " " + c.lastName + " — Pressure Washing",
                     date: newJ.scheduledDate, time: newJ.scheduledTime, durationMinutes: (Number(newJ.duration) || 2) * 60,
                     location: newJ.address,
@@ -1784,7 +1787,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
                     // no link, no client info.
                     notes: buildJobCalendarDescription(newJ, c, `${window.location.origin}${window.location.pathname}#/portal?job=${encodeURIComponent(newJ.id)}`, "View job in Crew Portal"),
                   }),
-                }).catch(() => {});
+                })).catch(() => {});
                 // BUG FIX — this inline assignment path (crew named directly
                 // in the schedule_job call) never sent the "You've Been
                 // Assigned" email the standalone assign_employee tool
@@ -2473,16 +2476,18 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           setJobs(prev => prev.map(x => x.id === j.id ? { ...x, crew: newCrew, crewAssignedAt } : x));
           // Push onto the employee's own Google Calendar if connected — see
           // functions/api/employee-calendar-sync.ts. Fire-and-forget.
-          fetch("/api/employee-calendar-sync", {
-            method: "POST", headers: { "Content-Type": "application/json" },
+          // SECURITY FIX (audit finding) — that endpoint now requires a real
+          // session and derives ownerId from it server-side, never the body.
+          supabase.auth.getSession().then(({ data: { session: syncSession } }) => fetch("/api/employee-calendar-sync", {
+            method: "POST", headers: { "Content-Type": "application/json", ...(syncSession?.access_token ? { Authorization: `Bearer ${syncSession.access_token}` } : {}) },
             body: JSON.stringify({
-              employeeId: emp.id, ownerId, jobId: j.id, action: "upsert",
+              employeeId: emp.id, jobId: j.id, action: "upsert",
               title: (() => { const c = customers.find(x => x.id === j.customerId); return (c ? c.firstName + " " + c.lastName + " — " : "") + "Pressure Washing"; })(),
               date: j.scheduledDate, time: j.scheduledTime, durationMinutes: (Number(j.duration) || 2) * 60,
               location: j.address,
               notes: buildJobCalendarDescription(j, customers.find(x => x.id === j.customerId), `${window.location.origin}${window.location.pathname}#/portal?job=${encodeURIComponent(j.id)}`, "View job in Crew Portal"),
             }),
-          }).catch(() => {});
+          })).catch(() => {});
           if (emp.email) {
             const c = customers.find(x => x.id === j.customerId);
             const portalLink = `${window.location.origin}${window.location.pathname}#/portal`;
