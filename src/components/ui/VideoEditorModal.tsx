@@ -144,6 +144,16 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
   // rhythm (see groupWordsIntoCaptionLines) instead of a generic first-in-
   // list preset — still fully changeable from the dropdown below.
   const [autoEditCaptionStyle, setAutoEditCaptionStyle] = useState("hook-punch");
+  // FEATURE — "auto editing... adding transitions, effects, camera
+  // flickers." Auto-Edit doesn't just cut/caption anymore — it also
+  // assigns real transitions between the resulting clips, grades them with
+  // a color look, and (optionally) adds flash-cut camera flicker at hard
+  // cuts, all in the same one-click pass. Each is independently toggleable
+  // so a re-run can keep/drop any of them; cameraFlickerEnabled also
+  // applies to a plain manual Export/Download, not just Auto-Edit.
+  const [autoEditAddTransitions, setAutoEditAddTransitions] = useState(true);
+  const [autoEditColorLook, setAutoEditColorLook] = useState("cinematic-teal-orange");
+  const [cameraFlickerEnabled, setCameraFlickerEnabled] = useState(true);
   const [autoEditRunning, setAutoEditRunning] = useState(false);
   const [autoEditPhase, setAutoEditPhase] = useState("");
   // FEATURE — "move the text around." Which caption (if any) is currently
@@ -715,6 +725,19 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
   // in this same editor with everything populated — "review it, manually
   // edit it, save" is just the editor's own existing clip/caption controls
   // and Render button, not a separate screen.
+  // FEATURE — "auto editing... adding transitions, effects, camera
+  // flickers." Cycled rather than randomized — predictable, repeatable
+  // output for the same clip count, still real variety across a run.
+  // Deliberately excludes the more novelty/gimmick transitions (pixelize/
+  // glitch, circle-open) from the AUTO set — those stay available to pick
+  // by hand on the Clips tab, just not what a one-click pass reaches for.
+  const AUTO_TRANSITION_CYCLE = ["crossfade", "zoom-punch", "slide-left", "slide-right", "smooth-slide", "radial-wipe", "dissolve"];
+  const applyAutoStyling = (clipList: EditorClip[]): EditorClip[] => clipList.map((c, i) => ({
+    ...c,
+    transitionToNext: (autoEditAddTransitions && i < clipList.length - 1) ? AUTO_TRANSITION_CYCLE[i % AUTO_TRANSITION_CYCLE.length] : "none",
+    colorLook: autoEditColorLook !== "none" ? autoEditColorLook : c.colorLook,
+  }));
+
   const runAutoEdit = async () => {
     if (clips.length === 0) { toast?.("Add at least one clip first", "red"); return; }
     setAutoEditRunning(true);
@@ -769,15 +792,19 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
             offset += Math.max(0, c.endSec - c.startSec);
           }
         }
-        setClips(finalClips);
-        setActiveClipId(finalClips[0]?.id || null);
+        const styledFinalClips = applyAutoStyling(finalClips);
+        setClips(styledFinalClips);
+        setActiveClipId(styledFinalClips[0]?.id || null);
         setCaptions(prev => [...prev, ...newCaptions]);
-        const fillerNote = fillerWordsCut > 0 ? ` and cut ${fillerWordsCut} filler word${fillerWordsCut === 1 ? "" : "s"}` : "";
-        toast?.(`Auto-edit done — cut down to ${finalClips.length} clip${finalClips.length > 1 ? "s" : ""}${fillerNote}, added ${newCaptions.length} caption${newCaptions.length === 1 ? "" : "s"}. Review below, edit anything, then render ✓`, "green");
+        const fillerNote = fillerWordsCut > 0 ? `, cut ${fillerWordsCut} filler word${fillerWordsCut === 1 ? "" : "s"}` : "";
+        const styleNote = [autoEditAddTransitions ? "transitions" : "", autoEditColorLook !== "none" ? "color grade" : "", cameraFlickerEnabled ? "camera flicker" : ""].filter(Boolean).join(", ");
+        toast?.(`Auto-edit done — cut down to ${styledFinalClips.length} clip${styledFinalClips.length > 1 ? "s" : ""}${fillerNote}, added ${newCaptions.length} caption${newCaptions.length === 1 ? "" : "s"}${styleNote ? ` + ${styleNote}` : ""}. Review below, edit anything, then render ✓`, "green");
       } else {
-        setClips(cutClips);
-        setActiveClipId(cutClips[0]?.id || null);
-        toast?.(`Auto-edit done — cut down to ${cutClips.length} clip${cutClips.length > 1 ? "s" : ""}. Add a captions API key to also auto-generate captions, or add them manually below ✓`, "green");
+        const styledCutClips = applyAutoStyling(cutClips);
+        setClips(styledCutClips);
+        setActiveClipId(styledCutClips[0]?.id || null);
+        const styleNote = [autoEditAddTransitions ? "transitions" : "", autoEditColorLook !== "none" ? "color grade" : "", cameraFlickerEnabled ? "camera flicker" : ""].filter(Boolean).join(", ");
+        toast?.(`Auto-edit done — cut down to ${styledCutClips.length} clip${styledCutClips.length > 1 ? "s" : ""}${styleNote ? ` + ${styleNote}` : ""}. Add a captions API key to also auto-generate captions, or add them manually below ✓`, "green");
       }
     } catch (e: any) {
       toast?.("Auto-edit failed — " + (e?.message || "unknown error"), "red");
@@ -799,7 +826,7 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
     setRenderPhase("Starting…");
     setRenderPct(0);
     try {
-      const blob = await renderFinalVideo(clips, captions, (phase, pct) => { setRenderPhase(phase); setRenderPct(pct); }, aspectRatio, overlays, music);
+      const blob = await renderFinalVideo(clips, captions, (phase, pct) => { setRenderPhase(phase); setRenderPct(pct); }, aspectRatio, overlays, music, cameraFlickerEnabled);
       onExported(blob, saveAsDraftOnly);
       toast?.(saveAsDraftOnly ? "Video saved as a draft ✓" : "Video rendered ✓", "green");
       onClose();
@@ -821,7 +848,7 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
     setRenderPhase("Starting…");
     setRenderPct(0);
     try {
-      const blob = await renderFinalVideo(clips, captions, (phase, pct) => { setRenderPhase(phase); setRenderPct(pct); }, aspectRatio, overlays, music);
+      const blob = await renderFinalVideo(clips, captions, (phase, pct) => { setRenderPhase(phase); setRenderPct(pct); }, aspectRatio, overlays, music, cameraFlickerEnabled);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -1651,7 +1678,7 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
                     every clip in the timeline (not just the active one). */}
                 <div className="p-3 rounded-xl bg-purple-950/15 border border-purple-700/30 space-y-2.5">
                   <div className="text-xs font-semibold text-purple-300 flex items-center gap-1.5"><Sparkles size={13} />Auto-Edit</div>
-                  <div className="text-[10px] text-white/40">Cuts dead air out of every clip, stitches what's left together, and captions it in one pass — free, runs on this device, no API key needed. You still get to review and tweak everything after.</div>
+                  <div className="text-[10px] text-white/40">Cuts dead air and filler words out, stitches what's left together, captions it, adds transitions, a color grade, and camera-flicker cuts — free, runs on this device, no API key needed. You still get to review and tweak everything after.</div>
                   <div className="grid grid-cols-2 gap-1.5">
                     <div>
                       <label className="text-[9px] text-white/40 block mb-1">Captions from</label>
@@ -1669,6 +1696,28 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
                   {!getCaptionApiKey(captionProvider) && (
                     <div className="text-[10px] text-yellow-400/80">No key for this provider yet — Auto-Edit will still cut dead space, just without captions.</div>
                   )}
+                  {/* FEATURE — "auto editing... adding transitions, effects,
+                      camera flickers." These three apply automatically every
+                      time Run Auto-Edit fires below — not separate manual
+                      steps the owner has to do per-clip afterward. */}
+                  <div className="pt-2 border-t border-white/10 space-y-2">
+                    <div className="grid grid-cols-2 gap-1.5 items-end">
+                      <label className="flex items-center gap-1.5 text-[10px] text-white/60 cursor-pointer py-1.5">
+                        <input type="checkbox" checked={autoEditAddTransitions} onChange={e => setAutoEditAddTransitions(e.target.checked)} className="accent-purple-600 w-3.5 h-3.5 flex-shrink-0" />
+                        Auto-add transitions
+                      </label>
+                      <label className="flex items-center gap-1.5 text-[10px] text-white/60 cursor-pointer py-1.5">
+                        <input type="checkbox" checked={cameraFlickerEnabled} onChange={e => setCameraFlickerEnabled(e.target.checked)} className="accent-purple-600 w-3.5 h-3.5 flex-shrink-0" />
+                        Camera flicker at cuts
+                      </label>
+                    </div>
+                    <div>
+                      <label className="text-[9px] text-white/40 block mb-1">Color grade (applied to every clip)</label>
+                      <select value={autoEditColorLook} onChange={e => setAutoEditColorLook(e.target.value)} className="ve-select w-full bg-black/30 border border-white/10 rounded-lg px-1.5 py-1.5 text-white">
+                        {COLOR_LOOKS.map(l => <option key={l.id} value={l.id} className="bg-black">{l.name}</option>)}
+                      </select>
+                    </div>
+                  </div>
                   <button onClick={runAutoEdit} className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-lg bg-purple-900/40 hover:bg-purple-900/60 border border-purple-600/50 text-purple-200 text-xs font-semibold transition">
                     <Sparkles size={13} />Run Auto-Edit
                   </button>

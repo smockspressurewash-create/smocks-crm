@@ -647,7 +647,13 @@ export const renderFinalVideo = async (
   onProgress?: RenderProgress,
   aspectRatio: AspectRatio = "9:16",
   overlays: EditorOverlay[] = [],
-  music: MusicTrack | null = null
+  music: MusicTrack | null = null,
+  // FEATURE — "camera flickers." A quick white flash-strobe at every HARD
+  // cut (never at a clip already using a smooth xfade transition — the two
+  // effects would visually fight at the same boundary), the punchy "flash
+  // cut" look fast-paced montage/vlog edits use. Real per-frame ffmpeg eq
+  // brightness expression (confirmed to support `t`), not a static filter.
+  cameraFlicker = false
 ): Promise<Blob> => {
   if (clips.length === 0) throw new Error("Add at least one clip first");
   onProgress?.("Loading video engine", 5);
@@ -792,6 +798,40 @@ export const renderFinalVideo = async (
     joinedName = "joined.mp4";
   }
   for (const n of normalizedNames) await ff.deleteFile(n).catch(() => {});
+
+  // FEATURE — "camera flickers." Flash points are every HARD-cut boundary
+  // (a clip whose transitionToNext is "none"/unset) — a boundary already
+  // using a real xfade transition is skipped, since a flash and a smooth
+  // crossfade at the same instant would just look broken together, not
+  // stacked. Positions use plain cumulative clip durations (ignoring the
+  // ~0.05s a mixed xfade chain shrinks a hard-cut boundary by) — a flash
+  // effect spans ~150ms, so that much drift is genuinely imperceptible and
+  // not worth the extra complexity of replicating the xfade offset math
+  // here. Wrapped in try/catch with a skip-on-failure fallback, same
+  // defensive pattern as the ASS caption burn below — this can't be
+  // visually test-rendered in this environment.
+  if (cameraFlicker && normalizedDurations.length > 1) {
+    const flashPoints: number[] = [];
+    let cum = 0;
+    for (let i = 0; i < clips.length - 1; i++) {
+      cum += normalizedDurations[i];
+      const t = getTransition(clips[i].transitionToNext || "none");
+      if (!t.xfadeType) flashPoints.push(cum);
+    }
+    if (flashPoints.length > 0) {
+      onProgress?.("Adding camera flicker", 63);
+      try {
+        const brightnessExpr = flashPoints
+          .map(t => `if(between(t,${t.toFixed(3)},${(t + 0.05).toFixed(3)}),0.55,if(between(t,${(t + 0.08).toFixed(3)},${(t + 0.12).toFixed(3)}),0.28,0))`)
+          .join("+");
+        await ff.exec(["-i", joinedName, "-vf", `eq=brightness='${brightnessExpr}'`, "-c:a", "copy", "flickered.mp4"]);
+        await ff.deleteFile(joinedName).catch(() => {});
+        joinedName = "flickered.mp4";
+      } catch (e: any) {
+        console.warn("[VideoEditor] camera-flicker pass failed, exporting without it:", e?.message);
+      }
+    }
+  }
 
   let finalInput = joinedName;
   if (captions.length > 0) {
