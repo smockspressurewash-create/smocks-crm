@@ -596,10 +596,16 @@ export function EmployeesPage({ employees = [], setEmployees, jobs = [], setJobs
       // broken. Retry with just the fields an owner actually edits from this
       // form if the full-object write fails, so a column gap elsewhere on
       // the row can never block a legitimate permissions/profile change.
+      // BUG FIX (audit) — "home base isn't saving for the employee portal
+      // again." homeBaseAddress was missing from this whitelist, so any
+      // owner-side Edit Employee save that fell back to the core-columns
+      // retry (any OTHER stale/mismatched column on that row triggering the
+      // full-patch failure) silently dropped it while still reporting a
+      // successful save.
       const EMPLOYEE_CORE_COLUMNS = [
         "firstName", "lastName", "email", "phone", "role", "status", "hourlyRate",
         "permissions", "managerPermissions", "can_create_invoices", "can_send_invoices", "can_process_payments",
-        "jobTypeRates", "maxDaysOffPerWeek", "maxDaysOffPerMonth", "recurringDaysOff", "availability",
+        "jobTypeRates", "maxDaysOffPerWeek", "maxDaysOffPerMonth", "recurringDaysOff", "availability", "homeBaseAddress",
       ];
       // BUG FIX — "permissions don't always save": this never checked
       // whether the UPDATE actually matched a row. `.update(...)` with no

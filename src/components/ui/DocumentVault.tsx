@@ -66,8 +66,11 @@ export function DocumentVault({ customerId }: { customerId: string }) {
 
   const persist = async (next: any[]) => {
     setDocs(next);
-    const { error } = await (supabase as any).from("customers").update({ documents: next }).eq("id", customerId);
-    if (error) console.warn("[DocumentVault] save failed:", error.message);
+    // BUG FIX (audit) — checked only `error` before; a 0-row RLS mismatch
+    // resolves with no error at all (CLAUDE.md's "0-row silent success"),
+    // so a real failure here never even reached this console.warn.
+    const { error, data } = await (supabase as any).from("customers").update({ documents: next }).eq("id", customerId).select("id");
+    if (error || !Array.isArray(data) || data.length === 0) console.warn("[DocumentVault] save failed:", error?.message || "0 rows matched");
   };
 
   const handleUpload = (e: any) => {

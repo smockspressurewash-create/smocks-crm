@@ -130,8 +130,12 @@ export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimat
         // ("...catch is not a function" — PostgrestBuilder only implements
         // .then(), not a full Promise). See lib/googleApi.ts's comment on
         // the same class of bug for the full explanation.
-        (supabase as any).from("customers").update({ savedPaymentMethodId: null, savedPaymentMethodLabel: null }).eq("id", c.id)
-          .then(() => {}, (e: any) => console.warn("[PaymentMethods] clear savedPaymentMethodId sync failed:", e?.message));
+        (supabase as any).from("customers").update({ savedPaymentMethodId: null, savedPaymentMethodLabel: null }).eq("id", c.id).select("id")
+          .then((result: any) => {
+            if (result?.error || !Array.isArray(result?.data) || result.data.length === 0) {
+              console.warn("[PaymentMethods] clear savedPaymentMethodId sync failed:", result?.error?.message || "0 rows matched");
+            }
+          }, (e: any) => console.warn("[PaymentMethods] clear savedPaymentMethodId sync failed:", e?.message));
       }
       await loadPaymentMethods();
     } catch (e: any) {
@@ -154,8 +158,9 @@ export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimat
     const label = `${pm.brand || "Card"} ····${pm.last4 || "----"}`;
     try {
       setCustomers((prev: any[]) => prev.map((cust: any) => cust.id === c.id ? { ...cust, savedPaymentMethodId: pm.id, savedPaymentMethodLabel: label } : cust));
-      const res = await (supabase as any).from("customers").update({ savedPaymentMethodId: pm.id, savedPaymentMethodLabel: label }).eq("id", c.id);
+      const res = await (supabase as any).from("customers").update({ savedPaymentMethodId: pm.id, savedPaymentMethodLabel: label }).eq("id", c.id).select("id");
       if (res?.error) throw new Error(res.error.message);
+      if (!Array.isArray(res?.data) || res.data.length === 0) throw new Error("Save didn't match this customer's record — try refreshing the page.");
       toast?.(`${label} set as default ✓`, "green");
     } catch (e: any) {
       toast?.("Failed to set default: " + (e?.message || "unknown error"), "red");
@@ -203,8 +208,13 @@ export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimat
       });
       setRecurLink(session2.url);
       setCustomers((prev: any[]) => prev.map((cust: any) => cust.id === c.id ? { ...cust, recurringPlan: { status: "pending", amountCents, interval: recurInterval, description: desc, checkoutUrl: session2.url } } : cust));
-      await (supabase as any).from("customers").update({ recurringPlan: { status: "pending", amountCents, interval: recurInterval, description: desc, checkoutUrl: session2.url } }).eq("id", c.id);
-      toast?.("Recurring plan link created — send it to the customer to activate", "green");
+      const saveRes = await (supabase as any).from("customers").update({ recurringPlan: { status: "pending", amountCents, interval: recurInterval, description: desc, checkoutUrl: session2.url } }).eq("id", c.id).select("id");
+      if (saveRes?.error || !Array.isArray(saveRes?.data) || saveRes.data.length === 0) {
+        console.warn("[RecurringPlan] save failed:", saveRes?.error?.message || "0 rows matched");
+        toast?.("Link created, but couldn't save it to the customer record — the link below still works, but won't show here after you leave this page.", "yellow");
+      } else {
+        toast?.("Recurring plan link created — send it to the customer to activate", "green");
+      }
     } catch (e: any) {
       toast?.("Failed to create recurring plan: " + (e?.message || "unknown error"), "red");
     } finally {
@@ -216,7 +226,11 @@ export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimat
     if (!plan?.stripeSubscriptionId && !plan?.squareSubscriptionId) {
       // Never activated (customer hasn't completed checkout yet) — just clear it locally.
       setCustomers((prev: any[]) => prev.map((cust: any) => cust.id === c.id ? { ...cust, recurringPlan: null } : cust));
-      await (supabase as any).from("customers").update({ recurringPlan: null }).eq("id", c.id);
+      const clearRes = await (supabase as any).from("customers").update({ recurringPlan: null }).eq("id", c.id).select("id");
+      if (clearRes?.error || !Array.isArray(clearRes?.data) || clearRes.data.length === 0) {
+        console.warn("[RecurringPlan] clear failed:", clearRes?.error?.message || "0 rows matched");
+        toast?.("Cleared here, but didn't save — it may reappear after a refresh.", "yellow");
+      }
       setRecurLink(""); setRecurOpen(false);
       return;
     }
@@ -894,11 +908,19 @@ export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimat
         existingStripeCustomerId={c.stripeCustomerId}
         companyName={settings?.companyName || "the company"}
         enteredByEmployee
-        onSaved={(stripeCustomerId, paymentMethodId, label) => {
+        onSaved={async (stripeCustomerId, paymentMethodId, label) => {
           setCustomers((prev: any[]) => prev.map((cust: any) => cust.id === c.id ? { ...cust, stripeCustomerId, savedPaymentMethodId: paymentMethodId, savedPaymentMethodLabel: label } : cust));
-          (supabase as any).from("customers").update({ stripeCustomerId, savedPaymentMethodId: paymentMethodId, savedPaymentMethodLabel: label }).eq("id", c.id)
-            .then(() => {}, (e: any) => console.warn("[PaymentMethods] add-card Supabase sync failed:", e?.message));
-          toast?.("Card saved on file ✓", "green");
+          // BUG FIX (audit) — same class of fix as EmployeePortal.tsx's Add
+          // Card on File: this write was fire-and-forget with no result
+          // check, so a 0-row RLS mismatch left the card working in Stripe
+          // but invisible to the CRM while still toasting success.
+          const result = await (supabase as any).from("customers").update({ stripeCustomerId, savedPaymentMethodId: paymentMethodId, savedPaymentMethodLabel: label }).eq("id", c.id).select("id");
+          if (result?.error || !Array.isArray(result?.data) || result.data.length === 0) {
+            console.warn("[PaymentMethods] add-card Supabase sync failed:", result?.error?.message || "0 rows matched");
+            toast?.("Card saved in Stripe, but couldn't sync to the customer record — try again.", "red");
+          } else {
+            toast?.("Card saved on file ✓", "green");
+          }
           setAddCardOpen(false);
           loadPaymentMethods();
         }}

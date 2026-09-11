@@ -78,7 +78,7 @@ import { PricingPage } from "./components/pages/PricingPage";
 import { CheckoutPage } from "./components/pages/CheckoutPage";
 import { AboutPage } from "./components/pages/AboutPage";
 import { EmployeePortal } from "./components/pages/EmployeePortal";
-import { saveEmpGoogleToken, refreshEmpGoogleToken } from "./lib/googleApi";
+import { saveEmpGoogleToken, getEmpGoogleToken, refreshEmpGoogleToken } from "./lib/googleApi";
 import { ResetPassword } from "./components/pages/ResetPassword";
 import { OnboardingFlow } from "./components/ui/OnboardingFlow";
 import { AutomationBatchModal } from "./components/ui/AutomationBatchModal";
@@ -363,9 +363,28 @@ function persistEmployeeGoogleToken(session: any): void {
   // confirmed Supabase success, purely as an instant-read cache for this
   // device — never the other way around, or a token saved here would show
   // as "connected" on THIS device while never reaching the other one.
+  // SECURITY/CORRECTNESS FIX (owner report — "Google account keeps getting
+  // disconnected") — Google's OAuth2 refresh grant does NOT resend a
+  // refresh_token on an ordinary access-token refresh (only the FIRST
+  // authorization ever gets one) — this function runs on every
+  // TOKEN_REFRESHED event, not just a fresh OAuth grant, so bridgedRefreshToken
+  // is empty most of the time by design, not by failure. Writing
+  // `google_refresh_token: bridgedRefreshToken || null` unconditionally was
+  // NULLING OUT a previously-good refresh token on every routine refresh —
+  // once that happened, the next real access-token expiry had nothing left
+  // to refresh with, forcing a full manual reconnect. Only include the
+  // field in the patch when a fresh value actually exists, exactly like
+  // applyGoogleIdentity (the equivalent OWNER-side function) already does —
+  // omitted entirely otherwise, so Postgres leaves the existing stored value
+  // alone instead of overwriting it with null.
+  const existingCached = getEmpGoogleToken(session.user.id);
   withTimeout(
     (supabase as any).from("employees")
-      .update({ google_token: providerToken, google_refresh_token: bridgedRefreshToken || null, google_email: googleEmail, google_token_expires_at: new Date(expiresAt).toISOString() })
+      .update({
+        google_token: providerToken,
+        ...(bridgedRefreshToken ? { google_refresh_token: bridgedRefreshToken } : {}),
+        google_email: googleEmail, google_token_expires_at: new Date(expiresAt).toISOString(),
+      })
       .eq("user_id", session.user.id),
     15000, "Employee Google token save"
   )
@@ -374,7 +393,10 @@ function persistEmployeeGoogleToken(session: any): void {
         console.error("Could not persist employee Google token to Supabase:", result.error.message);
         return;
       }
-      saveEmpGoogleToken(session.user.id, { token: providerToken, refreshToken: bridgedRefreshToken, email: googleEmail, expiresAt });
+      // Same fix applied to the localStorage cache — saveEmpGoogleToken
+      // fully replaces the stored object, so falling back to an empty
+      // string here would wipe the cached refresh token too.
+      saveEmpGoogleToken(session.user.id, { token: providerToken, refreshToken: bridgedRefreshToken || existingCached?.refreshToken, email: googleEmail, expiresAt });
     })
     // BUG FIX — a hung/timed-out write here previously left saveEmpGoogleToken
     // (the localStorage cache the "Connected" badge reads) never called at

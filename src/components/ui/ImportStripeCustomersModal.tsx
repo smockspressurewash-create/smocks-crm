@@ -65,8 +65,9 @@ export function ImportStripeCustomersModal({ open, onClose, customers = [], setC
     try {
       const match = findMatch(sc);
       if (match) {
-        const res = await (supabase as any).from("customers").update({ stripeCustomerId: sc.id }).eq("id", match.id);
+        const res = await (supabase as any).from("customers").update({ stripeCustomerId: sc.id }).eq("id", match.id).select("id");
         if (res?.error) throw new Error(res.error.message);
+        if (!Array.isArray(res?.data) || res.data.length === 0) throw new Error("Save didn't match this customer's record.");
         setCustomers((prev: any[]) => prev.map(c => c.id === match.id ? { ...c, stripeCustomerId: sc.id } : c));
         toast(`Linked to existing customer ${match.firstName} ${match.lastName} ✓`, "green");
       } else {

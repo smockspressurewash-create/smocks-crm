@@ -1257,8 +1257,9 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           const newDoc = { id: uid(), name: pending.fileName, url: pending.url, category: inputs.category || "Document", uploadedAt: today() };
           const docs = [...(Array.isArray((c as any).documents) ? (c as any).documents : []), newDoc];
           setCustomers((prev: Customer[]) => prev.map(x => x.id === c.id ? { ...x, documents: docs } as any : x));
-          const res = await (supabase as any).from("customers").update({ documents: docs }).eq("id", c.id);
+          const res = await (supabase as any).from("customers").update({ documents: docs }).eq("id", c.id).select("id");
           if (res?.error) return { error: res.error.message };
+          if (!Array.isArray(res?.data) || res.data.length === 0) return { error: "Save didn't match this customer's record." };
           lastAttachedFileRef.current = null;
           toast(`Saved "${pending.fileName}" to ${c.firstName} ${c.lastName}'s file ✓`);
           return { success: true, savedTo: `${c.firstName} ${c.lastName}`, fileName: pending.fileName };

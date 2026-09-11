@@ -116,6 +116,18 @@ export type EditorClip = {
   // this applies a creative grade (teal & orange, moody blue, faded film,
   // etc.), the same two-step "correct then grade" order a real editor uses.
   colorLook?: string;
+  // FEATURE — "add more options for everything." Real slow-motion/speed-up
+  // per clip, 0.5x-2x — ffmpeg's setpts (video) + atempo (audio), the same
+  // pair every editor uses for this. Clamped to 2x max because atempo only
+  // supports 0.5-2.0 in a single pass (a real limit of the filter, not an
+  // arbitrary UI choice — chaining atempo twice would be needed past 2x,
+  // not worth the added complexity for a field-service promo clip). NOTE:
+  // this changes the clip's own OUTPUT duration, so a caption already
+  // placed against this clip's original timing will drift if speed is
+  // changed afterward — the UI surfaces that as a warning rather than
+  // silently rescaling captions (a rescale that's wrong is worse than an
+  // honest warning here).
+  speed?: number;
   // FEATURE — "more photo editing options." A still image can be added as
   // a clip too (uploaded alongside/instead of video) — rendered as a fixed-
   // duration segment via ffmpeg's `-loop 1` image-to-video path, then flows
@@ -214,6 +226,12 @@ export const SOUND_EFFECTS: SoundEffect[] = [
   { id: "megaphone", name: "Megaphone", description: "Loud, distorted bullhorn/PA sound.", filter: "highpass=f=300,lowpass=f=3400,volume=2.2,alimiter=limit=0.8" },
   { id: "cave-echo", name: "Cave Echo", description: "Big, roomy echo — cavernous space.", filter: "aecho=0.8:0.85:900:0.35" },
   { id: "tinny", name: "Tinny Speaker", description: "Small, cheap-speaker sound — no bass at all.", filter: "highpass=f=900" },
+  // FEATURE — "add more options for everything."
+  { id: "chipmunk", name: "Chipmunk", description: "Fast, high-pitched, cartoonish voice.", filter: "asetrate=44100*1.5,aresample=44100" },
+  { id: "deep-voice", name: "Deep Voice", description: "Slow, low, monster/movie-trailer voice.", filter: "asetrate=44100*0.78,aresample=44100" },
+  { id: "concert-hall", name: "Concert Hall", description: "Wide, airy reverb — big open-room ambience.", filter: "aecho=0.6:0.7:400:0.25" },
+  { id: "vinyl-lofi", name: "Vinyl Lo-Fi", description: "Warm, dulled, slightly wobbly old-recording sound.", filter: "lowpass=f=4000,highpass=f=120,vibrato=f=3.5:d=0.15" },
+  { id: "radio-static", name: "Radio Static", description: "Crackly, band-limited AM-radio broadcast sound.", filter: "highpass=f=500,lowpass=f=3000,volume=1.4" },
 ];
 export const getSoundEffect = (id?: string): SoundEffect => SOUND_EFFECTS.find(s => s.id === id) || SOUND_EFFECTS[0];
 
@@ -240,6 +258,13 @@ export const COLOR_LOOKS: ColorLook[] = [
   { id: "cross-process", name: "Cross Process", description: "Punchy, unconventional color shift — bold editorial look.", filterChain: "curves=preset=cross_process,eq=saturation=1.2", previewCss: "contrast(1.2) saturate(1.3) hue-rotate(-6deg)" },
   { id: "muted-earth", name: "Muted Earth", description: "Soft, desaturated, natural tones.", filterChain: "eq=saturation=0.72:contrast=1.05,colorbalance=rm=0.05:gm=0.02:bm=-0.05", previewCss: "saturate(0.7) sepia(0.1)" },
   { id: "cyberpunk-neon", name: "Cyberpunk", description: "Cool cyan/magenta push — neon night look.", filterChain: "colorbalance=rs=0.1:bs=0.22:rh=-0.06:bh=0.16,eq=saturation=1.3:contrast=1.15", previewCss: "saturate(1.4) contrast(1.2) hue-rotate(-10deg)" },
+  // FEATURE — "add more options for everything."
+  { id: "clean-bright", name: "Clean & Bright", description: "Light, airy, slightly cool — real-estate/exterior-shot clean look.", filterChain: "curves=preset=increase_contrast,eq=brightness=0.03:saturation=1.05", previewCss: "brightness(1.08) contrast(1.05) saturate(1.05)" },
+  { id: "high-contrast-punch", name: "High Contrast", description: "Deep blacks, bright highlights — a punchy, graphic look.", filterChain: "curves=preset=strong_contrast,eq=saturation=1.1", previewCss: "contrast(1.35) saturate(1.1)" },
+  { id: "matte-film", name: "Matte Film", description: "Flattened blacks, soft muted tones — modern \"matte\" look-book grade.", filterChain: "curves=preset=medium_contrast,eq=contrast=0.92:saturation=0.85,colorbalance=rs=0.04:gs=0.02:bs=-0.02", previewCss: "contrast(0.9) saturate(0.85) brightness(1.03)" },
+  { id: "cool-steel", name: "Cool Steel", description: "Steel-blue shadows, desaturated — industrial/commercial equipment footage.", filterChain: "colorbalance=rs=-0.1:gs=0.02:bs=0.18:rm=-0.03:bm=0.06,eq=saturation=0.78:contrast=1.1", previewCss: "saturate(0.8) hue-rotate(10deg) contrast(1.1)" },
+  { id: "sunbleached", name: "Sunbleached", description: "Washed-out, hazy highlights — bright midday exterior work.", filterChain: "curves=preset=lighter,eq=saturation=0.68:brightness=0.06,vignette=PI/6", previewCss: "brightness(1.12) saturate(0.7) contrast(0.85)" },
+  { id: "deep-night", name: "Deep Night", description: "Crushed shadows, cool highlights — for dusk/night work footage.", filterChain: "eq=brightness=-0.06:contrast=1.2:saturation=0.85,colorbalance=rs=-0.08:bs=0.12", previewCss: "brightness(0.85) contrast(1.25) saturate(0.85) hue-rotate(6deg)" },
 ];
 export const getColorLook = (id?: string): ColorLook => COLOR_LOOKS.find(l => l.id === id) || COLOR_LOOKS[0];
 
@@ -256,13 +281,18 @@ const escapeDrawtext = (s: string): string =>
 // "reframe to fill" technique — scales up until the target box is fully
 // covered, then crops the overflow, so a landscape source clip cut down to
 // 9:16 doesn't end up letterboxed with black bars.
-export type AspectRatio = "9:16" | "1:1" | "16:9";
+export type AspectRatio = "9:16" | "1:1" | "16:9" | "4:5" | "4:3";
 export const ASPECT_DIMENSIONS: Record<AspectRatio, { w: number; h: number }> = {
   "9:16": { w: 720, h: 1280 },
   "1:1": { w: 1080, h: 1080 },
   "16:9": { w: 1280, h: 720 },
+  // FEATURE — "add more options for everything." Instagram/Facebook feed
+  // portrait (the tallest ratio the feed itself allows, taller posts get
+  // cropped) and classic 4:3 for older/wider-compatibility placements.
+  "4:5": { w: 1080, h: 1350 },
+  "4:3": { w: 1280, h: 960 },
 };
-export const ASPECT_RATIOS: AspectRatio[] = ["9:16", "1:1", "16:9"];
+export const ASPECT_RATIOS: AspectRatio[] = ["9:16", "1:1", "4:5", "16:9", "4:3"];
 
 // Detects silence in a clip's audio track (ffmpeg's silencedetect filter),
 // used for the "Auto-Cut Silence" button. Returns ranges in seconds.
@@ -690,6 +720,11 @@ export const renderFinalVideo = async (
     else if (c.rotation === 180) filters.push("transpose=1,transpose=1");
     else if (c.rotation === 270) filters.push("transpose=2");
     if (c.flipH) filters.push("hflip");
+    // FEATURE — "add more options for everything" — real slow-motion/
+    // speed-up. atempo only supports 0.5-2.0 in a single pass, hence the
+    // clamp (a real ffmpeg filter limit, not an arbitrary UI cap).
+    const speed = isImage ? 1 : Math.max(0.5, Math.min(2, c.speed || 1));
+    if (speed !== 1) filters.push(`setpts=PTS/${speed.toFixed(3)}`);
     // FEATURE — "change saturation, contrast, brightness, etc." -100..100
     // sliders mapped onto ffmpeg eq's real ranges: brightness -1..1,
     // contrast 0..2, saturation 0..3 (clamped — the slider only reaches 2).
@@ -713,7 +748,7 @@ export const renderFinalVideo = async (
     // normalization, before concat/xfade ever sees it — the same standard
     // ffmpeg audio filter shown in the editor's live description.
     const fx = getSoundEffect(c.audioEffect);
-    const combinedAudioFilter = [fx.filter, c.muted ? "volume=0" : null].filter(Boolean).join(",");
+    const combinedAudioFilter = [fx.filter, c.muted ? "volume=0" : null, speed !== 1 ? `atempo=${speed.toFixed(3)}` : null].filter(Boolean).join(",");
     const audioArgs = combinedAudioFilter ? ["-af", combinedAudioFilter] : [];
     if (isImage) {
       // FEATURE — "more photo editing options." A still image has no
@@ -749,7 +784,11 @@ export const renderFinalVideo = async (
     }
     await ff.deleteFile(inName).catch(() => {});
     normalizedNames.push(outName);
-    normalizedDurations.push(dur);
+    // Speed changes this clip's own OUTPUT duration (a still image ignores
+    // speed entirely — there's no source timeline to stretch) — every
+    // downstream consumer (xfade transition offsets, camera-flicker flash
+    // points) needs the REAL resulting duration, not the source trim length.
+    normalizedDurations.push(isImage ? dur : dur / speed);
   }
 
   const hasRealTransitions = clips.slice(0, -1).some(c => c.transitionToNext && c.transitionToNext !== "none");

@@ -2637,16 +2637,24 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
             // set), per the fallback rule when there's no direct
             // customer-level recurring indicator.
             isRecurringClient={!!customer.recurringPayment?.enabled || !!job.isRecurring}
-            onSaved={(stripeCustomerId, paymentMethodId, label, consentAt) => {
+            onSaved={async (stripeCustomerId, paymentMethodId, label, consentAt) => {
               setCustomers((prev: Customer[]) => prev.map(c => c.id === customer.id ? { ...c, stripeCustomerId, savedPaymentMethodId: paymentMethodId, savedPaymentMethodLabel: label, cardConsentAt: consentAt || c.cardConsentAt } : c));
-              // Explicit Supabase write — an employee's own device otherwise
-              // has no path back to the owner's CRM; every other customer
-              // edit in the app writes through a page-level save handler
-              // (CustomersPage.tsx), which this portal has never needed
-              // before now.
-              (supabase as any).from("customers").update({ stripeCustomerId, savedPaymentMethodId: paymentMethodId, savedPaymentMethodLabel: label, cardConsentAt: consentAt }).eq("id", customer.id)
-                .then(() => {}, (e: any) => console.warn("[AddCardOnFile] Supabase sync failed:", e?.message));
-              toast?.("Card saved on file ✓", "green");
+              // BUG FIX (audit) — the card itself is already genuinely saved
+              // in Stripe by this point (SaveCardModal only calls onSaved
+              // after a real confirmed SetupIntent); this write just
+              // persists the REFERENCE onto the owner_id-scoped customers
+              // row so the rest of the CRM knows about it. It used to be
+              // fire-and-forget with no result check — a 0-row RLS mismatch
+              // here would leave the card working in Stripe but invisible
+              // to the CRM (and to the next "Charge to card on file"
+              // attempt) with a toast that still claimed success.
+              const result = await (supabase as any).from("customers").update({ stripeCustomerId, savedPaymentMethodId: paymentMethodId, savedPaymentMethodLabel: label, cardConsentAt: consentAt }).eq("id", customer.id).select("id");
+              if (result?.error || !Array.isArray(result?.data) || result.data.length === 0) {
+                console.warn("[AddCardOnFile] Supabase sync failed:", result?.error?.message || "0 rows matched");
+                toast?.("Card saved in Stripe, but couldn't sync to the customer record — it may not show as on file next time. Try again or tell the owner.", "red");
+              } else {
+                toast?.("Card saved on file ✓", "green");
+              }
               setAddCardOpen(false);
               // Opened from the payment step ("Add a New Card" mid-checkout)
               // — merge the new card into jobCards and select it immediately

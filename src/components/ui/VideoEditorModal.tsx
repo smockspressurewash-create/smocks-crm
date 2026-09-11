@@ -1401,6 +1401,27 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
                   ))}
                   <button onClick={() => updateClip(activeClip.id, { brightness: 0, contrast: 0, saturation: 0 })} className="text-[10px] text-white/40 hover:text-white/70">Reset adjustments</button>
 
+                  {/* FEATURE — "add more options for everything." Real
+                      slow-motion/speed-up, not just a cosmetic slider —
+                      ffmpeg actually re-times the clip (setpts) and its
+                      audio (atempo) on export. Skipped entirely for a still
+                      image (isImage), which has no native timeline to
+                      speed up. */}
+                  {!activeClip.isImage && (
+                    <div className="pt-2 border-t border-white/10">
+                      <div className="text-[11px] text-white/60 mb-1 flex justify-between"><span>Speed</span><span className="text-white/40">{(activeClip.speed || 1).toFixed(2)}×</span></div>
+                      <input type="range" min={0.5} max={2} step={0.1} value={activeClip.speed || 1}
+                        onChange={e => updateClip(activeClip.id, { speed: Number(e.target.value) })}
+                        className="w-full accent-red-600" style={{ height: 24 }} />
+                      <div className="flex justify-between text-[9px] text-white/30 -mt-1">
+                        <span>0.5× slow-mo</span><span>1× normal</span><span>2× fast</span>
+                      </div>
+                      {activeClip.speed && activeClip.speed !== 1 && (
+                        <div className="text-[10px] text-yellow-400/70 mt-1.5">Changing speed after adding captions can throw their timing off this clip — re-time or re-add captions after, if needed.</div>
+                      )}
+                    </div>
+                  )}
+
                   {/* FEATURE — "video effects, video filters, good-looking
                       LUTs." Real ffmpeg color-grade presets (COLOR_LOOKS),
                       not just a slider — applied on top of the brightness/
