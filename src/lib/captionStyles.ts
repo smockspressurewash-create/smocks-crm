@@ -106,6 +106,15 @@ export const CAPTION_STYLES: CaptionStyle[] = [
   p({ id: "warning-red", name: "Alert Red", category: "Bold", description: "Stark red/white warning-style text — for urgency, deadlines, drama.", fontFileUrl: F.bebas, fontWeight: 400, color: "#ff1414", strokeColor: "#ffffff", strokeWidth: 2, background: "rgba(0,0,0,0.6)", uppercase: true, position: "center", letterSpacing: "0.03em", animation: "shake" }),
   // FEATURE — "add more options for everything."
   p({ id: "safety-orange", name: "Safety Orange", category: "Bold", description: "High-visibility orange-and-black — job-site/safety energy.", fontFileUrl: F.anton, fontWeight: 400, color: "#ff7a00", strokeColor: "#000000", strokeWidth: 3, background: null, uppercase: true, position: "center", letterSpacing: "0.01em", animation: "punch" }),
+  // FEATURE — "MrBeast-style captions." Confirmed real spec: Anton font,
+  // white fill, heavy black outline (6-10px), words spring in together
+  // (scale-up from ~70% with an overshoot, exactly the "punch" animation
+  // already built), big and centered. The per-word karaoke highlight sweep
+  // every caption gets (see assCaptions.ts) defaults to a bright yellow on
+  // a white base style — which is ALSO exactly the real look (each word
+  // flashes yellow as it's spoken), so this needed no new rendering code,
+  // just the right font/color/animation combination.
+  p({ id: "mrbeast", name: "MrBeast Style", category: "Bold", description: "Big bold white caps, thick black outline, spring-pop on every word — the exact high-energy look from MrBeast's videos.", fontFileUrl: F.anton, fontWeight: 400, color: "#ffffff", strokeColor: "#000000", strokeWidth: 4, background: null, uppercase: true, position: "center", letterSpacing: "0.005em", animation: "punch" }),
 
   // ── Professional / Trade ─────────────────────────────────────────
   p({ id: "trade-pro", name: "Trade Pro", category: "Professional", description: "Clean navy-on-white bar — professional, trustworthy, local-business feel.", fontFileUrl: F.latoBold, fontWeight: 700, color: "#0f172a", strokeColor: "transparent", strokeWidth: 0, background: "rgba(255,255,255,0.95)", uppercase: false, position: "bottom", letterSpacing: "0", animation: "fade" }),

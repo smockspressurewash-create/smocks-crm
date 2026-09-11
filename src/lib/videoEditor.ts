@@ -268,6 +268,76 @@ export const COLOR_LOOKS: ColorLook[] = [
 ];
 export const getColorLook = (id?: string): ColorLook => COLOR_LOOKS.find(l => l.id === id) || COLOR_LOOKS[0];
 
+// FEATURE — "add templates." One-click bundles of a caption style + color
+// look + transition set + camera-flicker choice — all settings Auto-Edit
+// already applies individually, just pre-combined into a named "recipe" so
+// the owner doesn't have to configure each one by hand for a common goal.
+export type AutoEditTemplate = {
+  id: string; name: string; description: string;
+  captionStyleId: string; colorLook: string; transitionCycle: string[]; cameraFlicker: boolean;
+};
+export const AUTO_EDIT_TEMPLATES: AutoEditTemplate[] = [
+  { id: "mrbeast-energy", name: "MrBeast Energy", description: "Big bold pop captions, punchy transitions, camera flicker on every cut — maximum energy.", captionStyleId: "mrbeast", colorLook: "vibrant-pop", transitionCycle: ["zoom-punch", "dissolve", "squeeze", "slide-left", "slide-right"], cameraFlicker: true },
+  { id: "fast-punchy", name: "Fast & Punchy", description: "Quick cuts, high contrast, flash transitions — built for a short, scroll-stopping clip.", captionStyleId: "hook-punch", colorLook: "high-contrast-punch", transitionCycle: ["zoom-punch", "dissolve", "squeeze", "radial-wipe"], cameraFlicker: true },
+  { id: "cinematic-reveal", name: "Cinematic Reveal", description: "Smooth crossfades, teal & orange grade, minimal captions — a polished before/after reveal.", captionStyleId: "minimal-clean", colorLook: "cinematic-teal-orange", transitionCycle: ["crossfade", "smooth-slide"], cameraFlicker: false },
+  { id: "before-after", name: "Before/After Reveal", description: "Wipe transitions and a bold reveal tag — built for showing off the work.", captionStyleId: "before-after-tag", colorLook: "vibrant-pop", transitionCycle: ["wipe-left", "wipe-right", "slide-up"], cameraFlicker: false },
+  { id: "clean-professional", name: "Clean Professional", description: "Simple crossfades, bright natural color, trade-style captions — trustworthy and understated.", captionStyleId: "trade-pro", colorLook: "clean-bright", transitionCycle: ["crossfade"], cameraFlicker: false },
+  { id: "moody-dark", name: "Moody & Dark", description: "Cool desaturated grade, slow smooth transitions, quiet captions — dusk/night work footage.", captionStyleId: "podcast-caption", colorLook: "moody-blue", transitionCycle: ["crossfade", "fade-black"], cameraFlicker: false },
+];
+export const getAutoEditTemplate = (id?: string): AutoEditTemplate | undefined => AUTO_EDIT_TEMPLATES.find(t => t.id === id);
+
+// FEATURE — "describe in text what I want, and without using an API key
+// you can discern and edit the video." A real, honest, zero-cost
+// implementation of this: keyword/phrase matching against the free-text
+// description, mapped onto the exact same style options above — this is
+// NOT an LLM and doesn't pretend to be one (no API key, no network call,
+// runs instantly) — it recognizes a defined vocabulary of common editing
+// language ("energetic," "cinematic," "slow motion," "mrbeast captions,"
+// etc.) rather than truly understanding arbitrary prose. `matched` is
+// returned so the UI can show the owner exactly what it picked up, rather
+// than silently guessing — if nothing matches, every field stays
+// undefined and the owner's own template/manual choices are left alone.
+export type StylePromptResult = {
+  captionStyleId?: string; colorLook?: string; transitionCycle?: string[];
+  cameraFlicker?: boolean; speed?: number; skipCaptions?: boolean; matched: string[];
+};
+export const interpretStylePrompt = (raw: string): StylePromptResult => {
+  const text = ` ${(raw || "").toLowerCase()} `;
+  const has = (...words: string[]) => words.some(w => text.includes(w));
+  const result: StylePromptResult = { matched: [] };
+
+  if (has("mrbeast", "mr beast")) { result.captionStyleId = "mrbeast"; result.matched.push("MrBeast-style captions"); }
+  else if (has("no caption", "without caption", "skip caption")) { result.skipCaptions = true; result.matched.push("no captions"); }
+  else if (has("minimal caption", "clean caption", "simple caption", "subtle caption")) { result.captionStyleId = "whisper-clean"; result.matched.push("minimal captions"); }
+  else if (has("bold caption", "yellow caption", "big caption", "loud caption")) { result.captionStyleId = "hook-punch"; result.matched.push("bold captions"); }
+
+  if (has("cinematic", "movie look", "film look", "blockbuster")) { result.colorLook = "cinematic-teal-orange"; result.matched.push("cinematic color grade"); }
+  else if (has("moody", "dramatic", "dark mood")) { result.colorLook = "moody-blue"; result.matched.push("moody color grade"); }
+  else if (has("vintage", "retro", "old film", "throwback")) { result.colorLook = "warm-vintage"; result.matched.push("vintage color grade"); }
+  else if (has("black and white", "b&w", "b & w", "grayscale")) { result.colorLook = "bw-cinematic"; result.matched.push("black & white"); }
+  else if (has("vibrant", "colorful", "punchy color", "poppy")) { result.colorLook = "vibrant-pop"; result.matched.push("vibrant color grade"); }
+  else if (has("professional", "corporate", "trustworthy", "clean look")) { result.colorLook = "clean-bright"; result.matched.push("clean/professional color grade"); }
+  else if (has("neon", "cyberpunk")) { result.colorLook = "cyberpunk-neon"; result.matched.push("neon color grade"); }
+  else if (has("golden hour", "sunset", "warm glow")) { result.colorLook = "golden-hour"; result.matched.push("golden-hour color grade"); }
+
+  if (has("energetic", "high energy", "hype", "fast paced", "fast-paced", "punchy", "exciting", "upbeat")) {
+    result.transitionCycle = ["zoom-punch", "dissolve", "squeeze", "slide-left", "slide-right"];
+    result.cameraFlicker = true;
+    result.matched.push("energetic pacing + camera flicker");
+  } else if (has("calm", "relaxed", "gentle", "smooth pace", "laid back")) {
+    result.transitionCycle = ["crossfade", "smooth-slide"];
+    result.cameraFlicker = false;
+    result.matched.push("calm, smooth pacing");
+  }
+  if (has("no flash", "no flicker", "no strobe")) { result.cameraFlicker = false; result.matched.push("camera flicker off"); }
+  else if (has("flash", "flicker", "strobe") && result.cameraFlicker === undefined) { result.cameraFlicker = true; result.matched.push("camera flicker on"); }
+
+  if (has("slow motion", "slow-mo", "slowmo", "slow mo")) { result.speed = 0.6; result.matched.push("slow motion (0.6x)"); }
+  else if (has("speed up", "sped up", "fast forward", "timelapse", "time-lapse", "time lapse")) { result.speed = 1.6; result.matched.push("sped up (1.6x)"); }
+
+  return result;
+};
+
 // Escapes text for safe embedding inside an ffmpeg filtergraph string —
 // drawtext's `text=` value is itself inside a filter string that's already
 // colon/comma-delimited, so both those AND single quotes need escaping or

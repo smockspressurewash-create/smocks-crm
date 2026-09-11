@@ -25,10 +25,10 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { GBtn } from "./GBtn";
-import { X, Plus, Trash2, Wand2, Scissors, Type, Upload, Sparkles, RotateCw, FlipHorizontal, Captions, Crop as CropIcon, Sliders, Maximize2, Minimize2, Layers, Music as MusicIcon, ImagePlus, Volume2, VolumeX, Play, Pause, Download as DownloadIcon } from "lucide-react";
+import { X, Plus, Trash2, Wand2, Scissors, Type, Upload, Sparkles, RotateCw, FlipHorizontal, Captions, Crop as CropIcon, Sliders, Maximize2, Minimize2, Layers, Music as MusicIcon, ImagePlus, Volume2, VolumeX, Play, Pause, Download as DownloadIcon, ChevronUp, ChevronDown } from "lucide-react";
 import { uid, uploadJobMedia } from "../../lib/utils";
 import { CAPTION_STYLES, CAPTION_GOOGLE_FONTS_HREF, captionStyleToCss, getCaptionStyle, TRANSITION_EFFECTS } from "../../lib/captionStyles";
-import { readVideoMeta, readImageMeta, detectSilence, renderFinalVideo, extractAudioForTranscription, autoCutClipDeadSpace, stripFillerWordsFromClip, isFillerWord, requestTranscription, groupWordsIntoCaptionLines, CAPTION_PROVIDERS, ASPECT_RATIOS, SOUND_EFFECTS, COLOR_LOOKS, getColorLook, type AspectRatio, type CaptionProvider, type CropRect, type EditorClip, type EditorCaption, type EditorOverlay, type MusicTrack } from "../../lib/videoEditor";
+import { readVideoMeta, readImageMeta, detectSilence, renderFinalVideo, extractAudioForTranscription, autoCutClipDeadSpace, stripFillerWordsFromClip, isFillerWord, requestTranscription, groupWordsIntoCaptionLines, CAPTION_PROVIDERS, ASPECT_RATIOS, SOUND_EFFECTS, COLOR_LOOKS, getColorLook, AUTO_EDIT_TEMPLATES, getAutoEditTemplate, interpretStylePrompt, type AspectRatio, type CaptionProvider, type CropRect, type EditorClip, type EditorCaption, type EditorOverlay, type MusicTrack } from "../../lib/videoEditor";
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 
@@ -154,6 +154,21 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
   const [autoEditAddTransitions, setAutoEditAddTransitions] = useState(true);
   const [autoEditColorLook, setAutoEditColorLook] = useState("cinematic-teal-orange");
   const [cameraFlickerEnabled, setCameraFlickerEnabled] = useState(true);
+  // FEATURE — "add templates." One-click named recipes (AUTO_EDIT_TEMPLATES)
+  // that set caption style + color look + transition set + flicker together.
+  const [autoEditTemplateId, setAutoEditTemplateId] = useState<string | null>(null);
+  const [autoEditTransitionCycle, setAutoEditTransitionCycle] = useState<string[] | null>(null);
+  // FEATURE — "describe in text what I want... without an API key you can
+  // discern and edit the video." Keyword-matched against
+  // interpretStylePrompt (videoEditor.ts) — real, zero-cost, zero-API-key;
+  // see that function's own comment for exactly what it does and doesn't do.
+  const [autoEditPrompt, setAutoEditPrompt] = useState("");
+  const [autoEditPromptMatches, setAutoEditPromptMatches] = useState<string[]>([]);
+  // FEATURE — "ping the owner and ask what order you want the clips in."
+  // A real confirm-before-running step: Run Auto-Edit opens this instead of
+  // firing immediately whenever there's more than one clip.
+  const [orderConfirmOpen, setOrderConfirmOpen] = useState(false);
+  const [orderDraft, setOrderDraft] = useState<EditorClip[]>([]);
   const [autoEditRunning, setAutoEditRunning] = useState(false);
   const [autoEditPhase, setAutoEditPhase] = useState("");
   // FEATURE — "move the text around." Which caption (if any) is currently
@@ -731,27 +746,71 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
   // Deliberately excludes the more novelty/gimmick transitions (pixelize/
   // glitch, circle-open) from the AUTO set — those stay available to pick
   // by hand on the Clips tab, just not what a one-click pass reaches for.
-  const AUTO_TRANSITION_CYCLE = ["crossfade", "zoom-punch", "slide-left", "slide-right", "smooth-slide", "radial-wipe", "dissolve"];
-  const applyAutoStyling = (clipList: EditorClip[]): EditorClip[] => clipList.map((c, i) => ({
+  const DEFAULT_TRANSITION_CYCLE = ["crossfade", "zoom-punch", "slide-left", "slide-right", "smooth-slide", "radial-wipe", "dissolve"];
+  // FEATURE — "describe in text what I want... discern and edit the video."
+  // Resolves the ACTUAL settings a run should use: base state (or a picked
+  // template) as the default, with any keyword the free-text prompt
+  // actually matched taking precedence — never the other way around, so a
+  // template pick isn't silently discarded just because the prompt field
+  // has old text sitting in it from a previous run.
+  const resolveEffectiveAutoEditSettings = () => {
+    const promptResult = autoEditPrompt.trim() ? interpretStylePrompt(autoEditPrompt) : null;
+    return {
+      captionStyleId: promptResult?.captionStyleId || autoEditCaptionStyle,
+      colorLook: promptResult?.colorLook || autoEditColorLook,
+      transitionCycle: promptResult?.transitionCycle || autoEditTransitionCycle || DEFAULT_TRANSITION_CYCLE,
+      cameraFlicker: promptResult?.cameraFlicker !== undefined ? promptResult.cameraFlicker : cameraFlickerEnabled,
+      speed: promptResult?.speed,
+      skipCaptions: !!promptResult?.skipCaptions,
+    };
+  };
+  const applyAutoStyling = (clipList: EditorClip[], settings: ReturnType<typeof resolveEffectiveAutoEditSettings>): EditorClip[] => clipList.map((c, i) => ({
     ...c,
-    transitionToNext: (autoEditAddTransitions && i < clipList.length - 1) ? AUTO_TRANSITION_CYCLE[i % AUTO_TRANSITION_CYCLE.length] : "none",
-    colorLook: autoEditColorLook !== "none" ? autoEditColorLook : c.colorLook,
+    transitionToNext: (autoEditAddTransitions && i < clipList.length - 1) ? settings.transitionCycle[i % settings.transitionCycle.length] : "none",
+    colorLook: settings.colorLook !== "none" ? settings.colorLook : c.colorLook,
+    speed: settings.speed ?? c.speed,
   }));
 
-  const runAutoEdit = async () => {
-    if (clips.length === 0) { toast?.("Add at least one clip first", "red"); return; }
+  // FEATURE — "add templates." One click sets caption style + color look +
+  // transition set + camera flicker together — still just setting the same
+  // state the manual controls below use, so any of it can be tweaked
+  // afterward same as always.
+  const applyTemplate = (id: string) => {
+    const t = getAutoEditTemplate(id);
+    if (!t) return;
+    setAutoEditTemplateId(id);
+    setAutoEditCaptionStyle(t.captionStyleId);
+    setAutoEditColorLook(t.colorLook);
+    setAutoEditTransitionCycle(t.transitionCycle);
+    setAutoEditAddTransitions(true);
+    setCameraFlickerEnabled(t.cameraFlicker);
+  };
+
+  // FEATURE — "ping the owner and ask what order you want the clips in."
+  // clipsOverride lets the order-confirmation modal hand in its (possibly
+  // just-reordered) draft directly — setClips() is async/batched, so
+  // reading the `clips` state closure right after calling it would still
+  // see the OLD order.
+  const runAutoEdit = async (clipsOverride?: EditorClip[]) => {
+    const sourceClips = clipsOverride || clips;
+    if (sourceClips.length === 0) { toast?.("Add at least one clip first", "red"); return; }
+    const effective = resolveEffectiveAutoEditSettings();
+    setAutoEditPromptMatches(autoEditPrompt.trim() ? interpretStylePrompt(autoEditPrompt).matched : []);
+    if (cameraFlickerEnabled !== effective.cameraFlicker) setCameraFlickerEnabled(effective.cameraFlicker);
     setAutoEditRunning(true);
     try {
       setAutoEditPhase("Cutting dead space…");
       const cutClips: EditorClip[] = [];
-      for (let i = 0; i < clips.length; i++) {
-        setAutoEditPhase(`Cutting dead space (clip ${i + 1}/${clips.length})…`);
-        const pieces = await autoCutClipDeadSpace(clips[i]);
+      for (let i = 0; i < sourceClips.length; i++) {
+        setAutoEditPhase(`Cutting dead space (clip ${i + 1}/${sourceClips.length})…`);
+        const pieces = await autoCutClipDeadSpace(sourceClips[i]);
         cutClips.push(...pieces);
       }
 
       const apiKey = getCaptionApiKey(captionProvider);
-      if (apiKey) {
+      const styleNote = [autoEditAddTransitions ? "transitions" : "", effective.colorLook !== "none" ? "color grade" : "", effective.cameraFlicker ? "camera flicker" : "", effective.speed && effective.speed !== 1 ? `${effective.speed}x speed` : ""].filter(Boolean).join(", ");
+      const promptNote = autoEditPromptMatches.length > 0 ? ` (picked up from your description: ${autoEditPromptMatches.join(", ")})` : "";
+      if (apiKey && !effective.skipCaptions) {
         setAutoEditPhase("Generating captions…");
         const newCaptions: EditorCaption[] = [];
         // FEATURE — "improve auto-editing ten times." The local provider's
@@ -776,14 +835,14 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
               const groups = groupWordsIntoCaptionLines(survivorWords);
               for (const g of groups) {
                 newCaptions.push({
-                  id: uid(), text: g.text, startSec: offset + g.start, endSec: offset + g.end, styleId: autoEditCaptionStyle,
+                  id: uid(), text: g.text, startSec: offset + g.start, endSec: offset + g.end, styleId: effective.captionStyleId,
                   words: g.words.map(w => ({ text: w.text, start: offset + w.start, end: offset + w.end })),
                 });
               }
               offset += piecesAfterFillerStrip.reduce((s, p) => s + Math.max(0, p.endSec - p.startSec), 0);
             } else {
               finalClips.push(c);
-              for (const seg of rawSegments) newCaptions.push({ id: uid(), text: seg.text, startSec: offset + seg.start, endSec: offset + seg.end, styleId: autoEditCaptionStyle });
+              for (const seg of rawSegments) newCaptions.push({ id: uid(), text: seg.text, startSec: offset + seg.start, endSec: offset + seg.end, styleId: effective.captionStyleId });
               offset += Math.max(0, c.endSec - c.startSec);
             }
           } catch (e: any) {
@@ -792,19 +851,27 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
             offset += Math.max(0, c.endSec - c.startSec);
           }
         }
-        const styledFinalClips = applyAutoStyling(finalClips);
+        const styledFinalClips = applyAutoStyling(finalClips, effective);
         setClips(styledFinalClips);
         setActiveClipId(styledFinalClips[0]?.id || null);
         setCaptions(prev => [...prev, ...newCaptions]);
         const fillerNote = fillerWordsCut > 0 ? `, cut ${fillerWordsCut} filler word${fillerWordsCut === 1 ? "" : "s"}` : "";
-        const styleNote = [autoEditAddTransitions ? "transitions" : "", autoEditColorLook !== "none" ? "color grade" : "", cameraFlickerEnabled ? "camera flicker" : ""].filter(Boolean).join(", ");
-        toast?.(`Auto-edit done — cut down to ${styledFinalClips.length} clip${styledFinalClips.length > 1 ? "s" : ""}${fillerNote}, added ${newCaptions.length} caption${newCaptions.length === 1 ? "" : "s"}${styleNote ? ` + ${styleNote}` : ""}. Review below, edit anything, then render ✓`, "green");
+        // FEATURE — "can you review this before I finish it?" Auto-Edit
+        // never renders/exports on its own — it only populates the
+        // timeline/captions state below, landing the owner back in the
+        // SAME editor with everything still fully editable (nothing here
+        // ever calls doExport). Switching to the Clips tab puts the actual
+        // result in front of them immediately instead of leaving them
+        // looking at the Auto-Edit panel they just clicked from.
+        setTab("clips");
+        toast?.(`Auto-edit done — cut down to ${styledFinalClips.length} clip${styledFinalClips.length > 1 ? "s" : ""}${fillerNote}, added ${newCaptions.length} caption${newCaptions.length === 1 ? "" : "s"}${styleNote ? ` + ${styleNote}` : ""}${promptNote}. Review below, edit anything, then render ✓`, "green");
       } else {
-        const styledCutClips = applyAutoStyling(cutClips);
+        const styledCutClips = applyAutoStyling(cutClips, effective);
         setClips(styledCutClips);
         setActiveClipId(styledCutClips[0]?.id || null);
-        const styleNote = [autoEditAddTransitions ? "transitions" : "", autoEditColorLook !== "none" ? "color grade" : "", cameraFlickerEnabled ? "camera flicker" : ""].filter(Boolean).join(", ");
-        toast?.(`Auto-edit done — cut down to ${styledCutClips.length} clip${styledCutClips.length > 1 ? "s" : ""}${styleNote ? ` + ${styleNote}` : ""}. Add a captions API key to also auto-generate captions, or add them manually below ✓`, "green");
+        setTab("clips");
+        const captionCaveat = effective.skipCaptions ? "(skipped captions, per your description)" : "Add a captions API key to also auto-generate captions, or add them manually below";
+        toast?.(`Auto-edit done — cut down to ${styledCutClips.length} clip${styledCutClips.length > 1 ? "s" : ""}${styleNote ? ` + ${styleNote}` : ""}${promptNote}. ${captionCaveat} ✓`, "green");
       }
     } catch (e: any) {
       toast?.("Auto-edit failed — " + (e?.message || "unknown error"), "red");
@@ -812,6 +879,34 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
       setAutoEditRunning(false);
       setAutoEditPhase("");
     }
+  };
+
+  // FEATURE — "ping the owner and ask what order you want the clips in."
+  // With more than one clip, Run Auto-Edit opens a real confirm-the-order
+  // step first instead of firing immediately — up/down reorder on a draft
+  // copy, only applied to the real timeline once confirmed.
+  const startAutoEditFlow = () => {
+    if (clips.length === 0) { toast?.("Add at least one clip first", "red"); return; }
+    if (clips.length > 1) {
+      setOrderDraft(clips.slice());
+      setOrderConfirmOpen(true);
+    } else {
+      runAutoEdit();
+    }
+  };
+  const moveOrderDraft = (index: number, dir: -1 | 1) => {
+    setOrderDraft(prev => {
+      const next = prev.slice();
+      const target = index + dir;
+      if (target < 0 || target >= next.length) return prev;
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
+  };
+  const confirmOrderAndRunAutoEdit = () => {
+    setClips(orderDraft);
+    setOrderConfirmOpen(false);
+    runAutoEdit(orderDraft);
   };
 
   const updateCaption = (id: string, patch: Partial<EditorCaption>) => setCaptions(prev => prev.map(c => c.id === id ? { ...c, ...patch } : c));
@@ -947,9 +1042,9 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
 
       {/* Top bar */}
       <div className="flex items-center justify-between px-2 py-2 border-b border-white/10 flex-shrink-0">
-        <button onClick={busy ? undefined : onClose} disabled={busy} className="ve-tap text-white/60 hover:text-white disabled:opacity-30"><X size={20} /></button>
+        <button onClick={(busy || orderConfirmOpen) ? undefined : onClose} disabled={busy || orderConfirmOpen} className="ve-tap text-white/60 hover:text-white disabled:opacity-30"><X size={20} /></button>
         <div className="text-sm font-semibold text-white">Video Editor</div>
-        {!busy && clips.length > 0 ? (
+        {!busy && !orderConfirmOpen && clips.length > 0 ? (
           <div className="flex items-center gap-1.5">
             <button onClick={doDownload} title="Download to your device" className="ve-tap px-2.5 py-1.5 rounded-lg border border-white/15 text-white/70 hover:text-white text-xs font-semibold flex items-center gap-1"><DownloadIcon size={13} /></button>
             <button onClick={doExport} className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-bold">Export</button>
@@ -957,7 +1052,32 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
         ) : <div className="w-16" />}
       </div>
 
-      {busy ? (
+      {orderConfirmOpen ? (
+        // FEATURE — "ping the owner and ask what order you want the clips
+        // in." A real step, not just a note — Run Auto-Edit stops here
+        // first whenever there's more than one clip.
+        <div className="flex-1 min-h-0 flex flex-col p-4 gap-3 overflow-y-auto">
+          <div className="text-lg font-bold text-white">Confirm clip order</div>
+          <div className="text-xs text-white/50 -mt-2">Auto-Edit stitches clips together in this order — move any of them before running.</div>
+          <div className="space-y-2">
+            {orderDraft.map((c, i) => (
+              <div key={c.id} className="flex items-center gap-2 p-2.5 rounded-xl bg-white/5 border border-white/10">
+                <div className="w-6 h-6 rounded-full bg-purple-900/40 border border-purple-600/40 flex items-center justify-center text-[11px] font-bold text-purple-200 flex-shrink-0">{i + 1}</div>
+                <div className="flex-1 min-w-0 text-xs text-white/70 truncate">{c.isImage ? "Photo" : "Clip"} {i + 1}{c.file?.name ? ` — ${c.file.name}` : ""}</div>
+                <button onClick={() => moveOrderDraft(i, -1)} disabled={i === 0} className="ve-tap text-white/50 hover:text-white disabled:opacity-20"><ChevronUp size={16} /></button>
+                <button onClick={() => moveOrderDraft(i, 1)} disabled={i === orderDraft.length - 1} className="ve-tap text-white/50 hover:text-white disabled:opacity-20"><ChevronDown size={16} /></button>
+              </div>
+            ))}
+          </div>
+          <div className="flex-1" />
+          <div className="flex gap-2 pb-2">
+            <button onClick={() => setOrderConfirmOpen(false)} className="flex-1 py-3 rounded-xl border border-white/15 text-white/60 hover:text-white text-sm font-semibold transition">Cancel</button>
+            <button onClick={confirmOrderAndRunAutoEdit} className="flex-1 py-3 rounded-xl bg-purple-900/40 hover:bg-purple-900/60 border border-purple-600/50 text-purple-200 text-sm font-semibold transition flex items-center justify-center gap-1.5">
+              <Sparkles size={14} />Confirm &amp; Run Auto-Edit
+            </button>
+          </div>
+        </div>
+      ) : busy ? (
         <div className="flex-1 flex items-center justify-center">
           <div className="py-16 text-center space-y-4 px-6">
             <div className={"w-14 h-14 mx-auto rounded-full border-4 animate-spin " + (rendering ? "border-red-600/20 border-t-red-600" : "border-purple-600/20 border-t-purple-500")} />
@@ -1700,6 +1820,40 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
                 <div className="p-3 rounded-xl bg-purple-950/15 border border-purple-700/30 space-y-2.5">
                   <div className="text-xs font-semibold text-purple-300 flex items-center gap-1.5"><Sparkles size={13} />Auto-Edit</div>
                   <div className="text-[10px] text-white/40">Cuts dead air and filler words out, stitches what's left together, captions it, adds transitions, a color grade, and camera-flicker cuts — free, runs on this device, no API key needed. You still get to review and tweak everything after.</div>
+
+                  {/* FEATURE — "add templates." One-click named recipes —
+                      each one just sets the same options below together. */}
+                  <div>
+                    <label className="text-[9px] text-white/40 block mb-1">Template</label>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {AUTO_EDIT_TEMPLATES.map(t => (
+                        <button
+                          key={t.id}
+                          onClick={() => applyTemplate(t.id)}
+                          title={t.description}
+                          className={"px-2 py-2 rounded-lg text-[10px] font-semibold border text-left transition " + (autoEditTemplateId === t.id ? "border-purple-500 bg-purple-900/40 text-purple-200" : "border-white/10 text-white/50 hover:text-white/80 hover:border-white/25")}
+                        >
+                          {t.name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* FEATURE — "describe in text what I want... discern and
+                      edit the video... without an API key." Real, but
+                      keyword-matched, not an LLM — matched phrases show up
+                      in the completion toast so it's never a black box. */}
+                  <div>
+                    <label className="text-[9px] text-white/40 block mb-1">Describe the vibe (optional — matched to presets, no API key)</label>
+                    <textarea
+                      value={autoEditPrompt}
+                      onChange={e => setAutoEditPrompt(e.target.value)}
+                      placeholder='e.g. "fast, energetic, MrBeast captions" or "calm cinematic reveal, no flicker"'
+                      rows={2}
+                      className="ve-input w-full bg-black/30 border border-white/10 rounded-lg px-2 py-1.5 text-white placeholder-white/25 resize-none"
+                    />
+                  </div>
+
                   <div className="grid grid-cols-2 gap-1.5">
                     <div>
                       <label className="text-[9px] text-white/40 block mb-1">Captions from</label>
@@ -1739,7 +1893,7 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
                       </select>
                     </div>
                   </div>
-                  <button onClick={runAutoEdit} className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-lg bg-purple-900/40 hover:bg-purple-900/60 border border-purple-600/50 text-purple-200 text-xs font-semibold transition">
+                  <button onClick={startAutoEditFlow} className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-lg bg-purple-900/40 hover:bg-purple-900/60 border border-purple-600/50 text-purple-200 text-xs font-semibold transition">
                     <Sparkles size={13} />Run Auto-Edit
                   </button>
                 </div>
