@@ -12,7 +12,7 @@ import { supabase } from "../../lib/supabase";
 // client_secret, and confirms payment in-place without leaving the page.
 export function StripePaymentModal({
   open, onClose, publishableKey, stripeAccountId, amount, currency = "usd", description = "",
-  onSuccess, invoiceId, allowSaveCard = false, tipCents = 0,
+  onSuccess, invoiceId, allowSaveCard = false, tipCents = 0, disableLink = false,
 }: {
   open: boolean; onClose: () => void;
   publishableKey: string;
@@ -45,6 +45,16 @@ export function StripePaymentModal({
   // underpay), so it's accepted separately here and added to the verified
   // base amount server-side (see stripe-action.ts's create_payment_intent).
   tipCents?: number;
+  // SECURITY FIX (owner report — CRITICAL) — Stripe Link autofills/offers
+  // a one-click "Use this card" for whatever saved card the BROWSER's own
+  // Link session belongs to, independent of which customer is actually
+  // being charged — on a shared owner/employee field device (JobDetailModal's
+  // in-person "charge a card" flow), that surfaced the OWNER's own personal
+  // card as a selectable option while charging a CUSTOMER. Set true for any
+  // owner/employee-operated charge flow on a shared device; leave false
+  // (default) for a customer paying on their own device (ClientPortal/
+  // ClientAuthPortal), where Link is a genuine, safe convenience.
+  disableLink?: boolean;
 }) {
   const [status, setStatus] = useState<"loading" | "ready" | "processing" | "success" | "error">("loading");
   const [error, setError] = useState("");
@@ -102,7 +112,7 @@ export function StripePaymentModal({
         stripeRef.current = stripe;
         const elements = stripe.elements({ clientSecret: intent.client_secret });
         elementsRef.current = elements;
-        const paymentElement = elements.create("payment");
+        const paymentElement = elements.create("payment", disableLink ? { wallets: { link: "never" } } : undefined);
         if (mountRef.current) paymentElement.mount(mountRef.current);
 
         // Payment Request Button (Apple Pay / Google Pay) — see comment

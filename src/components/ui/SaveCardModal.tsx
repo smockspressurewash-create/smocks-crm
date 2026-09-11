@@ -97,7 +97,24 @@ export function SaveCardModal({
           stripeRef.current = stripe;
           const elements = stripe.elements({ clientSecret: intent.client_secret });
           elementsRef.current = elements;
-          const el = elements.create("payment");
+          // SECURITY FIX (owner report — CRITICAL) — "I pressed Add Card on
+          // File as an employee and it showed my personal card." Stripe Link
+          // autofills/one-click-fills whatever saved card the BROWSER's own
+          // Link session belongs to, regardless of which merchant Customer
+          // this card is being saved against — on a shared field-portal
+          // device, that surfaces WHOEVER last used Link there (an owner
+          // testing this, a different employee, a past customer) as a
+          // selectable "Use this card" option for an unrelated person's
+          // card-on-file entry. Restricting payment_method_types to "card"
+          // server-side (create_setup_intent) does NOT stop this — Link
+          // still redeems as a "card" payment method under the hood, so the
+          // only real fix is disabling Link on the Element itself
+          // (wallets.link: "never", confirmed via Stripe's own Payment
+          // Element options reference). Only disabled for owner/employee
+          // sessions (useCallerSession) — a customer entering their OWN card
+          // on their OWN device keeps Link as the genuine convenience it's
+          // meant to be.
+          const el = elements.create("payment", useCallerSession ? { wallets: { link: "never" } } : undefined);
           if (mountRef.current) el.mount(mountRef.current);
           setStatus("ready");
         })(), 25000);

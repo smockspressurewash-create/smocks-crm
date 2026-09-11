@@ -2337,6 +2337,7 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
         description={linkedInvoice ? `Invoice #${linkedInvoice.id.slice(-8).toUpperCase()}` : `Job payment — ${job.address || ""}`}
         invoiceId={linkedInvoice?.id}
         onSuccess={chargeCardSuccess}
+        disableLink
       />
     </Modal>
   );

@@ -1926,12 +1926,34 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
                   Send an invoice instead {customer?.savedPaymentMethodId ? "(card stays saved on file)" : ""}
                 </button>
               )}
+              {/* BUG FIX (owner report) — "pressed complete, chose card, it
+                  just says complete... doesn't say if it charged the
+                  client." This grid is a MANUAL note only — it never touches
+                  Stripe, unlike the emerald "Charge to card on file" button
+                  above. "Card" here read identically to a real charge with
+                  nothing distinguishing them, so an employee could easily
+                  believe a customer's card was actually charged when it
+                  wasn't. Relabeled (only when a real charge option exists at
+                  all, so there's something to contrast against) and paired
+                  with an explicit toast on Mark Complete so it's never silent
+                  about what did or didn't happen. */}
               <div className="grid grid-cols-2 gap-2">
                 {["Cash", "Check", "Card", "Zelle", "Venmo", "Other"].map(m => (
-                  <button key={m} onClick={() => setPaymentMethod(m)} className={"py-3 rounded-xl border-2 text-sm font-semibold transition " + (paymentMethod === m ? "border-green-500 bg-green-950/30 text-green-300" : "border-white/10 bg-black/40 text-white/60 hover:border-white/30")}>{m}</button>
+                  <button key={m} onClick={() => setPaymentMethod(m)} className={"py-3 rounded-xl border-2 text-sm font-semibold transition " + (paymentMethod === m ? "border-green-500 bg-green-950/30 text-green-300" : "border-white/10 bg-black/40 text-white/60 hover:border-white/30")}>
+                    {m === "Card" && effPerms.can_process_payments && !!settings?.stripePublishableKey ? "Card (paid elsewhere)" : m}
+                  </button>
                 ))}
               </div>
-              <GBtn onClick={() => finalizeCompletion("Paid", paymentMethod || "Cash")} disabled={!paymentMethod} className="w-full !justify-center !py-3">
+              <GBtn
+                onClick={() => {
+                  if (paymentMethod === "Card") {
+                    toast("Marked as paid by card — no charge was processed through this app. Nothing was collected from the customer's card here.", "yellow");
+                  }
+                  finalizeCompletion("Paid", paymentMethod || "Cash");
+                }}
+                disabled={!paymentMethod}
+                className="w-full !justify-center !py-3"
+              >
                 <CheckCircle size={16} className="inline mr-1.5" />Mark Complete
               </GBtn>
             </>

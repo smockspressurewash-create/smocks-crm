@@ -1064,6 +1064,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
         description={`Invoice #${stripePayInvoice?.id?.slice(-8).toUpperCase() || ""}`}
         onSuccess={(paymentIntentId) => stripePayInvoice && markPaidViaStripe(stripePayInvoice.id, paymentIntentId)}
         invoiceId={stripePayInvoice?.id}
+        disableLink
       />
 
       <InvoicePreviewModal
