@@ -20,17 +20,29 @@
 // `campaignStatus` come back wrong the first time you click "Check Campaign
 // Status" in Settings, the real shape is right there in the response to
 // paste back for a one-line fix — rather than an opaque "didn't work."
-import { getOwnerSecrets } from "./_lib/ownerSecrets";
+import { getOwnerSecrets, resolveCallerOwnerId } from "./_lib/ownerSecrets";
 
 export const onRequestPost = async (context: { request: Request; env: Record<string, string> }) => {
   try {
     let { sid, token, messagingServiceSid, ownerId } = await context.request.json() as {
       sid?: string; token?: string; messagingServiceSid?: string; ownerId?: string;
     };
-    // SECURITY FIX — resolved server-side from owner_secrets when ownerId is
-    // given, same as twilio-send.ts (see migration 0085's comment).
+    // SECURITY FIX (audit finding — same class as twilio-account-status.ts)
+    // — a client-supplied ownerId used to be enough to pull ANOTHER
+    // business's real Twilio credentials with zero proof of ownership. Only
+    // honored now when the caller has a real session resolving to that same
+    // ownerId; sid/token passed directly (an owner testing unsaved
+    // credentials) is unaffected — that path never touches owner_secrets.
     const serviceRoleKey = context.env.SUPABASE_SERVICE_ROLE_KEY;
     if (ownerId && serviceRoleKey) {
+      const authHeader = context.request.headers.get("Authorization") || "";
+      const accessToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+      const resolvedOwnerId = await resolveCallerOwnerId(accessToken);
+      if (!resolvedOwnerId || resolvedOwnerId !== ownerId) {
+        return new Response(JSON.stringify({ error: "Not authenticated for this business." }), {
+          status: 401, headers: { "Content-Type": "application/json" },
+        });
+      }
       const secrets = await getOwnerSecrets(ownerId, serviceRoleKey);
       if (secrets?.twilioAuthToken) {
         sid = secrets.twilioAccountSid || sid;

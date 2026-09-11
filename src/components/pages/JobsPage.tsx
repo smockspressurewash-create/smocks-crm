@@ -484,14 +484,16 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
     // the live date), but we bump updated_at + write the new date so realtime
     // subscribers re-render and the record itself reflects the reschedule.
     if (patch.scheduledDate !== undefined && oldJob && patch.scheduledDate !== oldJob.scheduledDate) {
+      // BUG FIX (audit) — checked only `error`, never row count, so a 0-row
+      // RLS mismatch never even tried the fallback retry below it.
       (supabase as any).from("job_requests")
         .update({ scheduled_date: patch.scheduledDate, updated_at: new Date().toISOString() })
-        .eq("job_id", jid).eq("status", "pending")
+        .eq("job_id", jid).eq("status", "pending").select("id")
         .then((r: any) => {
-          if (r?.error) {
-            // scheduled_date column may not exist — retry with just updated_at.
-            (supabase as any).from("job_requests").update({ updated_at: new Date().toISOString() }).eq("job_id", jid).eq("status", "pending")
-              .then((r2: any) => { if (r2?.error) console.warn("[Reschedule] could not update requests:", r2.error.message); });
+          if (r?.error || !Array.isArray(r?.data) || r.data.length === 0) {
+            // scheduled_date column may not exist (or 0 rows matched) — retry with just updated_at.
+            (supabase as any).from("job_requests").update({ updated_at: new Date().toISOString() }).eq("job_id", jid).eq("status", "pending").select("id")
+              .then((r2: any) => { if (r2?.error || !Array.isArray(r2?.data) || r2.data.length === 0) console.warn("[Reschedule] could not update requests:", r2?.error?.message || "0 rows matched"); });
           }
         })
         .catch((e: any) => console.warn("[Reschedule] request update failed:", e?.message));

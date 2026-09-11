@@ -100,7 +100,18 @@ export const onRequestGet = async (context: { request: Request; env: Record<stri
   const stateSecret = context.env.STRIPE_CONNECT_STATE_SECRET || context.env.SUPABASE_SERVICE_ROLE_KEY || "";
   if (!stateSecret || !ownerId || !sig) return redirectTo("stripe_connect_error=invalid_state");
   const expectedSig = await hmac(ownerId, stateSecret);
-  if (expectedSig !== sig) return redirectTo("stripe_connect_error=state_verification_failed");
+  // SECURITY FIX (audit finding — low severity) — a plain !== comparison on
+  // a secret HMAC is a timing side-channel (same class of issue the webhook
+  // signature checks elsewhere in this codebase already guard against);
+  // low practical risk here (gates OAuth-code linking, not money movement),
+  // fixed anyway to match the same constant-time comparison used for
+  // Stripe/Square webhook signatures.
+  const sigMatches = expectedSig.length === sig.length && (() => {
+    let diff = 0;
+    for (let i = 0; i < expectedSig.length; i++) diff |= expectedSig.charCodeAt(i) ^ sig.charCodeAt(i);
+    return diff === 0;
+  })();
+  if (!sigMatches) return redirectTo("stripe_connect_error=state_verification_failed");
 
   const platformSecretKey = context.env.STRIPE_SECRET_KEY;
   const serviceRoleKey = context.env.SUPABASE_SERVICE_ROLE_KEY;

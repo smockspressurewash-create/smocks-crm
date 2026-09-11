@@ -402,9 +402,14 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
     }, () => {
       setCustomers((prev: any[]) => prev.filter((x: any) => x.id !== c.id));
       markRecentlyDeleted("customers", [c.id]);
-      (supabase as any).from("customers").delete().eq("id", c.id).then((r: any) => {
-        if (r?.error) toast("Removed locally, but failed to remove on server — " + r.error.message, "red");
-      }).catch(() => {});
+      // BUG FIX (audit) — the "redo delete" path (undo the undo) checked
+      // only a thrown error, unlike the primary delete a few lines below,
+      // which also checks .select("id")'s row count — a 0-row RLS mismatch
+      // here silently believed the redo succeeded.
+      (supabase as any).from("customers").delete().eq("id", c.id).select("id").then((r: any) => {
+        if (r?.error) { toast("Removed locally, but failed to remove on server — " + r.error.message, "red"); return; }
+        if (!Array.isArray(r?.data) || r.data.length === 0) toast("Removed locally, but the server didn't confirm — it may reappear.", "red");
+      }).catch((e: any) => toast("Removed locally, but failed to remove on server — " + (e?.message || ""), "red"));
     });
     (supabase as any).from("customers").delete().eq("id", c.id).select("id")
       .then((result: any) => {

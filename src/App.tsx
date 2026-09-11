@@ -2385,9 +2385,17 @@ export function App() {
   // no-op for everyone unless the owner explicitly turns it on). Runs once
   // per session once real jobs are loaded, same "harmless if nothing
   // qualifies" pattern as Alfred's 7-day conversation cleanup.
+  // SECURITY FIX (audit finding) — the only one of this file's ~8
+  // hasCrmSession-gated effects missing the `|| page === "client"` guard
+  // every sibling effect carries. hasCrmSession can be stale-true while a
+  // customer is actually on #/client in the same tab (jobs loads there too
+  // — see FIX 17/20), so without this guard the sweep could run UNDER a
+  // customer's own session: deleting Storage files, mutating jobs, and
+  // toasting "Deleted media from N job(s)..." directly onto that customer's
+  // portal screen — an unrelated-job-activity leak, not just a stray write.
   const mediaRetentionSweepDoneRef = useRef(false);
   useEffect(() => {
-    if (!hasCrmSession || mediaRetentionSweepDoneRef.current) return;
+    if (!hasCrmSession || page === "client" || mediaRetentionSweepDoneRef.current) return;
     const days = Number((settings as any)?.mediaRetentionDays) || 0;
     if (days <= 0 || jobs.length === 0) return;
     mediaRetentionSweepDoneRef.current = true;

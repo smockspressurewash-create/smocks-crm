@@ -63,17 +63,22 @@ export function BulkPhotoUpload({ toast, posts = [], setPosts }) {
   const genCaptions = async () => {
     setGenerating(true);
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 500, messages: [{ role: "user", content: `Generate ${photos.length} unique short social media captions for a pressure washing company (Crew Boss, York PA). Each caption should be different. Return only a JSON array of strings, no other text. Number of captions: ${photos.length}` }] })
+      // BUG FIX (audit) — this called api.anthropic.com directly from the
+      // browser with no api-key header at all, so it never actually worked
+      // — every real attempt failed and just showed the generic error
+      // toast below, making "AI captions" a silently dead feature. Routed
+      // through the same callModel proxy every other AI feature uses —
+      // resolves the owner's own Claude key server-side (owner_secrets).
+      const result = await callModel({
+        modelId: MODELS.claude.id,
+        messages: [{ role: "user", content: `Generate ${photos.length} unique short social media captions for a pressure washing company (Crew Boss, York PA). Each caption should be different. Return only a JSON array of strings, no other text. Number of captions: ${photos.length}` }],
+        maxTokens: 500,
       });
-      const data = await res.json();
-      const text = data.content?.[0]?.text || "[]";
-      const clean = text.replace(/```json|```/g, "").trim();
+      const clean = (result.text || "[]").replace(/```json|```/g, "").trim();
       const captions = JSON.parse(clean);
       setPhotos(prev => prev.map((p, i) => ({ ...p, caption: captions[i] || p.caption })));
       toast("AI captions generated ✓");
-    } catch { toast("Caption generation failed", "error"); }
+    } catch (e: any) { toast("Caption generation failed — " + (e?.message || "unknown error"), "error"); }
     setGenerating(false);
   };
 

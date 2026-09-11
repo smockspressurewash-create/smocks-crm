@@ -963,8 +963,23 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
       const url = await uploadJobMedia(file, `${job.id}/video-${id}.${ext}`, file.type);
       const newVideo = url ? { id, url, caption: "Field video", addedAt: today() } : { id, dataUrl, caption: "Field video", addedAt: today() };
       const nextTags = requirementId ? { ...((job as any).photoRequirementTags || {}), [id]: requirementId } : (job as any).photoRequirementTags;
-      onUpdateJob({ videos: [...(job.videos || []), newVideo], ...(requirementId ? { photoRequirementTags: nextTags } : {}) } as any);
-      toast("Video added ✓");
+      // BUG FIX (audit) — unlike addPhoto right above it, this fired
+      // "Video added ✓" unconditionally with no timeout wrapper and no
+      // check of the update's result — a failed sync (owner never sees
+      // the video) looked identical to a successful one. Mirrors addPhoto's
+      // withTimeout + result-check + red-toast-on-failure pattern.
+      try {
+        const result = await withTimeout(Promise.resolve(onUpdateJob({ videos: [...(job.videos || []), newVideo], ...(requirementId ? { photoRequirementTags: nextTags } : {}) } as any)), 45000, "Video upload");
+        if (result?.error) {
+          console.error("[VideoSync] — error:", result.error.message);
+          toast("Video saved locally, but failed to sync — " + result.error.message, "red");
+        } else {
+          toast("Video added ✓", "green");
+        }
+      } catch (e: any) {
+        console.error("[VideoSync] — error:", e?.message || e);
+        toast("Video saved locally, but failed to sync — " + (e?.message || "unknown error"), "red");
+      }
     };
     r.readAsDataURL(file);
   };
@@ -3908,7 +3923,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
         employee_id: myEmployee.id, employee_name: myEmployee.name, score, passed,
         answers: quizAnswers, completed_at: new Date().toISOString(),
       };
-      const { error } = await (supabase as any).from("training_completions").insert(row);
+      // BUG FIX (audit) — every other async button handler in this file
+      // wraps its Supabase call in withTimeout so a hung request can't
+      // leave Submit stuck on its busy state forever; this one didn't.
+      const { error } = await withTimeout<any>((supabase as any).from("training_completions").insert(row), 15000, "Training result save");
       if (error) { toast?.("Couldn't save your training result — " + error.message, "red"); return; }
       setMyTrainingCompletions(prev => [...prev, row]);
       toast?.(passed ? "Training passed ✓" : "Training result submitted", passed ? "green" : "yellow");
@@ -3949,11 +3967,16 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     setOnboarding({ ...onboarding, items: nextItems });
     setOnboardingSavingId(itemId);
     try {
-      const { error }: any = await withTimeout<any>(
-        (supabase as any).from("employee_onboarding").update({ items: nextItems, updated_at: new Date().toISOString() }).eq("id", onboarding.id),
+      // BUG FIX (audit) — checked only a thrown error before; a 0-row RLS
+      // mismatch resolves with no error at all (CLAUDE.md's "0-row silent
+      // success"), so a real failure here would still toast "Marked
+      // complete ✓" with nothing actually saved.
+      const { error, data }: any = await withTimeout<any>(
+        (supabase as any).from("employee_onboarding").update({ items: nextItems, updated_at: new Date().toISOString() }).eq("id", onboarding.id).select("id"),
         10000, "Onboarding save"
       );
       if (error) throw new Error(error.message);
+      if (!Array.isArray(data) || data.length === 0) throw new Error("Save didn't match your onboarding record — try refreshing the page.");
       toast(done ? "Marked complete ✓" : "Marked incomplete", "green");
     } catch (e: any) {
       setOnboarding(prevOnboarding);
@@ -4435,10 +4458,16 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       // BUG FIX — "...catch is not a function," repeating in the console
       // on every Google token refresh. See lib/googleApi.ts's comment on
       // this same class of bug (raw PostgrestBuilder has no .catch()).
+      // BUG FIX (audit) — discarded both success and error with no row-count
+      // check; a genuinely failed persist here was invisible (low severity —
+      // this retries every 5 minutes regardless — but inconsistent with the
+      // row-check pattern this same effect family uses elsewhere).
       (supabase as any).from("employees")
         .update({ google_token: refreshed.token, google_token_expires_at: new Date(refreshed.expiresAt).toISOString() })
-        .eq("user_id", uid)
-        .then(() => {}, () => {});
+        .eq("user_id", uid).select("id")
+        .then((r: any) => {
+          if (r?.error || !Array.isArray(r?.data) || r.data.length === 0) console.warn("[GoogleRefresh] persist failed:", r?.error?.message || "0 rows matched");
+        }, (e: any) => console.warn("[GoogleRefresh] persist failed:", e?.message));
       setGoogleHydrateTick(t => t + 1);
     };
     tryRefresh();

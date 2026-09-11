@@ -10,15 +10,32 @@
 // says "suspended") — that's the actual "can this account send" signal the
 // owner asked for, more reliable than balance alone (a $0.00 balance can
 // still be a perfectly active pay-as-you-go account with a card on file).
-import { getOwnerSecrets } from "./_lib/ownerSecrets";
+import { getOwnerSecrets, resolveCallerOwnerId } from "./_lib/ownerSecrets";
 
 export const onRequestPost = async (context: { request: Request; env: Record<string, string> }) => {
   try {
     let { sid, token, ownerId } = await context.request.json() as { sid?: string; token?: string; ownerId?: string };
-    // SECURITY FIX — resolved server-side from owner_secrets when ownerId is
-    // given, same as twilio-send.ts (see migration 0085's comment).
+    // SECURITY FIX (audit finding) — this used to resolve and use ANY
+    // client-supplied ownerId's real Twilio credentials with zero proof the
+    // caller actually owns that business — a live Account SID + Auth Token
+    // (which the resulting balance/status call authenticates with) plus the
+    // account's balance/friendly name is a real information disclosure, not
+    // just a benign status check. Only honored now when the caller has a
+    // real session that resolves to that SAME ownerId (mirrors twilio-
+    // send.ts's stricter "ignore the body entirely" fix, kept slightly
+    // looser here only because sid/token can ALSO be passed directly by an
+    // owner testing not-yet-saved credentials — that path never touches
+    // owner_secrets at all, so it carries no cross-tenant risk on its own).
     const serviceRoleKey = context.env.SUPABASE_SERVICE_ROLE_KEY;
     if (ownerId && serviceRoleKey) {
+      const authHeader = context.request.headers.get("Authorization") || "";
+      const accessToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+      const resolvedOwnerId = await resolveCallerOwnerId(accessToken);
+      if (!resolvedOwnerId || resolvedOwnerId !== ownerId) {
+        return new Response(JSON.stringify({ error: "Not authenticated for this business." }), {
+          status: 401, headers: { "Content-Type": "application/json" },
+        });
+      }
       const secrets = await getOwnerSecrets(ownerId, serviceRoleKey);
       if (secrets?.twilioAuthToken) { sid = secrets.twilioAccountSid || sid; token = secrets.twilioAuthToken; }
     }

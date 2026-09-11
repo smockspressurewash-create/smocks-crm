@@ -52,17 +52,20 @@ export function ChemicalCostCalc({ items = [], settings = {} }) {
     if (!services) return;
     setLoading(true);
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 200,
-          messages: [{ role: "user", content: `For a pressure washing job with these services: "${services}", estimate the chemical costs. Respond ONLY with a JSON object: {"sqsh": dollar amount for SH (sodium hypochlorite), "surf": dollar amount for surfactant, "degreaser": dollar amount for degreaser (0 if not needed), "total": total chemical cost, "notes": one short sentence about main chemicals used}. Use typical pressure washing industry costs. No other text.` }]
-        })
+      // BUG FIX (audit) — this called api.anthropic.com directly from the
+      // browser with NO api-key header at all (Anthropic's API requires
+      // one, plus a browser-access header it never sent either) — every
+      // real call failed and silently fell to the heuristic fallback
+      // below, making this look like an occasionally-flaky feature when it
+      // never actually worked once. Routed through the same callModel
+      // proxy every other AI feature in this app uses — it resolves the
+      // owner's own Claude key server-side (owner_secrets), same as Alfred.
+      const result = await callModel({
+        modelId: MODELS.claude.id,
+        messages: [{ role: "user", content: `For a pressure washing job with these services: "${services}", estimate the chemical costs. Respond ONLY with a JSON object: {"sqsh": dollar amount for SH (sodium hypochlorite), "surf": dollar amount for surfactant, "degreaser": dollar amount for degreaser (0 if not needed), "total": total chemical cost, "notes": one short sentence about main chemicals used}. Use typical pressure washing industry costs. No other text.` }],
+        maxTokens: 200,
       });
-      const data = await res.json();
-      const text = data.content?.[0]?.text?.replace(/```json|```/g, "").trim() || "{}";
+      const text = (result.text || "").replace(/```json|```/g, "").trim() || "{}";
       const parsed = JSON.parse(text);
       setEstimate(parsed);
     } catch {
