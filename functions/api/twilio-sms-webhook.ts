@@ -17,11 +17,17 @@
 // (If you send from a standalone number with no Messaging Service, set this
 // under Phone Numbers -> your number -> Messaging -> "A message comes in".)
 //
-// Optional hardening: set TWILIO_AUTH_TOKEN in Cloudflare Pages -> Settings
-// -> Environment variables to verify requests are genuinely from Twilio
-// (X-Twilio-Signature). Without it, this endpoint still works, just
-// unverified — worst case of a forged request without it is one customer's
-// opt-in flag flipping at the business whose Twilio number was guessed.
+// Signature verification (X-Twilio-Signature) uses THIS BUSINESS's own
+// Twilio Auth Token (Settings -> Integrations -> Twilio, stored in
+// owner_secrets) — never a shared Cloudflare env var, since this platform
+// is multi-tenant and every owner has their own separate Twilio account.
+// TWILIO_AUTH_TOKEN as a Cloudflare Pages env var still exists ONLY as a
+// last-resort fallback for an owner who hasn't connected their own Twilio
+// account yet, or a single-tenant deployment with no owner_secrets at all —
+// most owners never need to set it. Without either, this endpoint still
+// works, just unverified — worst case of a forged request is one
+// customer's opt-in flag flipping at the business whose Twilio number was
+// guessed.
 
 import { runAlfredSmsAgent, sendAlfredSms } from "./_lib/alfredSmsAgent";
 import { runAlfredCustomerAgent } from "./_lib/alfredCustomerAgent";
@@ -527,18 +533,6 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // more specific logs further down should have fired.
     console.log("[TwilioSmsWebhook] inbound request received — From:", params.From, "Body:", (params.Body || "").slice(0, 80));
 
-    const authToken = context.env.TWILIO_AUTH_TOKEN;
-    if (authToken) {
-      const signature = context.request.headers.get("X-Twilio-Signature") || "";
-      const valid = await verifyTwilioSignature(context.request.url, params, signature, authToken);
-      if (!valid) {
-        console.warn("[TwilioSmsWebhook] signature verification failed — rejecting");
-        return new Response("Invalid signature", { status: 403 });
-      }
-    } else {
-      console.warn("[TwilioSmsWebhook] TWILIO_AUTH_TOKEN not set — processing without signature verification");
-    }
-
     const bodyRaw = params.Body || "";
     const body = bodyRaw.trim().toUpperCase();
     const from = params.From || "";
@@ -566,6 +560,33 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         googleRefreshToken = secrets.googleRefreshToken || googleRefreshToken;
       }
     }
+
+    // SECURITY FIX — "why am I putting my personal Twilio auth token inside
+    // Cloudflare? Each company uses its own Twilio credentials." Correct:
+    // this platform is multi-tenant and every owner already connects their
+    // OWN Twilio account (owner_secrets.twilioAuthToken, resolved just
+    // above). Verifying every inbound webhook against one single platform-
+    // wide TWILIO_AUTH_TOKEN would only ever be right for ONE tenant — for
+    // everyone else it would silently reject every real inbound text (their
+    // Twilio account signs with THEIR OWN auth token, never the platform
+    // one). Signature verification is moved to HERE (after the owner/
+    // twilioToken lookup above, instead of before it) so it can verify
+    // against THIS message's own business's Twilio Auth Token — falling
+    // back to the platform-wide TWILIO_AUTH_TOKEN only as a last resort
+    // (an owner who hasn't connected their own Twilio account yet, or a
+    // single-tenant deployment that never set up owner_secrets at all).
+    const effectiveAuthToken = twilioToken || context.env.TWILIO_AUTH_TOKEN;
+    if (effectiveAuthToken) {
+      const signature = context.request.headers.get("X-Twilio-Signature") || "";
+      const valid = await verifyTwilioSignature(context.request.url, params, signature, effectiveAuthToken);
+      if (!valid) {
+        console.warn("[TwilioSmsWebhook] signature verification failed for owner", ownerId, "— rejecting");
+        return new Response("Invalid signature", { status: 403 });
+      }
+    } else {
+      console.warn("[TwilioSmsWebhook] no Twilio Auth Token available (neither this owner's own nor a platform fallback) — processing without signature verification");
+    }
+
     const isOptInKeyword = body === keyword;
     const isConfirm = CONFIRM_WORDS.includes(body);
 

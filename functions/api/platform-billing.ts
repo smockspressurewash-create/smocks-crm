@@ -278,6 +278,26 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           });
         }
       }
+      // SECURITY FIX (audit finding) — nothing previously stopped a SECOND,
+      // unrelated account from calling complete_signup with the SAME
+      // sessionId (e.g. leaked via browser history on a shared computer, a
+      // pasted support-ticket URL, a referrer header) and getting itself
+      // marked active on the entitlement tied to someone else's real
+      // payment — for free, with the real payer possibly never even
+      // noticing anything looked wrong. A Stripe subscription id is unique
+      // per real subscription created, so checking whether it's already
+      // claimed by a DIFFERENT owner_id (before writing this owner's own
+      // row) closes that off; the SAME owner retrying this call (a dropped
+      // response, a page refresh) still succeeds exactly as before.
+      if (session.subscription) {
+        const dupCheck = await fetch(`${SUPABASE_URL}/rest/v1/platform_subscriptions?stripe_subscription_id=eq.${encodeURIComponent(session.subscription)}&select=owner_id`, { headers: svcHeaders });
+        const dupRows = await dupCheck.json().catch(() => []);
+        const claimedBy = Array.isArray(dupRows) && dupRows[0]?.owner_id;
+        if (claimedBy && claimedBy !== ownerId) {
+          console.error("[PlatformBilling] complete_signup REJECTED — subscription", session.subscription, "already claimed by a different owner_id. Attempted by:", ownerId, "already owned by:", claimedBy);
+          return json({ error: "This payment has already been used to activate a different account. If that wasn't you, contact support — no charge has been made to this account." }, 409);
+        }
+      }
       const existing = await fetch(`${SUPABASE_URL}/rest/v1/platform_subscriptions?owner_id=eq.${encodeURIComponent(ownerId)}&select=owner_id`, { headers: svcHeaders });
       const existingRows = await existing.json().catch(() => []);
       const row = {

@@ -130,8 +130,12 @@ export const transcribeAudioLocally = async (
   const transcriber = await loadLocalTranscriber(onProgress);
   onProgress?.("Transcribing audio locally (no data leaves your device)...");
   const audio = await decodeToMono16k(audioBlob);
+  // FEATURE — "really good-looking, timed auto captions." WORD-level
+  // timestamps (not just per-sentence) — lets videoEditor.ts's
+  // groupWordsIntoCaptionLines rebuild them into short, fast-paced 3-4-word
+  // caption lines instead of one long sentence sitting on screen.
   const output: any = await transcriber(audio, {
-    return_timestamps: true,
+    return_timestamps: "word",
     chunk_length_s: 30,
     stride_length_s: 5,
   });

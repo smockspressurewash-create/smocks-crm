@@ -166,8 +166,12 @@ export function CheckoutPage({
             <p className="text-white/45 text-sm mb-5">{planDef.tagline}</p>
             <div className="h-px bg-white/10 mb-5" />
             <ul className="space-y-2.5 mb-6">
-              {planDef.features.map(feat => (
-                <li key={feat} className="flex items-start gap-2 text-sm text-white/70">
+              {planDef.features.map((feat, i) => (
+                <li
+                  key={feat}
+                  className="flex items-start gap-2 text-sm text-white/70 co-panel"
+                  style={{ animationDelay: `${80 + i * 60}ms`, animationFillMode: "backwards" }}
+                >
                   <CheckCircle size={15} className="text-red-500 mt-0.5 flex-shrink-0" />
                   <span>{feat}</span>
                 </li>

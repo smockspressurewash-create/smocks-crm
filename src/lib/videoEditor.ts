@@ -87,6 +87,12 @@ export type EditorClip = {
   // ranges in renderFinalVideo, and to CSS filter() percentages for the
   // live preview so what's on screen while editing matches the export.
   brightness?: number; contrast?: number; saturation?: number;
+  // FEATURE — "video effects, video filters, good-looking LUTs." A named
+  // color-grade "look" (see COLOR_LOOKS below) applied on top of the plain
+  // brightness/contrast/saturation sliders above — those correct exposure,
+  // this applies a creative grade (teal & orange, moody blue, faded film,
+  // etc.), the same two-step "correct then grade" order a real editor uses.
+  colorLook?: string;
   // FEATURE — "more photo editing options." A still image can be added as
   // a clip too (uploaded alongside/instead of video) — rendered as a fixed-
   // duration segment via ffmpeg's `-loop 1` image-to-video path, then flows
@@ -177,6 +183,32 @@ export const SOUND_EFFECTS: SoundEffect[] = [
   { id: "tinny", name: "Tinny Speaker", description: "Small, cheap-speaker sound — no bass at all.", filter: "highpass=f=900" },
 ];
 export const getSoundEffect = (id?: string): SoundEffect => SOUND_EFFECTS.find(s => s.id === id) || SOUND_EFFECTS[0];
+
+// FEATURE — "video effects, video filters, good-looking LUTs, overall
+// editing." Real color-grade "looks," each a chain of ffmpeg's own native
+// color filters (curves' built-in film-emulation presets, colorbalance for
+// shadow/midtone/highlight tinting, eq, hue, vignette) — no external LUT
+// (.cube) files needed, so there's nothing to source/license/ship, and
+// these render identically in ffmpeg.wasm as they would in desktop ffmpeg.
+// previewCss is a CSS filter() approximation used for the live preview only
+// (see VideoEditorModal.tsx) — it can't reproduce curves/colorbalance
+// exactly, but it's close enough to preview which look is which; the real
+// export always uses the actual ffmpeg filterChain below.
+export type ColorLook = { id: string; name: string; description: string; filterChain: string; previewCss: string };
+export const COLOR_LOOKS: ColorLook[] = [
+  { id: "none", name: "None", description: "Original color, unaffected.", filterChain: "", previewCss: "none" },
+  { id: "cinematic-teal-orange", name: "Cinematic", description: "Teal shadows, warm skin tones — the classic blockbuster grade.", filterChain: "colorbalance=rs=-0.12:gs=0.02:bs=0.16:rm=0.04:bm=-0.05:rh=0.12:bh=-0.14,eq=saturation=1.15:contrast=1.08", previewCss: "contrast(1.1) saturate(1.2) hue-rotate(-4deg)" },
+  { id: "moody-blue", name: "Moody Blue", description: "Cool, desaturated, cinematic drama.", filterChain: "colorbalance=rs=-0.15:bs=0.22:rm=-0.06:bm=0.12,eq=saturation=0.82:contrast=1.12:brightness=-0.02", previewCss: "saturate(0.75) contrast(1.15) hue-rotate(8deg) brightness(0.95)" },
+  { id: "warm-vintage", name: "Warm Vintage", description: "Faded warm tones, gentle contrast — old film feel.", filterChain: "curves=preset=vintage,eq=saturation=0.9", previewCss: "sepia(0.25) saturate(0.85) contrast(0.95)" },
+  { id: "faded-film", name: "Faded Film", description: "Lifted blacks, soft contrast, subtle vignette — a dreamy, faded look.", filterChain: "curves=preset=lighter,eq=saturation=0.75:contrast=0.9,vignette=PI/5", previewCss: "saturate(0.7) contrast(0.85) brightness(1.08)" },
+  { id: "bw-cinematic", name: "B&W Cinematic", description: "Rich black-and-white with punchy contrast.", filterChain: "hue=s=0,eq=contrast=1.25:gamma=1.08", previewCss: "grayscale(1) contrast(1.25)" },
+  { id: "vibrant-pop", name: "Vibrant Pop", description: "Punchy saturation and contrast — makes colors jump off the screen.", filterChain: "eq=saturation=1.45:contrast=1.12:brightness=0.02", previewCss: "saturate(1.5) contrast(1.15)" },
+  { id: "golden-hour", name: "Golden Hour", description: "Warm amber highlights, soft glow — sunset/outdoor footage.", filterChain: "colorbalance=rh=0.16:gh=0.05:bh=-0.16:rm=0.08:bm=-0.04,eq=saturation=1.1", previewCss: "sepia(0.15) saturate(1.25) brightness(1.05)" },
+  { id: "cross-process", name: "Cross Process", description: "Punchy, unconventional color shift — bold editorial look.", filterChain: "curves=preset=cross_process,eq=saturation=1.2", previewCss: "contrast(1.2) saturate(1.3) hue-rotate(-6deg)" },
+  { id: "muted-earth", name: "Muted Earth", description: "Soft, desaturated, natural tones.", filterChain: "eq=saturation=0.72:contrast=1.05,colorbalance=rm=0.05:gm=0.02:bm=-0.05", previewCss: "saturate(0.7) sepia(0.1)" },
+  { id: "cyberpunk-neon", name: "Cyberpunk", description: "Cool cyan/magenta push — neon night look.", filterChain: "colorbalance=rs=0.1:bs=0.22:rh=-0.06:bh=0.16,eq=saturation=1.3:contrast=1.15", previewCss: "saturate(1.4) contrast(1.2) hue-rotate(-10deg)" },
+];
+export const getColorLook = (id?: string): ColorLook => COLOR_LOOKS.find(l => l.id === id) || COLOR_LOOKS[0];
 
 // Escapes text for safe embedding inside an ffmpeg filtergraph string —
 // drawtext's `text=` value is itself inside a filter string that's already
@@ -336,6 +368,47 @@ export const requestTranscription = async (
   return data.segments || [];
 };
 
+// FEATURE — "really good-looking, timed auto captions." The local
+// provider (lib/localTranscription.ts) returns WORD-level timestamps, not
+// sentence-level — used raw, that's one drawtext caption per word, way too
+// fast/flickery to read. Grouped into short 3-4-word lines instead, the
+// same "a few words pop in, then the next few" rhythm every modern short-
+// form auto-captioner (CapCut, Opus Clip, etc.) actually uses, instead of
+// one long sentence sitting on screen for 4+ seconds. Breaks a group early
+// on a natural speech pause too, so a caption line doesn't span across a
+// breath/sentence boundary just because the word count hasn't hit yet.
+export const groupWordsIntoCaptionLines = (
+  words: { text: string; start: number; end: number }[],
+  opts: { maxWords?: number; maxChars?: number; maxGroupDurationSec?: number; pauseBreakSec?: number } = {}
+): { text: string; start: number; end: number }[] => {
+  const maxWords = opts.maxWords ?? 4;
+  const maxChars = opts.maxChars ?? 24;
+  const maxGroupDurationSec = opts.maxGroupDurationSec ?? 2.2;
+  const pauseBreakSec = opts.pauseBreakSec ?? 0.6;
+  const groups: { text: string; start: number; end: number }[] = [];
+  let current: { text: string; start: number; end: number }[] = [];
+  const flush = () => {
+    if (current.length === 0) return;
+    groups.push({
+      text: current.map(w => w.text.trim()).join(" ").replace(/\s+([,.!?;:])/g, "$1"),
+      start: current[0].start,
+      end: current[current.length - 1].end,
+    });
+    current = [];
+  };
+  for (const w of words) {
+    if (!w.text || !w.text.trim()) continue;
+    const prev = current[current.length - 1];
+    const gapTooBig = !!prev && (w.start - prev.end) > pauseBreakSec;
+    const wouldBeTooLong = current.length > 0 && (current.map(x => x.text).join(" ").length + 1 + w.text.length) > maxChars;
+    const durationTooLong = current.length > 0 && (w.end - current[0].start) > maxGroupDurationSec;
+    if (gapTooBig || wouldBeTooLong || durationTooLong || current.length >= maxWords) flush();
+    current.push(w);
+  }
+  flush();
+  return groups;
+};
+
 // FEATURE — "make it so you can auto edit, it auto cuts the dead spaces,
 // pieces the clips together." Trimming the clip's own start/end (the
 // existing Auto-Cut Silence button) only ever handled silence at the very
@@ -493,6 +566,13 @@ export const renderFinalVideo = async (
       const s = Math.max(0, 1 + (c.saturation || 0) / 100).toFixed(3);
       filters.push(`eq=brightness=${b}:contrast=${cst}:saturation=${s}`);
     }
+    // FEATURE — "video effects, video filters, good-looking LUTs." Applied
+    // AFTER the manual correction sliders above (grade goes on top of
+    // correction, same order a real colorist works in) and before the
+    // aspect-ratio reframe, so the look is graded on the source's full
+    // resolution rather than the downscaled export frame.
+    const look = getColorLook(c.colorLook);
+    if (look.filterChain) filters.push(look.filterChain);
     filters.push(`scale=${targetW}:${targetH}:force_original_aspect_ratio=increase`, `crop=${targetW}:${targetH}`, "fps=30");
     // FEATURE — "applying various sound effects such as muffled or
     // underwater sounds." Applied to this clip's own audio stream during
@@ -610,8 +690,21 @@ export const renderFinalVideo = async (
       // (unchanged) — real pixel size in the actual export, not just a
       // preview-only CSS affectation.
       const fontScale = cap.fontScale && cap.fontScale > 0 ? cap.fontScale : 1;
+      const baseFontSize = (0.055 * fontScale).toFixed(4);
+      // FEATURE — "really good-looking, timed auto captions with good
+      // animations." The "punch" animation (see captionStyles.ts's
+      // hook-punch/karaoke-box presets, built for fast word-grouped auto-
+      // captions) overshoots the font size ~40% right on entrance and
+      // settles back to normal over ~0.28s — a real per-frame size pop,
+      // not just a fade. drawtext's fontsize accepts a live expression the
+      // same way alpha/x/y already do here; single-quoted so the commas
+      // inside max()/abs() aren't mistaken for filter-chain separators
+      // (same reasoning as alpha='${alphaExpr}' below).
+      const fontSizeExpr = style.animation === "punch"
+        ? `h*${baseFontSize}*(1+0.4*max(0,1-abs(t-${cap.startSec}-0.1)/0.18))`
+        : `h*${baseFontSize}`;
       drawtextFilters.push(
-        `drawtext=fontfile=${fontFile}:text='${text}':fontcolor=${style.color}:fontsize=h*${(0.055 * fontScale).toFixed(4)}` +
+        `drawtext=fontfile=${fontFile}:text='${text}':fontcolor=${style.color}:fontsize='${fontSizeExpr}'` +
         `:x=${baseX}:y=${y}${strokeParts}${boxParts}` +
         `:enable='between(t,${cap.startSec},${cap.endSec})':alpha='${alphaExpr}'`
       );

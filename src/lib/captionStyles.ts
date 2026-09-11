@@ -22,7 +22,7 @@ import type { CSSProperties } from "react";
 // not a CSS @font-face reference, and FreeType (which drawtext uses) can't
 // reliably pick a weight out of a variable font, so every style here uses
 // a font that ships a real static file for the weight it wants.
-export type CaptionAnimation = "none" | "pop" | "bounce" | "slide-up" | "fade" | "shake" | "typewriter" | "flicker";
+export type CaptionAnimation = "none" | "pop" | "bounce" | "slide-up" | "fade" | "shake" | "typewriter" | "flicker" | "punch";
 
 export type CaptionStyle = {
   id: string;
@@ -105,9 +105,17 @@ export const CAPTION_STYLES: CaptionStyle[] = [
   p({ id: "electric-blue", name: "Electric Blue", category: "Bold", description: "Cyan-blue bold text with black outline — high-contrast, energetic.", fontFileUrl: F.archivoBlack, fontWeight: 900, color: "#22d3ee", strokeColor: "#001019", strokeWidth: 3, background: null, uppercase: true, position: "top", letterSpacing: "0.01em", animation: "bounce" }),
   p({ id: "warning-red", name: "Alert Red", category: "Bold", description: "Stark red/white warning-style text — for urgency, deadlines, drama.", fontFileUrl: F.bebas, fontWeight: 400, color: "#ff1414", strokeColor: "#ffffff", strokeWidth: 2, background: "rgba(0,0,0,0.6)", uppercase: true, position: "center", letterSpacing: "0.03em", animation: "shake" }),
 
+  // FEATURE — "really good-looking, timed auto captions with good
+  // animations." Word-grouped auto-captions (see videoEditor.ts's
+  // groupWordsIntoCaptionLines) show 3-4 words at a time, popping in fast —
+  // this preset's "punch" animation (a brief size overshoot on entrance,
+  // see the fontsize expression in renderFinalVideo) is built specifically
+  // for that rapid-fire, word-by-word rhythm.
+  p({ id: "hook-punch", name: "Hook Punch", category: "Bold", description: "Big bold caps that punch in with a size overshoot — built for fast, word-by-word auto-captions.", fontFileUrl: F.kanitExtra, fontWeight: 800, color: "#ffffff", strokeColor: "#000000", strokeWidth: 3, background: null, uppercase: true, position: "center", letterSpacing: "0.005em", animation: "punch" }),
+
   // ── Boxed / Subtitle ───────────────────────────────────────────
   p({ id: "boxed-subtitle", name: "Boxed Subtitle", category: "Boxed", description: "Clean white text on a solid dark pill — traditional, easy to read over busy footage.", fontFileUrl: F.latoBold, fontWeight: 700, color: "#ffffff", strokeColor: "#000000", strokeWidth: 0, background: "rgba(0,0,0,0.72)", uppercase: false, position: "bottom", letterSpacing: "0", animation: "fade" }),
-  p({ id: "karaoke-box", name: "Karaoke Box", category: "Boxed", description: "Bold white-on-black box, TikTok caption-generator style.", fontFileUrl: F.poppinsBold, fontWeight: 700, color: "#ffffff", strokeColor: "#000000", strokeWidth: 0, background: "rgba(10,10,10,0.88)", uppercase: false, position: "center", letterSpacing: "0", animation: "pop" }),
+  p({ id: "karaoke-box", name: "Karaoke Box", category: "Boxed", description: "Bold white-on-black box, TikTok caption-generator style.", fontFileUrl: F.poppinsBold, fontWeight: 700, color: "#ffffff", strokeColor: "#000000", strokeWidth: 0, background: "rgba(10,10,10,0.88)", uppercase: false, position: "center", letterSpacing: "0", animation: "punch" }),
   p({ id: "news-ticker", name: "News Ticker", category: "Boxed", description: "Red box, white bold caps — breaking-news style banner.", fontFileUrl: F.fjalla, fontWeight: 400, color: "#ffffff", strokeColor: "#000000", strokeWidth: 0, background: "#c0181f", uppercase: true, position: "bottom", letterSpacing: "0.02em", animation: "slide-up" }),
   p({ id: "quote-card", name: "Quote Card", category: "Boxed", description: "Soft cream box with dark serif-adjacent text — for testimonial quotes.", fontFileUrl: F.latoReg, fontWeight: 400, color: "#221b16", strokeColor: "transparent", strokeWidth: 0, background: "rgba(250,247,243,0.94)", uppercase: false, position: "center", letterSpacing: "0", animation: "fade" }),
   p({ id: "cta-button", name: "CTA Button", category: "Boxed", description: "Rounded solid-color button look — perfect for \"Book Now\"/\"Swipe Up\" text.", fontFileUrl: F.poppinsSemi, fontWeight: 600, color: "#ffffff", strokeColor: "transparent", strokeWidth: 0, background: "#c22a1f", uppercase: true, position: "bottom", letterSpacing: "0.02em", animation: "bounce" }),
@@ -215,5 +223,23 @@ export const TRANSITION_EFFECTS: TransitionEffect[] = [
   { id: "zoom-punch", name: "Zoom Punch", description: "Quick zoom-in punch into the next clip — high-energy edit style.", xfadeType: "zoomin", durationSec: 0.3 },
   { id: "glitch-tech", name: "Glitch/Tech", description: "Fast pixelized transition — techy, modern feel between clips.", xfadeType: "pixelize", durationSec: 0.25 },
   { id: "circle-open", name: "Circle Open", description: "Circular reveal transition — playful, clean.", xfadeType: "circleopen", durationSec: 0.4 },
+  // FEATURE — "add more transitions." Real ffmpeg xfade types (no new
+  // rendering code needed — the existing xfade/acrossfade chain in
+  // renderFinalVideo already handles any xfadeType string ffmpeg supports).
+  { id: "fade-black", name: "Fade to Black", description: "Dips to black, then into the next clip — classic scene-change feel.", xfadeType: "fadeblack", durationSec: 0.45 },
+  { id: "fade-white", name: "Fade to White", description: "Flashes white, then into the next clip — bright, punchy scene change.", xfadeType: "fadewhite", durationSec: 0.35 },
+  { id: "wipe-right", name: "Wipe Right", description: "Next clip wipes in from the left.", xfadeType: "wiperight", durationSec: 0.35 },
+  { id: "wipe-up", name: "Wipe Up", description: "Next clip wipes in from the bottom.", xfadeType: "wipeup", durationSec: 0.35 },
+  { id: "wipe-down", name: "Wipe Down", description: "Next clip wipes in from the top.", xfadeType: "wipedown", durationSec: 0.35 },
+  { id: "slide-left", name: "Slide Left", description: "Next clip slides in from the right.", xfadeType: "slideleft", durationSec: 0.35 },
+  { id: "slide-right", name: "Slide Right", description: "Next clip slides in from the left.", xfadeType: "slideright", durationSec: 0.35 },
+  { id: "slide-down", name: "Slide Down", description: "Next clip slides down from the top.", xfadeType: "slidedown", durationSec: 0.35 },
+  { id: "smooth-slide", name: "Smooth Slide", description: "A softer, eased slide — less snappy than Slide Left/Right.", xfadeType: "smoothleft", durationSec: 0.45 },
+  { id: "radial-wipe", name: "Radial Wipe", description: "Sweeps around like a clock hand into the next clip.", xfadeType: "radial", durationSec: 0.4 },
+  { id: "dissolve", name: "Dissolve", description: "Grainy pixel-by-pixel dissolve — a textured, filmic cut.", xfadeType: "dissolve", durationSec: 0.35 },
+  { id: "squeeze", name: "Squeeze", description: "Current clip squeezes away to reveal the next — playful, snappy.", xfadeType: "squeezeh", durationSec: 0.3 },
+  { id: "diagonal-wipe", name: "Diagonal Wipe", description: "Wipes in on a diagonal — modern, editorial feel.", xfadeType: "diagtl", durationSec: 0.35 },
+  { id: "cover-up", name: "Cover Up", description: "Next clip slides up and over the current one.", xfadeType: "coverup", durationSec: 0.3 },
+  { id: "reveal-left", name: "Reveal Left", description: "Current clip slides away to reveal the next underneath.", xfadeType: "revealleft", durationSec: 0.35 },
 ];
 export const getTransition = (id: string): TransitionEffect => TRANSITION_EFFECTS.find(t => t.id === id) || TRANSITION_EFFECTS[0];

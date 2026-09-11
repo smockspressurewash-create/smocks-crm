@@ -28,7 +28,7 @@ import { GBtn } from "./GBtn";
 import { X, Plus, Trash2, Wand2, Scissors, Type, Upload, Sparkles, RotateCw, FlipHorizontal, Captions, Crop as CropIcon, Sliders, Maximize2, Minimize2, Layers, Music as MusicIcon, ImagePlus, Volume2, VolumeX, Play, Pause, Download as DownloadIcon } from "lucide-react";
 import { uid, uploadJobMedia } from "../../lib/utils";
 import { CAPTION_STYLES, CAPTION_GOOGLE_FONTS_HREF, captionStyleToCss, getCaptionStyle, TRANSITION_EFFECTS } from "../../lib/captionStyles";
-import { readVideoMeta, readImageMeta, detectSilence, renderFinalVideo, extractAudioForTranscription, autoCutClipDeadSpace, requestTranscription, CAPTION_PROVIDERS, ASPECT_RATIOS, SOUND_EFFECTS, type AspectRatio, type CaptionProvider, type CropRect, type EditorClip, type EditorCaption, type EditorOverlay, type MusicTrack } from "../../lib/videoEditor";
+import { readVideoMeta, readImageMeta, detectSilence, renderFinalVideo, extractAudioForTranscription, autoCutClipDeadSpace, requestTranscription, groupWordsIntoCaptionLines, CAPTION_PROVIDERS, ASPECT_RATIOS, SOUND_EFFECTS, COLOR_LOOKS, getColorLook, type AspectRatio, type CaptionProvider, type CropRect, type EditorClip, type EditorCaption, type EditorOverlay, type MusicTrack } from "../../lib/videoEditor";
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 
@@ -140,7 +140,10 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
   // FEATURE — "make it so you can auto edit... choose caption templates,
   // review it, can manually edit it, save, etc." Style applied to every
   // caption the Auto-Edit pipeline generates — picked once up front.
-  const [autoEditCaptionStyle, setAutoEditCaptionStyle] = useState(CAPTION_STYLES[0].id);
+  // Defaults to the word-pop style built for the fast, grouped auto-caption
+  // rhythm (see groupWordsIntoCaptionLines) instead of a generic first-in-
+  // list preset — still fully changeable from the dropdown below.
+  const [autoEditCaptionStyle, setAutoEditCaptionStyle] = useState("hook-punch");
   const [autoEditRunning, setAutoEditRunning] = useState(false);
   const [autoEditPhase, setAutoEditPhase] = useState("");
   // FEATURE — "move the text around." Which caption (if any) is currently
@@ -669,8 +672,13 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
     setAutoEditPhase("Transcribing…");
     try {
       const audioBlob = await extractAudioForTranscription(activeClip);
-      const segments = await requestTranscription(audioBlob, captionProvider, apiKey, msg => setAutoEditPhase(msg));
-      if (segments.length === 0) { toast?.("No speech detected in this clip", "yellow"); return; }
+      const rawSegments = await requestTranscription(audioBlob, captionProvider, apiKey, msg => setAutoEditPhase(msg));
+      if (rawSegments.length === 0) { toast?.("No speech detected in this clip", "yellow"); return; }
+      // FEATURE — "really good-looking, timed auto captions." The local
+      // provider returns word-level timestamps — regroup into short,
+      // fast-paced lines instead of one caption per single word. Paid
+      // providers already return sentence/phrase-level segments, used as-is.
+      const segments = captionProvider === "local" ? groupWordsIntoCaptionLines(rawSegments) : rawSegments;
       const clipIndex = clips.findIndex(c => c.id === activeClip.id);
       const offsetSec = clips.slice(0, clipIndex).reduce((s, c) => s + Math.max(0, c.endSec - c.startSec), 0);
       const newCaptions: EditorCaption[] = segments.map(seg => ({
@@ -722,7 +730,8 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
           setAutoEditPhase(`Transcribing (${i + 1}/${cutClips.length})…`);
           try {
             const audioBlob = await extractAudioForTranscription(c);
-            const segments = await requestTranscription(audioBlob, captionProvider, apiKey, msg => setAutoEditPhase(msg));
+            const rawSegments = await requestTranscription(audioBlob, captionProvider, apiKey, msg => setAutoEditPhase(msg));
+            const segments = captionProvider === "local" ? groupWordsIntoCaptionLines(rawSegments) : rawSegments;
             for (const seg of segments) newCaptions.push({ id: uid(), text: seg.text, startSec: offset + seg.start, endSec: offset + seg.end, styleId: autoEditCaptionStyle });
           } catch (e: any) {
             console.warn("[Auto-Edit] transcription failed for a clip, continuing:", e?.message);
@@ -841,8 +850,13 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
   if (!open) return null;
 
   const busy = rendering || autoEditRunning || transcribing;
+  // FEATURE — "video effects, video filters, good-looking LUTs." The
+  // chosen look's CSS approximation (getColorLook(...).previewCss) is
+  // appended after the plain brightness/contrast/saturation sliders — same
+  // "correct, then grade" order renderFinalVideo applies for the real export.
+  const activeLookCss = activeClip ? getColorLook(activeClip.colorLook).previewCss : "none";
   const previewFilterCss = activeClip
-    ? `brightness(${1 + (activeClip.brightness || 0) / 100}) contrast(${1 + (activeClip.contrast || 0) / 100}) saturate(${Math.max(0, 1 + (activeClip.saturation || 0) / 100)})`
+    ? `brightness(${1 + (activeClip.brightness || 0) / 100}) contrast(${1 + (activeClip.contrast || 0) / 100}) saturate(${Math.max(0, 1 + (activeClip.saturation || 0) / 100)})${activeLookCss !== "none" ? " " + activeLookCss : ""}`
     : undefined;
 
   const editor = (
@@ -1323,6 +1337,33 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
                     </div>
                   ))}
                   <button onClick={() => updateClip(activeClip.id, { brightness: 0, contrast: 0, saturation: 0 })} className="text-[10px] text-white/40 hover:text-white/70">Reset adjustments</button>
+
+                  {/* FEATURE — "video effects, video filters, good-looking
+                      LUTs." Real ffmpeg color-grade presets (COLOR_LOOKS),
+                      not just a slider — applied on top of the brightness/
+                      contrast/saturation correction above. */}
+                  <div className="pt-2 border-t border-white/10">
+                    <div className="text-[11px] text-white/60 mb-2">Color look (LUT-style grade)</div>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {COLOR_LOOKS.map(look => {
+                        const selected = (activeClip.colorLook || "none") === look.id;
+                        return (
+                          <button
+                            key={look.id}
+                            onClick={() => updateClip(activeClip.id, { colorLook: look.id === "none" ? undefined : look.id })}
+                            title={look.description}
+                            className={"rounded-lg overflow-hidden border text-left transition " + (selected ? "border-red-500 ring-1 ring-red-500/50" : "border-white/10 hover:border-white/30")}
+                          >
+                            <div className="h-8 w-full" style={{ background: "linear-gradient(135deg,#7a5230,#2a3a52,#903030)", filter: look.previewCss }} />
+                            <div className="px-1.5 py-1 bg-black/40 text-[9px] leading-tight text-white/70 truncate">{look.name}</div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {activeClip.colorLook && activeClip.colorLook !== "none" && (
+                      <div className="text-[10px] text-white/40 mt-1.5">{getColorLook(activeClip.colorLook).description}</div>
+                    )}
+                  </div>
                   {/* FEATURE — per-clip mute, e.g. wind/traffic noise on
                       one clip without silencing the whole video. */}
                   <label className="flex items-center gap-2 pt-2 border-t border-white/10 cursor-pointer">
