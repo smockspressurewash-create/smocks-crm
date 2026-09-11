@@ -28,7 +28,7 @@ import { GBtn } from "./GBtn";
 import { X, Plus, Trash2, Wand2, Scissors, Type, Upload, Sparkles, RotateCw, FlipHorizontal, Captions, Crop as CropIcon, Sliders, Maximize2, Minimize2, Layers, Music as MusicIcon, ImagePlus, Volume2, VolumeX, Play, Pause, Download as DownloadIcon } from "lucide-react";
 import { uid, uploadJobMedia } from "../../lib/utils";
 import { CAPTION_STYLES, CAPTION_GOOGLE_FONTS_HREF, captionStyleToCss, getCaptionStyle, TRANSITION_EFFECTS } from "../../lib/captionStyles";
-import { readVideoMeta, readImageMeta, detectSilence, renderFinalVideo, extractAudioForTranscription, autoCutClipDeadSpace, requestTranscription, groupWordsIntoCaptionLines, CAPTION_PROVIDERS, ASPECT_RATIOS, SOUND_EFFECTS, COLOR_LOOKS, getColorLook, type AspectRatio, type CaptionProvider, type CropRect, type EditorClip, type EditorCaption, type EditorOverlay, type MusicTrack } from "../../lib/videoEditor";
+import { readVideoMeta, readImageMeta, detectSilence, renderFinalVideo, extractAudioForTranscription, autoCutClipDeadSpace, stripFillerWordsFromClip, isFillerWord, requestTranscription, groupWordsIntoCaptionLines, CAPTION_PROVIDERS, ASPECT_RATIOS, SOUND_EFFECTS, COLOR_LOOKS, getColorLook, type AspectRatio, type CaptionProvider, type CropRect, type EditorClip, type EditorCaption, type EditorOverlay, type MusicTrack } from "../../lib/videoEditor";
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 
@@ -678,12 +678,22 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
       // provider returns word-level timestamps — regroup into short,
       // fast-paced lines instead of one caption per single word. Paid
       // providers already return sentence/phrase-level segments, used as-is.
-      const segments = captionProvider === "local" ? groupWordsIntoCaptionLines(rawSegments) : rawSegments;
       const clipIndex = clips.findIndex(c => c.id === activeClip.id);
       const offsetSec = clips.slice(0, clipIndex).reduce((s, c) => s + Math.max(0, c.endSec - c.startSec), 0);
-      const newCaptions: EditorCaption[] = segments.map(seg => ({
-        id: uid(), text: seg.text, startSec: offsetSec + seg.start, endSec: offsetSec + seg.end, styleId: autoEditCaptionStyle,
-      }));
+      // FEATURE — "really good-looking, timed auto captions." The local
+      // provider returns word-level timestamps — regroup into short,
+      // fast-paced lines AND keep each group's real per-word timing (see
+      // assCaptions.ts) for a genuine karaoke word-highlight burn, instead
+      // of one caption per single word. Paid providers already return
+      // sentence/phrase-level segments with no word boundaries — used as-is.
+      const newCaptions: EditorCaption[] = captionProvider === "local"
+        ? groupWordsIntoCaptionLines(rawSegments).map(g => ({
+            id: uid(), text: g.text, startSec: offsetSec + g.start, endSec: offsetSec + g.end, styleId: autoEditCaptionStyle,
+            words: g.words.map(w => ({ text: w.text, start: offsetSec + w.start, end: offsetSec + w.end })),
+          }))
+        : rawSegments.map(seg => ({
+            id: uid(), text: seg.text, startSec: offsetSec + seg.start, endSec: offsetSec + seg.end, styleId: autoEditCaptionStyle,
+          }));
       setCaptions(prev => [...prev, ...newCaptions]);
       toast?.(`Added ${newCaptions.length} caption${newCaptions.length > 1 ? "s" : ""} from the transcript ✓ — edit any that need fixing`, "green");
     } catch (e: any) {
@@ -716,31 +726,57 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
         const pieces = await autoCutClipDeadSpace(clips[i]);
         cutClips.push(...pieces);
       }
-      setClips(cutClips);
-      setActiveClipId(cutClips[0]?.id || null);
 
       const apiKey = getCaptionApiKey(captionProvider);
       if (apiKey) {
         setAutoEditPhase("Generating captions…");
         const newCaptions: EditorCaption[] = [];
+        // FEATURE — "improve auto-editing ten times." The local provider's
+        // word-level transcript also identifies filler words ("um," "uh,"
+        // "like," etc. — see FILLER_WORDS in videoEditor.ts) and cuts THOSE
+        // spans out of the actual video, same as the silence pass above did
+        // — not just skipping them in the caption text. finalClips replaces
+        // cutClips as the real timeline once this runs.
+        const finalClips: EditorClip[] = [];
         let offset = 0;
+        let fillerWordsCut = 0;
         for (let i = 0; i < cutClips.length; i++) {
           const c = cutClips[i];
-          const dur = Math.max(0, c.endSec - c.startSec);
           setAutoEditPhase(`Transcribing (${i + 1}/${cutClips.length})…`);
           try {
             const audioBlob = await extractAudioForTranscription(c);
             const rawSegments = await requestTranscription(audioBlob, captionProvider, apiKey, msg => setAutoEditPhase(msg));
-            const segments = captionProvider === "local" ? groupWordsIntoCaptionLines(rawSegments) : rawSegments;
-            for (const seg of segments) newCaptions.push({ id: uid(), text: seg.text, startSec: offset + seg.start, endSec: offset + seg.end, styleId: autoEditCaptionStyle });
+            if (captionProvider === "local") {
+              fillerWordsCut += rawSegments.filter(w => isFillerWord(w.text)).length;
+              const { clips: piecesAfterFillerStrip, words: survivorWords } = stripFillerWordsFromClip(c, rawSegments);
+              finalClips.push(...piecesAfterFillerStrip);
+              const groups = groupWordsIntoCaptionLines(survivorWords);
+              for (const g of groups) {
+                newCaptions.push({
+                  id: uid(), text: g.text, startSec: offset + g.start, endSec: offset + g.end, styleId: autoEditCaptionStyle,
+                  words: g.words.map(w => ({ text: w.text, start: offset + w.start, end: offset + w.end })),
+                });
+              }
+              offset += piecesAfterFillerStrip.reduce((s, p) => s + Math.max(0, p.endSec - p.startSec), 0);
+            } else {
+              finalClips.push(c);
+              for (const seg of rawSegments) newCaptions.push({ id: uid(), text: seg.text, startSec: offset + seg.start, endSec: offset + seg.end, styleId: autoEditCaptionStyle });
+              offset += Math.max(0, c.endSec - c.startSec);
+            }
           } catch (e: any) {
             console.warn("[Auto-Edit] transcription failed for a clip, continuing:", e?.message);
+            finalClips.push(c);
+            offset += Math.max(0, c.endSec - c.startSec);
           }
-          offset += dur;
         }
+        setClips(finalClips);
+        setActiveClipId(finalClips[0]?.id || null);
         setCaptions(prev => [...prev, ...newCaptions]);
-        toast?.(`Auto-edit done — cut down to ${cutClips.length} clip${cutClips.length > 1 ? "s" : ""} and added ${newCaptions.length} caption${newCaptions.length === 1 ? "" : "s"}. Review below, edit anything, then render ✓`, "green");
+        const fillerNote = fillerWordsCut > 0 ? ` and cut ${fillerWordsCut} filler word${fillerWordsCut === 1 ? "" : "s"}` : "";
+        toast?.(`Auto-edit done — cut down to ${finalClips.length} clip${finalClips.length > 1 ? "s" : ""}${fillerNote}, added ${newCaptions.length} caption${newCaptions.length === 1 ? "" : "s"}. Review below, edit anything, then render ✓`, "green");
       } else {
+        setClips(cutClips);
+        setActiveClipId(cutClips[0]?.id || null);
         toast?.(`Auto-edit done — cut down to ${cutClips.length} clip${cutClips.length > 1 ? "s" : ""}. Add a captions API key to also auto-generate captions, or add them manually below ✓`, "green");
       }
     } catch (e: any) {

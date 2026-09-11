@@ -11,6 +11,7 @@ import { toBlobURL, fetchFile } from "@ffmpeg/util";
 import { getCaptionStyle, getTransition, type CaptionStyle } from "./captionStyles";
 import { uid } from "./utils";
 import { transcribeAudioLocally } from "./localTranscription";
+import { buildAssDocument } from "./assCaptions";
 
 const CORE_VERSION = "0.12.6";
 const CORE_BASE = `https://unpkg.com/@ffmpeg/core@${CORE_VERSION}/dist/esm`;
@@ -55,6 +56,28 @@ const ensureFont = async (ff: FFmpeg, style: CaptionStyle): Promise<string> => {
   }
   await ff.writeFile(fileName, fontCache.get(style.id)!);
   return fileName;
+};
+
+// Same cached font bytes as ensureFont above, written into a real /fonts
+// DIRECTORY instead of a flat filename — libass's `ass` filter takes a
+// `fontsdir` option and scans it, matching by each font FILE's own
+// internal name table (fontconfig-style), not by filename. Tracked so a
+// multi-clip Auto-Edit run (many renderFinalVideo-adjacent calls) never
+// re-writes the same font twice in one session.
+const fontsDirEnsured = new Set<FFmpeg>();
+const fontsWrittenToDir = new Set<string>();
+const ensureFontInDir = async (ff: FFmpeg, style: CaptionStyle): Promise<void> => {
+  if (!fontsDirEnsured.has(ff)) {
+    await ff.createDir("/fonts").catch(() => {});
+    fontsDirEnsured.add(ff);
+  }
+  if (fontsWrittenToDir.has(style.id)) return;
+  if (!fontCache.has(style.id)) {
+    const data = await fetchFile(style.fontFileUrl);
+    fontCache.set(style.id, data);
+  }
+  await ff.writeFile(`/fonts/${style.id}.ttf`, fontCache.get(style.id)!);
+  fontsWrittenToDir.add(style.id);
 };
 
 // FEATURE — "you should be able to crop stuff, resize it." x/y/w/h are
@@ -123,6 +146,16 @@ export type EditorCaption = {
   // the live CSS preview and the real ffmpeg drawtext fontsize= expression
   // in renderFinalVideo so what's dragged in the editor is what exports.
   fontScale?: number;
+  // FEATURE — "really good-looking, timed auto captions with good
+  // animations." Real per-WORD timestamps (absolute seconds, same clock as
+  // startSec/endSec) when this caption came from word-level transcription
+  // (see groupWordsIntoCaptionLines) — used by lib/assCaptions.ts to burn a
+  // genuine karaoke-style word-by-word highlight sweep, timed to exactly
+  // when each word was actually spoken. Missing on hand-typed captions or
+  // phrase-level (paid-provider) transcripts — assCaptions.ts falls back to
+  // an even, character-length-weighted estimate across cap.text's words so
+  // every caption still gets the highlight effect, just without real timing.
+  words?: { text: string; start: number; end: number }[];
 };
 
 // FEATURE — "multi-track editor with overlays... allow users to add their
@@ -368,6 +401,30 @@ export const requestTranscription = async (
   return data.segments || [];
 };
 
+export type WordTiming = { text: string; start: number; end: number };
+export type CaptionGroup = { text: string; start: number; end: number; words: WordTiming[] };
+
+// FEATURE — "improve auto-editing." Word-level timestamps mean the actual
+// transcript text is known, not just where speech is — so filler words
+// ("um," "uh," "like," "you know") can be identified and cut out of the
+// TIMELINE itself, not just muted, the same thing Descript/Opus Clip market
+// as a headline auto-edit feature. Deliberately a short, high-confidence
+// list (bare filler interjections only) — a real word like "like" used
+// meaningfully ("I like this") can't be told apart from filler "like" by
+// text alone, so this only strips the small set of words that are almost
+// never meaningful on their own as a single-word utterance.
+const FILLER_WORDS = new Set(["um", "umm", "uh", "uhh", "erm", "hm", "hmm", "ah"]);
+export const isFillerWord = (text: string): boolean =>
+  FILLER_WORDS.has(text.toLowerCase().replace(/[^a-z]/g, ""));
+
+// Returns the silent RANGES a filler word occupies (plus a small pad) so
+// the caller can feed them straight into the same "keep" complement math
+// autoCutClipDeadSpace already uses for silence — filler removal and
+// silence removal end up being the exact same operation, just seeded by
+// text instead of decibels.
+export const findFillerWordRanges = (words: WordTiming[], padSec = 0.05): { start: number; end: number }[] =>
+  words.filter(w => isFillerWord(w.text)).map(w => ({ start: Math.max(0, w.start - padSec), end: w.end + padSec }));
+
 // FEATURE — "really good-looking, timed auto captions." The local
 // provider (lib/localTranscription.ts) returns WORD-level timestamps, not
 // sentence-level — used raw, that's one drawtext caption per word, way too
@@ -376,27 +433,32 @@ export const requestTranscription = async (
 // form auto-captioner (CapCut, Opus Clip, etc.) actually uses, instead of
 // one long sentence sitting on screen for 4+ seconds. Breaks a group early
 // on a natural speech pause too, so a caption line doesn't span across a
-// breath/sentence boundary just because the word count hasn't hit yet.
+// breath/sentence boundary just because the word count hasn't hit yet. Each
+// group keeps its own constituent `words` (real per-word start/end) so
+// lib/assCaptions.ts can burn a real karaoke word-highlight sweep instead
+// of just a static line.
 export const groupWordsIntoCaptionLines = (
-  words: { text: string; start: number; end: number }[],
-  opts: { maxWords?: number; maxChars?: number; maxGroupDurationSec?: number; pauseBreakSec?: number } = {}
-): { text: string; start: number; end: number }[] => {
+  words: WordTiming[],
+  opts: { maxWords?: number; maxChars?: number; maxGroupDurationSec?: number; pauseBreakSec?: number; dropFillers?: boolean } = {}
+): CaptionGroup[] => {
   const maxWords = opts.maxWords ?? 4;
   const maxChars = opts.maxChars ?? 24;
   const maxGroupDurationSec = opts.maxGroupDurationSec ?? 2.2;
   const pauseBreakSec = opts.pauseBreakSec ?? 0.6;
-  const groups: { text: string; start: number; end: number }[] = [];
-  let current: { text: string; start: number; end: number }[] = [];
+  const cleaned = opts.dropFillers === false ? words : words.filter(w => !isFillerWord(w.text));
+  const groups: CaptionGroup[] = [];
+  let current: WordTiming[] = [];
   const flush = () => {
     if (current.length === 0) return;
     groups.push({
       text: current.map(w => w.text.trim()).join(" ").replace(/\s+([,.!?;:])/g, "$1"),
       start: current[0].start,
       end: current[current.length - 1].end,
+      words: current.slice(),
     });
     current = [];
   };
-  for (const w of words) {
+  for (const w of cleaned) {
     if (!w.text || !w.text.trim()) continue;
     const prev = current[current.length - 1];
     const gapTooBig = !!prev && (w.start - prev.end) > pauseBreakSec;
@@ -418,21 +480,30 @@ export const groupWordsIntoCaptionLines = (
 // already concatenates clips in array order, so replacing one clip with
 // its several "keep" pieces is all "piecing them back together" requires;
 // nothing else about renderFinalVideo needs to change.
-export const autoCutClipDeadSpace = async (
+// Generalized "cut these ranges out, keep the rest" splitter — the shared
+// math behind both silence-based auto-cut (below) and filler-word removal
+// (runAutoEdit in VideoEditorModal.tsx): given a set of ranges to REMOVE
+// (silence, or a filler word's span), returns the complementary "keep"
+// pieces as real EditorClips. BUG FIX (this pass) — the previous inline
+// version only copied id/file/startSec/endSec/durationSec/rotation/flipH/
+// transitionToNext onto each split piece, silently dropping crop/color-
+// look/brightness-contrast-saturation/audioEffect/muted on any clip that
+// got auto-cut. Spreading `...clip` first now carries every property
+// forward onto every piece, only overriding what actually changes.
+export const splitClipAtRanges = (
   clip: EditorClip,
-  noiseDb = -30,
-  minSilenceSec = 0.6
-): Promise<EditorClip[]> => {
-  const ranges = await detectSilence(clip.file, noiseDb, minSilenceSec);
+  cutRanges: { start: number; end: number }[],
+  minKeepSec = 0.4
+): EditorClip[] => {
   const trimStart = clip.startSec, trimEnd = clip.endSec;
-  const clipped = ranges
+  const clipped = cutRanges
     .map(r => ({ start: Math.max(r.start, trimStart), end: Math.min(r.end, trimEnd) }))
     .filter(r => r.end > r.start)
     .sort((a, b) => a.start - b.start);
   if (clipped.length === 0) return [clip];
 
-  // Complement of the silence ranges within the clip's own trim bounds —
-  // these are the stretches that actually have something happening.
+  // Complement of the cut ranges within the clip's own trim bounds — the
+  // stretches that actually get kept.
   const keep: { start: number; end: number }[] = [];
   let cursor = trimStart;
   for (const r of clipped) {
@@ -442,31 +513,88 @@ export const autoCutClipDeadSpace = async (
   if (cursor < trimEnd) keep.push({ start: cursor, end: trimEnd });
 
   // Drop/merge slivers too short to be worth a separate re-encoded piece —
-  // otherwise a normal mid-sentence breath can get stutter-cut into a dozen
-  // near-instant clips instead of reading as one continuous take.
-  const MIN_KEEP_SEC = 0.4;
+  // otherwise a normal mid-sentence breath (or a filler word right next to
+  // real speech) can get stutter-cut into a dozen near-instant clips
+  // instead of reading as one continuous take.
   const merged: { start: number; end: number }[] = [];
   for (const seg of keep) {
-    if (seg.end - seg.start < MIN_KEEP_SEC && merged.length > 0) { merged[merged.length - 1].end = seg.end; continue; }
+    if (seg.end - seg.start < minKeepSec && merged.length > 0) { merged[merged.length - 1].end = seg.end; continue; }
     merged.push({ ...seg });
   }
-  const final = merged.filter(seg => seg.end - seg.start >= MIN_KEEP_SEC);
+  const final = merged.filter(seg => seg.end - seg.start >= minKeepSec);
   if (final.length === 0) return [clip];
   if (final.length === 1 && Math.abs(final[0].start - trimStart) < 0.05 && Math.abs(final[0].end - trimEnd) < 0.05) return [clip];
 
   return final.map((seg, i) => ({
+    ...clip,
     id: uid(),
-    file: clip.file,
     startSec: seg.start,
     endSec: seg.end,
-    durationSec: clip.durationSec,
-    rotation: clip.rotation,
-    flipH: clip.flipH,
     // Only the LAST piece of a split clip should carry the original
     // transition into whatever clip comes next — the pieces in between are
     // internal cuts within what was one continuous clip, always hard cuts.
     transitionToNext: i === final.length - 1 ? clip.transitionToNext : "none",
   }));
+};
+
+export const autoCutClipDeadSpace = async (
+  clip: EditorClip,
+  noiseDb = -30,
+  minSilenceSec = 0.6
+): Promise<EditorClip[]> => {
+  const ranges = await detectSilence(clip.file, noiseDb, minSilenceSec);
+  return splitClipAtRanges(clip, ranges, 0.4);
+};
+
+// FEATURE — "improve auto-editing ten times." Physically cuts filler-word
+// spans (see FILLER_WORDS above) out of a clip — not just skipping them in
+// the caption text — using the exact same splitClipAtRanges complement math
+// silence-cutting already uses, just seeded from the transcript's own word
+// boundaries instead of decibels. `words` must be CLIP-RELATIVE (0 =
+// clip.startSec, the same convention extractAudioForTranscription's output
+// already uses). Returns the resulting clip pieces AND the surviving
+// (non-filler) words remapped onto the NEW post-cut timeline — still
+// clip-relative to the FIRST returned piece — so the caller can build
+// captions from them without re-deriving the offset math itself.
+export const stripFillerWordsFromClip = (
+  clip: EditorClip,
+  words: WordTiming[]
+): { clips: EditorClip[]; words: WordTiming[] } => {
+  const fillerRangesRel = findFillerWordRanges(words);
+  if (fillerRangesRel.length === 0) return { clips: [clip], words };
+  const fillerRangesAbs = fillerRangesRel.map(r => ({ start: r.start + clip.startSec, end: r.end + clip.startSec }));
+  const pieces = splitClipAtRanges(clip, fillerRangesAbs, 0.25);
+  if (pieces.length === 1 && pieces[0].id === clip.id) return { clips: pieces, words };
+
+  // Cumulative map: source-absolute time -> new clip-relative time (0 =
+  // the first surviving piece's own start).
+  let cursor = 0;
+  const offsets = pieces.map(p => {
+    const off = cursor;
+    cursor += Math.max(0, p.endSec - p.startSec);
+    return { start: p.startSec, end: p.endSec, newOffset: off };
+  });
+  const remapAbs = (tAbs: number): number | null => {
+    for (const o of offsets) {
+      if (tAbs >= o.start - 1e-6 && tAbs <= o.end + 1e-6) {
+        return o.newOffset + (Math.min(Math.max(tAbs, o.start), o.end) - o.start);
+      }
+    }
+    return null;
+  };
+  const survivors: WordTiming[] = [];
+  for (const w of words) {
+    if (isFillerWord(w.text)) continue;
+    const absStart = w.start + clip.startSec, absEnd = w.end + clip.startSec;
+    const newStart = remapAbs(absStart), newEnd = remapAbs(absEnd);
+    // A word that fell inside a removed range (shouldn't happen for a
+    // non-filler word, but a boundary rounding edge case is possible) is
+    // dropped from captions rather than risk a corrupted/negative timing —
+    // the video cut itself is unaffected either way.
+    if (newStart === null || newEnd === null || newEnd <= newStart) continue;
+    survivors.push({ text: w.text, start: newStart, end: newEnd });
+  }
+  return { clips: pieces, words: survivors };
 };
 
 export type RenderProgress = (phase: string, pct: number) => void;
@@ -668,6 +796,33 @@ export const renderFinalVideo = async (
   let finalInput = joinedName;
   if (captions.length > 0) {
     onProgress?.("Burning captions", 70);
+    // FEATURE — "improve auto captions ten times... genuinely good-looking,
+    // timed auto captions with good animations." Real word-by-word karaoke
+    // highlighting via a genuine ASS/SSA subtitle burn (lib/assCaptions.ts)
+    // — libass ships in ffmpeg.wasm's core, so this is a native `ass`
+    // filter pass, not an emulation. One filter pass for every caption
+    // (faster than N chained drawtext filters, too). Wrapped in a full
+    // try/catch with the ORIGINAL per-line drawtext burn kept below as a
+    // fallback — this can't be visually test-rendered in this environment,
+    // so if the ass filter ever throws (a future core build without
+    // libass, a malformed style edge case), captions still burn in via the
+    // proven older path instead of silently exporting with none at all.
+    let assSucceeded = false;
+    try {
+      const usedStyles = Array.from(new Set(captions.map(c => c.styleId))).map(id => getCaptionStyle(id));
+      for (const style of usedStyles) await ensureFontInDir(ff, style);
+      const { content } = buildAssDocument(captions, targetW, targetH);
+      await ff.writeFile("captions.ass", new TextEncoder().encode(content));
+      await ff.exec(["-i", finalInput, "-vf", "ass=captions.ass:fontsdir=/fonts", "-c:a", "copy", "captioned-ass.mp4"]);
+      await ff.deleteFile("captions.ass").catch(() => {});
+      assSucceeded = true;
+    } catch (e: any) {
+      console.warn("[VideoEditor] ASS karaoke caption burn failed, falling back to plain captions:", e?.message);
+    }
+    if (assSucceeded) {
+      await ff.deleteFile(finalInput).catch(() => {});
+      finalInput = "captioned-ass.mp4";
+    } else {
     const drawtextFilters: string[] = [];
     for (const cap of captions) {
       const style = getCaptionStyle(cap.styleId);
@@ -712,6 +867,7 @@ export const renderFinalVideo = async (
     await ff.exec(["-i", finalInput, "-vf", drawtextFilters.join(","), "-c:a", "copy", "captioned.mp4"]);
     await ff.deleteFile(finalInput).catch(() => {});
     finalInput = "captioned.mp4";
+    }
   }
 
   // FEATURE — "add a CapCut-style multi-track editor with overlays, drag
