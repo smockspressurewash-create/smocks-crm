@@ -45,6 +45,7 @@ import { TimeframeSelector } from "../ui/TimeframeSelector";
 import { AddressAutocomplete } from "../ui/AddressAutocomplete";
 import { BeforeAfterSlider } from "../ui/BeforeAfterSlider";
 import { VideoEditorModal } from "../ui/VideoEditorModal";
+import { AutoEditWizardModal, type AutoEditWizardResult } from "../ui/AutoEditWizardModal";
 import { CustomerModal } from "../ui/CustomerModal";
 import { CustomerDetail } from "../ui/CustomerDetail";
 import { CustomerAnalytics } from "../ui/CustomerAnalytics";
@@ -141,6 +142,13 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
   // owner re-upload a photo they already took.
   const [jobPhotoPickerOpen, setJobPhotoPickerOpen] = useState(false);
   const [videoEditorOpen, setVideoEditorOpen] = useState(false);
+  // FEATURE — "add a button for auto edit and a button for video edit,
+  // which is currently only available manually." Video Edit opens the
+  // same full editor as before; Auto Edit opens a quick wizard first
+  // (style/length/clips/audio/description) whose result feeds straight
+  // into that same editor via initialAutoEdit, pre-loaded and already run.
+  const [autoEditWizardOpen, setAutoEditWizardOpen] = useState(false);
+  const [pendingAutoEdit, setPendingAutoEdit] = useState<AutoEditWizardResult | null>(null);
   // FEATURE — CapCut-style video editor's export hands back a raw Blob
   // (ffmpeg.wasm's rendered MP4); this uploads it the exact same way the
   // plain file-upload path above does, so the rest of the posting flow
@@ -528,7 +536,11 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
               <span className="text-xs text-white/70">Auto-post completed jobs <span className="text-white/40">(AI generates caption when job status → Completed)</span></span>
             </label>
           </div>
-          <GBtn onClick={() => setModal(true)} className="flex-shrink-0"><Plus size={14} className="inline mr-1.5" />New Post</GBtn>
+          <div className="flex items-center gap-2 flex-shrink-0 flex-wrap justify-end">
+            <GBtn variant="ghost" onClick={() => setAutoEditWizardOpen(true)}><Clapperboard size={14} className="inline mr-1.5" />Auto Edit</GBtn>
+            <GBtn variant="ghost" onClick={() => setVideoEditorOpen(true)}><Clapperboard size={14} className="inline mr-1.5" />Video Edit</GBtn>
+            <GBtn onClick={() => setModal(true)}><Plus size={14} className="inline mr-1.5" />New Post</GBtn>
+          </div>
         </div>
       </Glass>
 
@@ -1063,7 +1075,16 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
         </div>
       </Modal>
 
-      <VideoEditorModal open={videoEditorOpen} onClose={() => setVideoEditorOpen(false)} onExported={onVideoExported} toast={toast} settings={settings} setSettings={setSettings} />
+      <VideoEditorModal open={videoEditorOpen} onClose={() => setVideoEditorOpen(false)} onExported={onVideoExported} toast={toast} settings={settings} setSettings={setSettings} initialAutoEdit={pendingAutoEdit} onInitialAutoEditConsumed={() => setPendingAutoEdit(null)} />
+      <AutoEditWizardModal
+        open={autoEditWizardOpen}
+        onClose={() => setAutoEditWizardOpen(false)}
+        toast={toast}
+        onComplete={result => {
+          setPendingAutoEdit(result);
+          setVideoEditorOpen(true);
+        }}
+      />
 
       {/* FEATURE — job before/after photo picker (see jobsWithPhotoPairs above) */}
       <Modal open={jobPhotoPickerOpen} onClose={() => setJobPhotoPickerOpen(false)} title="Use a Job's Before/After Photo" maxW="max-w-lg">

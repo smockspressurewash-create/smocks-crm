@@ -311,7 +311,7 @@ export const getAutoEditTemplate = (id?: string): AutoEditTemplate | undefined =
 // undefined and the owner's own template/manual choices are left alone.
 export type StylePromptResult = {
   captionStyleId?: string; colorLook?: string; transitionCycle?: string[];
-  cameraFlicker?: boolean; speed?: number; skipCaptions?: boolean; matched: string[];
+  cameraFlicker?: boolean; speed?: number; skipCaptions?: boolean; audioEffect?: string; matched: string[];
 };
 export const interpretStylePrompt = (raw: string): StylePromptResult => {
   const text = ` ${(raw || "").toLowerCase()} `;
@@ -347,7 +347,64 @@ export const interpretStylePrompt = (raw: string): StylePromptResult => {
   if (has("slow motion", "slow-mo", "slowmo", "slow mo")) { result.speed = 0.6; result.matched.push("slow motion (0.6x)"); }
   else if (has("speed up", "sped up", "fast forward", "timelapse", "time-lapse", "time lapse")) { result.speed = 1.6; result.matched.push("sped up (1.6x)"); }
 
+  // FEATURE — "describe in text... muffled sound effects." Maps free-text
+  // audio descriptions onto the real per-clip SOUND_EFFECTS filters above
+  // — this vocabulary was missing entirely before (the describe-prompt
+  // only ever touched captions/color/pacing/speed, never audio), even
+  // though the user's own example for this feature was explicitly an
+  // audio effect.
+  if (has("muffled", "through a wall", "muted sound", "far away sound")) { result.audioEffect = "muffled"; result.matched.push("muffled audio"); }
+  else if (has("underwater", "submerged", "swimming pool sound")) { result.audioEffect = "underwater"; result.matched.push("underwater audio"); }
+  else if (has("telephone", "phone call sound", "phone filter", "on the phone")) { result.audioEffect = "telephone"; result.matched.push("telephone audio"); }
+  else if (has("megaphone", "bullhorn", "loudspeaker")) { result.audioEffect = "megaphone"; result.matched.push("megaphone audio"); }
+  else if (has("cave echo", "cavernous", "echoey", "big echo")) { result.audioEffect = "cave-echo"; result.matched.push("cave echo audio"); }
+  else if (has("tinny", "small speaker sound", "laptop speaker")) { result.audioEffect = "tinny"; result.matched.push("tinny audio"); }
+  else if (has("chipmunk", "helium voice", "high pitched voice")) { result.audioEffect = "chipmunk"; result.matched.push("chipmunk audio"); }
+  else if (has("deep voice", "monster voice", "movie trailer voice", "demon voice")) { result.audioEffect = "deep-voice"; result.matched.push("deep voice audio"); }
+  else if (has("concert hall", "big reverb", "reverb")) { result.audioEffect = "concert-hall"; result.matched.push("concert hall audio"); }
+  else if (has("vinyl", "lo-fi", "lofi", "old recording sound")) { result.audioEffect = "vinyl-lofi"; result.matched.push("vinyl lo-fi audio"); }
+  else if (has("radio static", "am radio", "walkie talkie")) { result.audioEffect = "radio-static"; result.matched.push("radio static audio"); }
+
   return result;
+};
+
+// FEATURE — Social page's Auto-Edit wizard asks "how long" up front — a
+// real target length, not just a vibe. Cutting dead space/fillers already
+// shrinks the timeline; this closes the gap the rest of the way so the
+// export actually lands near the requested length instead of just being
+// "however long the surviving footage happens to be." Deliberately
+// conservative: if the cut footage is ALREADY at or under target, nothing
+// changes (never artificially pads/slows down just to hit a number) —
+// short-form "make this 30 seconds" means "don't go over," not "pad to
+// exactly 30." Speed-up alone (real ffmpeg setpts/atempo, same clamp
+// renderFinalVideo already enforces) handles up to 2x overage; anything
+// beyond that maxes out at 2x and trims the remainder off the END of the
+// timeline, in order — a simple, honest, predictable rule stated plainly
+// in the returned note rather than silently guessing which footage matters
+// most (that would need real content understanding, out of scope for a
+// zero-API-key, keyword-driven editor).
+export const fitClipsToDuration = (clips: EditorClip[], targetSec: number): { clips: EditorClip[]; note: string } => {
+  if (!targetSec || targetSec <= 0 || clips.length === 0) return { clips, note: "" };
+  const effDur = (c: EditorClip) => c.isImage ? Math.max(0, c.endSec - c.startSec) : Math.max(0, c.endSec - c.startSec) / Math.max(0.5, Math.min(2, c.speed || 1));
+  const total = clips.reduce((s, c) => s + effDur(c), 0);
+  if (total <= targetSec + 0.5) return { clips, note: "" };
+  const neededRatio = total / targetSec;
+  if (neededRatio <= 2) {
+    const sped = clips.map(c => c.isImage ? c : ({ ...c, speed: Math.min(2, Math.max(0.5, (c.speed || 1) * neededRatio)) }));
+    return { clips: sped, note: `sped up ${neededRatio.toFixed(2)}x to fit your ${targetSec}s target` };
+  }
+  const spedClips = clips.map(c => c.isImage ? c : ({ ...c, speed: 2 }));
+  let acc = 0;
+  const kept: EditorClip[] = [];
+  for (const c of spedClips) {
+    if (acc >= targetSec) break;
+    const d = effDur(c);
+    if (acc + d <= targetSec) { kept.push(c); acc += d; continue; }
+    const remainingSourceSec = (targetSec - acc) * (c.isImage ? 1 : Math.max(0.5, Math.min(2, c.speed || 1)));
+    kept.push({ ...c, endSec: Math.min(c.endSec, c.startSec + Math.max(0.4, remainingSourceSec)) });
+    acc = targetSec;
+  }
+  return { clips: kept.length > 0 ? kept : clips, note: `sped up 2x and trimmed from the end to fit your ${targetSec}s target (footage was ~${Math.round(total)}s after cuts)` };
 };
 
 // Escapes text for safe embedding inside an ffmpeg filtergraph string —

@@ -28,7 +28,7 @@ import { GBtn } from "./GBtn";
 import { X, Plus, Trash2, Wand2, Scissors, Type, Upload, Sparkles, RotateCw, FlipHorizontal, Captions, Crop as CropIcon, Sliders, Maximize2, Minimize2, Layers, Music as MusicIcon, ImagePlus, Volume2, VolumeX, Play, Pause, Download as DownloadIcon, ChevronUp, ChevronDown } from "lucide-react";
 import { uid, uploadJobMedia } from "../../lib/utils";
 import { CAPTION_STYLES, CAPTION_GOOGLE_FONTS_HREF, captionStyleToCss, getCaptionStyle, TRANSITION_EFFECTS } from "../../lib/captionStyles";
-import { readVideoMeta, readImageMeta, detectSilence, renderFinalVideo, extractAudioForTranscription, autoCutClipDeadSpace, stripFillerWordsFromClip, isFillerWord, requestTranscription, groupWordsIntoCaptionLines, CAPTION_PROVIDERS, ASPECT_RATIOS, SOUND_EFFECTS, COLOR_LOOKS, getColorLook, AUTO_EDIT_TEMPLATES, getAutoEditTemplate, interpretStylePrompt, type AspectRatio, type CaptionProvider, type CropRect, type EditorClip, type EditorCaption, type EditorOverlay, type MusicTrack } from "../../lib/videoEditor";
+import { readVideoMeta, readImageMeta, detectSilence, renderFinalVideo, extractAudioForTranscription, autoCutClipDeadSpace, stripFillerWordsFromClip, isFillerWord, requestTranscription, groupWordsIntoCaptionLines, fitClipsToDuration, CAPTION_PROVIDERS, ASPECT_RATIOS, SOUND_EFFECTS, COLOR_LOOKS, getColorLook, AUTO_EDIT_TEMPLATES, getAutoEditTemplate, interpretStylePrompt, type AspectRatio, type CaptionProvider, type CropRect, type EditorClip, type EditorCaption, type EditorOverlay, type MusicTrack } from "../../lib/videoEditor";
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 
@@ -49,7 +49,7 @@ const readFileAsDataUrl = (file: File): Promise<string> =>
     reader.readAsDataURL(file);
   });
 
-export function VideoEditorModal({ open, onClose, onExported, toast, settings, setSettings }: {
+export function VideoEditorModal({ open, onClose, onExported, toast, settings, setSettings, initialAutoEdit, onInitialAutoEditConsumed }: {
   open: boolean;
   onClose: () => void;
   // Hands back the finished video as a Blob + a suggested filename — the
@@ -61,6 +61,20 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
   toast?: (msg: string, tone?: any) => void;
   settings?: any;
   setSettings?: any;
+  // FEATURE — Social page's "Auto Edit" quick-wizard button: collects
+  // clips/music/style/length/description up front, THEN opens this same
+  // editor pre-loaded and auto-runs the exact same Auto-Edit pipeline
+  // (reused as-is, not a separate parallel one) so the result is exactly
+  // as functional as manually clicking through the Auto-Edit tab — the
+  // wizard is a fast on-ramp into this, not a competing implementation.
+  initialAutoEdit?: {
+    files: File[];
+    musicFile?: File | null;
+    stylePrompt?: string;
+    templateId?: string | null;
+    targetDurationSec?: number | null;
+  } | null;
+  onInitialAutoEditConsumed?: () => void;
 }) {
   const [clips, setClips] = useState<EditorClip[]>([]);
   const [captions, setCaptions] = useState<EditorCaption[]>([]);
@@ -137,6 +151,53 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
     if (withKey) setCaptionProvider(withKey.id);
   }, [open]);
   const getCaptionApiKey = (provider: CaptionProvider): string | undefined => CAPTION_PROVIDERS.find(p => p.id === provider)?.keyFrom(settings);
+  // FEATURE — Social page's "Auto Edit" quick-wizard button hands this
+  // modal a pending payload (clips/music/style/length/description) instead
+  // of the owner clicking through Add Clips -> Auto-Edit tab -> fill in
+  // the same fields by hand. Loads it in, THEN triggers the real run below
+  // once React has actually committed the settings it just set (a second
+  // effect, gated on pendingWizardClips — see its own comment for why this
+  // needs two effects instead of one).
+  const [pendingWizardClips, setPendingWizardClips] = useState<EditorClip[] | null>(null);
+  useEffect(() => {
+    if (!open || !initialAutoEdit) return;
+    (async () => {
+      const newClips: EditorClip[] = [];
+      for (const file of initialAutoEdit.files) {
+        if (!file.type.startsWith("video/")) { toast?.(`${file.name} isn't a video — skipped`, "yellow"); continue; }
+        const meta = await readVideoMeta(file);
+        newClips.push({ id: uid(), file, startSec: 0, endSec: meta.duration, durationSec: meta.duration, width: meta.width, height: meta.height });
+      }
+      if (newClips.length === 0) {
+        toast?.("No valid video clips to auto-edit", "red");
+        onInitialAutoEditConsumed?.();
+        return;
+      }
+      setClips(prev => [...prev, ...newClips]);
+      setActiveClipId(newClips[0].id);
+      if (initialAutoEdit.musicFile) await addMusic(initialAutoEdit.musicFile);
+      if (initialAutoEdit.templateId) applyTemplate(initialAutoEdit.templateId);
+      if (initialAutoEdit.stylePrompt) setAutoEditPrompt(initialAutoEdit.stylePrompt);
+      setAutoEditTargetDurationSec(initialAutoEdit.targetDurationSec ?? null);
+      onInitialAutoEditConsumed?.();
+      // Signals effect below to actually run, once this batch of state
+      // updates has committed — NOT called inline here, since
+      // resolveEffectiveAutoEditSettings() would otherwise read the STALE
+      // (pre-update) autoEditPrompt/autoEditTargetDurationSec from this
+      // same closure rather than what was just set above.
+      setPendingWizardClips(newClips);
+    })();
+  }, [open, initialAutoEdit]);
+  useEffect(() => {
+    if (!pendingWizardClips) return;
+    const clipsToRun = pendingWizardClips;
+    setPendingWizardClips(null);
+    // Same "confirm clip order" step manually running Auto-Edit gets for
+    // more than one clip — the wizard collected the clips but didn't ask
+    // the order, so still worth a quick review before it actually runs.
+    if (clipsToRun.length > 1) { setOrderDraft(clipsToRun); setOrderConfirmOpen(true); }
+    else runAutoEdit(clipsToRun);
+  }, [pendingWizardClips]);
   // FEATURE — "make it so you can auto edit... choose caption templates,
   // review it, can manually edit it, save, etc." Style applied to every
   // caption the Auto-Edit pipeline generates — picked once up front.
@@ -164,6 +225,15 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
   // see that function's own comment for exactly what it does and doesn't do.
   const [autoEditPrompt, setAutoEditPrompt] = useState("");
   const [autoEditPromptMatches, setAutoEditPromptMatches] = useState<string[]>([]);
+  // FEATURE — "add more options for everything... describe muffled sound
+  // effects." Manual override for the same audioEffect interpretStylePrompt
+  // can now also pick up from free text (see videoEditor.ts) — either way
+  // applies to every clip Auto-Edit produces, same pattern as color look.
+  const [autoEditAudioEffect, setAutoEditAudioEffect] = useState("none");
+  // FEATURE — Social page's Auto-Edit wizard asks "how long" up front.
+  // null = no target (today's behavior, unchanged). See
+  // fitClipsToDuration in videoEditor.ts for what actually happens with it.
+  const [autoEditTargetDurationSec, setAutoEditTargetDurationSec] = useState<number | null>(null);
   // FEATURE — "ping the owner and ask what order you want the clips in."
   // A real confirm-before-running step: Run Auto-Edit opens this instead of
   // firing immediately whenever there's more than one clip.
@@ -762,6 +832,7 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
       cameraFlicker: promptResult?.cameraFlicker !== undefined ? promptResult.cameraFlicker : cameraFlickerEnabled,
       speed: promptResult?.speed,
       skipCaptions: !!promptResult?.skipCaptions,
+      audioEffect: promptResult?.audioEffect || autoEditAudioEffect,
     };
   };
   // BUG FIX (audit finding — this is why Auto-Edit's output looked bad).
@@ -775,11 +846,15 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
   // dragged in. `internalCutOnly` (set by splitClipAtRanges) marks exactly
   // those invisible-edit boundaries — skip them here, always hard-cut,
   // regardless of whether transitions are enabled.
+  // NOTE — speed is deliberately NOT set here anymore: it has to be
+  // finalized BEFORE caption generation (see runAutoEdit — captions are
+  // timed against whatever speed a piece renders at), so this only
+  // touches things that don't affect timing.
   const applyAutoStyling = (clipList: EditorClip[], settings: ReturnType<typeof resolveEffectiveAutoEditSettings>): EditorClip[] => clipList.map((c, i) => ({
     ...c,
     transitionToNext: (autoEditAddTransitions && i < clipList.length - 1 && !c.internalCutOnly) ? settings.transitionCycle[i % settings.transitionCycle.length] : "none",
     colorLook: settings.colorLook !== "none" ? settings.colorLook : c.colorLook,
-    speed: settings.speed ?? c.speed,
+    audioEffect: settings.audioEffect !== "none" ? settings.audioEffect : c.audioEffect,
   }));
 
   // FEATURE — "add templates." One click sets caption style + color look +
@@ -811,16 +886,33 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
     setAutoEditRunning(true);
     try {
       setAutoEditPhase("Cutting dead space…");
-      const cutClips: EditorClip[] = [];
+      let cutClips: EditorClip[] = [];
       for (let i = 0; i < sourceClips.length; i++) {
         setAutoEditPhase(`Cutting dead space (clip ${i + 1}/${sourceClips.length})…`);
         const pieces = await autoCutClipDeadSpace(sourceClips[i]);
         cutClips.push(...pieces);
       }
 
+      // BUG FIX — speed must be finalized BEFORE the caption/filler loop
+      // below, not after (applyAutoStyling used to be the only place speed
+      // got set, but that ran AFTER captions were already timed against the
+      // un-sped timeline — a caption's absolute seconds only match the
+      // rendered video if the loop divides by whatever speed that piece
+      // will actually render at). Prompt/manual speed applies first...
+      if (effective.speed) cutClips = cutClips.map(c => c.isImage ? c : ({ ...c, speed: effective.speed }));
+      // ...then the wizard's target-length fit (if any) tightens further —
+      // same reason it has to happen before captions, not as a post-pass.
+      let durationFitNote = "";
+      if (autoEditTargetDurationSec) {
+        const fit = fitClipsToDuration(cutClips, autoEditTargetDurationSec);
+        cutClips = fit.clips;
+        durationFitNote = fit.note;
+      }
+
       const apiKey = getCaptionApiKey(captionProvider);
-      const styleNote = [autoEditAddTransitions ? "transitions" : "", effective.colorLook !== "none" ? "color grade" : "", effective.cameraFlicker ? "camera flicker" : "", effective.speed && effective.speed !== 1 ? `${effective.speed}x speed` : ""].filter(Boolean).join(", ");
+      const styleNote = [autoEditAddTransitions ? "transitions" : "", effective.colorLook !== "none" ? "color grade" : "", effective.cameraFlicker ? "camera flicker" : "", effective.speed && effective.speed !== 1 ? `${effective.speed}x speed` : "", autoEditAudioEffect !== "none" ? "audio effect" : ""].filter(Boolean).join(", ");
       const promptNote = autoEditPromptMatches.length > 0 ? ` (picked up from your description: ${autoEditPromptMatches.join(", ")})` : "";
+      const fitNote = durationFitNote ? ` — ${durationFitNote}` : "";
       if (apiKey && !effective.skipCaptions) {
         setAutoEditPhase("Generating captions…");
         const newCaptions: EditorCaption[] = [];
@@ -835,6 +927,7 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
         let fillerWordsCut = 0;
         for (let i = 0; i < cutClips.length; i++) {
           const c = cutClips[i];
+          const pieceSpeed = c.isImage ? 1 : Math.max(0.5, Math.min(2, c.speed || 1));
           setAutoEditPhase(`Transcribing (${i + 1}/${cutClips.length})…`);
           try {
             const audioBlob = await extractAudioForTranscription(c);
@@ -845,21 +938,27 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
               finalClips.push(...piecesAfterFillerStrip);
               const groups = groupWordsIntoCaptionLines(survivorWords);
               for (const g of groups) {
+                // BUG FIX — g.start/g.end/word timestamps come from the
+                // TRANSCRIPT (real source seconds within this piece,
+                // unaffected by the speed field), but the RENDERED timeline
+                // runs at pieceSpeed — divide so the caption lands where the
+                // words actually end up after setpts/atempo speed the video
+                // up or down.
                 newCaptions.push({
-                  id: uid(), text: g.text, startSec: offset + g.start, endSec: offset + g.end, styleId: effective.captionStyleId,
-                  words: g.words.map(w => ({ text: w.text, start: offset + w.start, end: offset + w.end })),
+                  id: uid(), text: g.text, startSec: offset + g.start / pieceSpeed, endSec: offset + g.end / pieceSpeed, styleId: effective.captionStyleId,
+                  words: g.words.map(w => ({ text: w.text, start: offset + w.start / pieceSpeed, end: offset + w.end / pieceSpeed })),
                 });
               }
-              offset += piecesAfterFillerStrip.reduce((s, p) => s + Math.max(0, p.endSec - p.startSec), 0);
+              offset += piecesAfterFillerStrip.reduce((s, p) => s + Math.max(0, p.endSec - p.startSec) / (p.isImage ? 1 : Math.max(0.5, Math.min(2, p.speed || 1))), 0);
             } else {
               finalClips.push(c);
-              for (const seg of rawSegments) newCaptions.push({ id: uid(), text: seg.text, startSec: offset + seg.start, endSec: offset + seg.end, styleId: effective.captionStyleId });
-              offset += Math.max(0, c.endSec - c.startSec);
+              for (const seg of rawSegments) newCaptions.push({ id: uid(), text: seg.text, startSec: offset + seg.start / pieceSpeed, endSec: offset + seg.end / pieceSpeed, styleId: effective.captionStyleId });
+              offset += Math.max(0, c.endSec - c.startSec) / pieceSpeed;
             }
           } catch (e: any) {
             console.warn("[Auto-Edit] transcription failed for a clip, continuing:", e?.message);
             finalClips.push(c);
-            offset += Math.max(0, c.endSec - c.startSec);
+            offset += Math.max(0, c.endSec - c.startSec) / pieceSpeed;
           }
         }
         const styledFinalClips = applyAutoStyling(finalClips, effective);
@@ -875,14 +974,14 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
         // result in front of them immediately instead of leaving them
         // looking at the Auto-Edit panel they just clicked from.
         setTab("clips");
-        toast?.(`Auto-edit done — cut down to ${styledFinalClips.length} clip${styledFinalClips.length > 1 ? "s" : ""}${fillerNote}, added ${newCaptions.length} caption${newCaptions.length === 1 ? "" : "s"}${styleNote ? ` + ${styleNote}` : ""}${promptNote}. Review below, edit anything, then render ✓`, "green");
+        toast?.(`Auto-edit done — cut down to ${styledFinalClips.length} clip${styledFinalClips.length > 1 ? "s" : ""}${fillerNote}, added ${newCaptions.length} caption${newCaptions.length === 1 ? "" : "s"}${styleNote ? ` + ${styleNote}` : ""}${promptNote}${fitNote}. Review below, edit anything, then render ✓`, "green");
       } else {
         const styledCutClips = applyAutoStyling(cutClips, effective);
         setClips(styledCutClips);
         setActiveClipId(styledCutClips[0]?.id || null);
         setTab("clips");
         const captionCaveat = effective.skipCaptions ? "(skipped captions, per your description)" : "Add a captions API key to also auto-generate captions, or add them manually below";
-        toast?.(`Auto-edit done — cut down to ${styledCutClips.length} clip${styledCutClips.length > 1 ? "s" : ""}${styleNote ? ` + ${styleNote}` : ""}${promptNote}. ${captionCaveat} ✓`, "green");
+        toast?.(`Auto-edit done — cut down to ${styledCutClips.length} clip${styledCutClips.length > 1 ? "s" : ""}${styleNote ? ` + ${styleNote}` : ""}${promptNote}${fitNote}. ${captionCaveat} ✓`, "green");
       }
     } catch (e: any) {
       toast?.("Auto-edit failed — " + (e?.message || "unknown error"), "red");
@@ -1897,11 +1996,34 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
                         Camera flicker at cuts
                       </label>
                     </div>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <div>
+                        <label className="text-[9px] text-white/40 block mb-1">Color grade (applied to every clip)</label>
+                        <select value={autoEditColorLook} onChange={e => setAutoEditColorLook(e.target.value)} className="ve-select w-full bg-black/30 border border-white/10 rounded-lg px-1.5 py-1.5 text-white">
+                          {COLOR_LOOKS.map(l => <option key={l.id} value={l.id} className="bg-black">{l.name}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-[9px] text-white/40 block mb-1">Audio effect (applied to every clip)</label>
+                        <select value={autoEditAudioEffect} onChange={e => setAutoEditAudioEffect(e.target.value)} className="ve-select w-full bg-black/30 border border-white/10 rounded-lg px-1.5 py-1.5 text-white">
+                          {SOUND_EFFECTS.map(s => <option key={s.id} value={s.id} className="bg-black">{s.name}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    {/* FEATURE — "asks you... how long" (Social page's Auto-
+                        Edit wizard). See fitClipsToDuration in videoEditor.ts
+                        — speeds up (real ffmpeg setpts/atempo) to fit, and
+                        trims from the end only if speed alone can't get
+                        there. "No limit" (default) never touches length. */}
                     <div>
-                      <label className="text-[9px] text-white/40 block mb-1">Color grade (applied to every clip)</label>
-                      <select value={autoEditColorLook} onChange={e => setAutoEditColorLook(e.target.value)} className="ve-select w-full bg-black/30 border border-white/10 rounded-lg px-1.5 py-1.5 text-white">
-                        {COLOR_LOOKS.map(l => <option key={l.id} value={l.id} className="bg-black">{l.name}</option>)}
-                      </select>
+                      <label className="text-[9px] text-white/40 block mb-1">Target length</label>
+                      <div className="grid grid-cols-4 gap-1">
+                        {[{ v: null, l: "No limit" }, { v: 15, l: "15s" }, { v: 30, l: "30s" }, { v: 60, l: "60s" }].map(opt => (
+                          <button key={opt.l} onClick={() => setAutoEditTargetDurationSec(opt.v)} className={"py-1.5 rounded-lg text-[10px] font-semibold border transition " + (autoEditTargetDurationSec === opt.v ? "bg-purple-900/50 border-purple-600/60 text-purple-200" : "bg-black/30 border-white/10 text-white/50 hover:border-white/25")}>
+                            {opt.l}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   </div>
                   <button onClick={startAutoEditFlow} className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-lg bg-purple-900/40 hover:bg-purple-900/60 border border-purple-600/50 text-purple-200 text-xs font-semibold transition">
