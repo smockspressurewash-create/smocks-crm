@@ -5144,14 +5144,17 @@ export function App() {
     </div>
   );
   // FEATURE — audit finding (critical): named-feature plan gating (see
-  // planLimits.ts's hasPlanFeature) — Alfred/campaigns/trash-cans are
-  // advertised as Crew+/Growth-only on the pricing page but were never
-  // actually gated. Shows the same restricted-page treatment as
-  // managerBlocked above, but with an upgrade CTA instead of "ask the
-  // owner." Managers never see this — they're gated by managerBlocked
-  // first, on the same page ids, before this check ever runs.
-  const planBlocked = (feature: "alfred" | "campaigns" | "trashcans") => !hasPlanFeature(planLimits.tier, feature);
-  const PlanRestrictedNotice = ({ label, feature }: { label: string; feature: "alfred" | "campaigns" | "trashcans" }) => (
+  // planLimits.ts's hasPlanFeature) — campaigns/trash-cans are advertised
+  // as Growth-only on the pricing page but were never actually gated.
+  // Shows the same restricted-page treatment as managerBlocked above, but
+  // with an upgrade CTA instead of "ask the owner." Managers never see
+  // this — they're gated by managerBlocked first, on the same page ids,
+  // before this check ever runs. Alfred is deliberately excluded (owner
+  // explicit call — see planLimits.ts's GatedFeature comment: every owner
+  // brings their own AI key and Twilio account, so it costs this platform
+  // nothing regardless of plan).
+  const planBlocked = (feature: "campaigns" | "trashcans") => !hasPlanFeature(planLimits.tier, feature);
+  const PlanRestrictedNotice = ({ label, feature }: { label: string; feature: "campaigns" | "trashcans" }) => (
     <div className="flex flex-col items-center justify-center text-center py-24 text-white/40">
       <Lock size={32} className="mb-3 opacity-40" />
       <div className="font-semibold text-white/60 mb-1">Upgrade to unlock {label}</div>
@@ -5509,7 +5512,7 @@ export function App() {
                 {page === "automations"    && <AutomationsPage automations={automations} setAutomations={setAutomations} jobs={jobs} customers={customers} estimates={estimates} settings={settings} setSettings={setSettings} toast={toast} />}
                 {page === "social"         && <SocialPage posts={socialPosts} setPosts={setSocialPosts} toast={toast} settings={settings} setSettings={setSettings} jobs={jobs} ownerId={crmUserId} onNav={setPage} />}
                 {page === "intake"         && <LeadIntakePage customers={customers} setCustomers={setCustomers} estimates={estimates} setEstimates={setEstimates} services={services} jobs={jobs} settings={settings} setSettings={setSettings} toast={toast} onNav={setPage} onConvertToEstimate={(customerId: string) => { setEstimatePresetCustomerId(customerId); setFabAutoOpenNew("estimates"); setPage("estimates"); }} ownerId={crmUserId} markRecentlyDeleted={markRecentlyDeleted} />}
-                {page === "alfred"         && (managerBlocked("alfred") ? <RestrictedNotice label="Alfred AI" /> : planBlocked("alfred") ? <PlanRestrictedNotice label="Alfred AI Assistant" feature="alfred" /> : <AlfredPage conversations={alfredConversations} setConversations={setAlfredConversations} activeConvId={activeConvId} setActiveConvId={setActiveConvId} memory={alfredMemory} setMemory={setAlfredMemory} personality={personality} setPersonality={setPersonality} apiKey={settings.anthropicKey ?? settings.geminiKey ?? ""} openSettings={() => setSettingsOpen(true)} toast={toast} jobs={jobs} setJobs={setJobs} estimates={estimates} setEstimates={setEstimates} customers={customers} setCustomers={setCustomers} employees={employees} automations={automations} setAutomations={setAutomations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} setWins={setWins} goals={goalsList} setGoals={setGoalsList} setSettings={setSettings} settings={settings} modelStatus={modelStatus} setModelStatus={setModelStatus} onNav={setPage} onSpotlight={queueAlfredSpotlight} expenses={expenses} setExpenses={setExpenses} chemicals={chemicals} ownerId={crmUserId} reviews={reviews} setReviews={setReviews} vehicles={vehicles} setVehicles={setVehicles} maintenance={maintenance} setMaintenance={setMaintenance} trainingModules={trainingModules} services={services} />)}
+                {page === "alfred"         && (managerBlocked("alfred") ? <RestrictedNotice label="Alfred AI" /> : <AlfredPage conversations={alfredConversations} setConversations={setAlfredConversations} activeConvId={activeConvId} setActiveConvId={setActiveConvId} memory={alfredMemory} setMemory={setAlfredMemory} personality={personality} setPersonality={setPersonality} apiKey={settings.anthropicKey ?? settings.geminiKey ?? ""} openSettings={() => setSettingsOpen(true)} toast={toast} jobs={jobs} setJobs={setJobs} estimates={estimates} setEstimates={setEstimates} customers={customers} setCustomers={setCustomers} employees={employees} automations={automations} setAutomations={setAutomations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} setWins={setWins} goals={goalsList} setGoals={setGoalsList} setSettings={setSettings} settings={settings} modelStatus={modelStatus} setModelStatus={setModelStatus} onNav={setPage} onSpotlight={queueAlfredSpotlight} expenses={expenses} setExpenses={setExpenses} chemicals={chemicals} ownerId={crmUserId} reviews={reviews} setReviews={setReviews} vehicles={vehicles} setVehicles={setVehicles} maintenance={maintenance} setMaintenance={setMaintenance} trainingModules={trainingModules} services={services} />)}
                 {page === "google"         && (managerBlocked("google") ? <RestrictedNotice label="Google Workspace" /> : <GoogleWorkspacePage settings={settings} setSettings={setSettings} googleData={googleData as any} setGoogleData={setGoogleData} customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} onNav={setPage} />)}
                 {page === "employees"      && <EmployeesPage employees={employees} setEmployees={setEmployees} jobs={jobs} setJobs={setJobs} customers={customers} settings={settings} toast={toast} autoOpenManagerInvite={autoOpenManagerInvite} onAutoOpenManagerInviteConsumed={() => setAutoOpenManagerInvite(false)} initialView={employeesInitialView} onInitialViewConsumed={() => setEmployeesInitialView(undefined)} ownerId={crmUserId} planLimits={planLimits} onUpgrade={openBillingUpgrade} highlightId={alfredHighlight?.type === "employee" ? alfredHighlight.id : null} onHighlightConsumed={() => setAlfredHighlight(null)} />}
                 {page === "hiring"         && <HiringPage settings={settings} setSettings={setSettings} toast={toast} ownerId={crmUserId} onNav={setPage} />}

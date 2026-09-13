@@ -764,9 +764,20 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
       skipCaptions: !!promptResult?.skipCaptions,
     };
   };
+  // BUG FIX (audit finding — this is why Auto-Edit's output looked bad).
+  // Auto-cutting dead space/filler words can split ONE original clip into
+  // many small pieces (see splitClipAtRanges) — this used to stamp a
+  // stylized transition from the cycle onto EVERY resulting boundary,
+  // including the internal ones between two pieces of what was a single
+  // continuous take. A real edit ended up with a crossfade/zoom/wipe
+  // firing every time a silence or "um" got cut, sometimes dozens of
+  // times per clip, instead of only between the clips the owner actually
+  // dragged in. `internalCutOnly` (set by splitClipAtRanges) marks exactly
+  // those invisible-edit boundaries — skip them here, always hard-cut,
+  // regardless of whether transitions are enabled.
   const applyAutoStyling = (clipList: EditorClip[], settings: ReturnType<typeof resolveEffectiveAutoEditSettings>): EditorClip[] => clipList.map((c, i) => ({
     ...c,
-    transitionToNext: (autoEditAddTransitions && i < clipList.length - 1) ? settings.transitionCycle[i % settings.transitionCycle.length] : "none",
+    transitionToNext: (autoEditAddTransitions && i < clipList.length - 1 && !c.internalCutOnly) ? settings.transitionCycle[i % settings.transitionCycle.length] : "none",
     colorLook: settings.colorLook !== "none" ? settings.colorLook : c.colorLook,
     speed: settings.speed ?? c.speed,
   }));

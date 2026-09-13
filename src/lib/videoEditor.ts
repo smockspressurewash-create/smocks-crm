@@ -146,6 +146,18 @@ export type EditorClip = {
   // same stream layout (see the "even if the source clip is silent"
   // comment on the normalization step below).
   muted?: boolean;
+  // BUG FIX (audit finding) — set by splitClipAtRanges on every piece
+  // EXCEPT the last one a single original clip gets split into (by
+  // autoCutClipDeadSpace or stripFillerWordsFromClip). True means "this
+  // boundary is an invisible cleanup edit inside what was one continuous
+  // take, not a real cut the editor chose" — applyAutoStyling and
+  // renderFinalVideo's camera-flicker pass both need this to tell "the
+  // silence between two words" apart from "the join between two different
+  // clips the owner dragged in." Without it, Auto-Edit was stamping a
+  // stylized transition (crossfade/zoom/wipe/etc.) — or a flicker flash —
+  // onto every single silence/filler cut, not just between real clips,
+  // which is what actually made Auto-Edit's output look bad/busy.
+  internalCutOnly?: boolean;
 };
 export type EditorCaption = {
   id: string; text: string; startSec: number; endSec: number; styleId: string;
@@ -634,6 +646,9 @@ export const splitClipAtRanges = (
     // transition into whatever clip comes next — the pieces in between are
     // internal cuts within what was one continuous clip, always hard cuts.
     transitionToNext: i === final.length - 1 ? clip.transitionToNext : "none",
+    // See EditorClip.internalCutOnly — marks every non-last piece as an
+    // invisible cleanup edit, not a real editor-chosen cut.
+    internalCutOnly: i === final.length - 1 ? clip.internalCutOnly : true,
   }));
 };
 
@@ -925,7 +940,12 @@ export const renderFinalVideo = async (
     for (let i = 0; i < clips.length - 1; i++) {
       cum += normalizedDurations[i];
       const t = getTransition(clips[i].transitionToNext || "none");
-      if (!t.xfadeType) flashPoints.push(cum);
+      // BUG FIX (audit finding) — skip flash points at an internal
+      // silence/filler-word cut (see EditorClip.internalCutOnly): those
+      // are invisible cleanup edits, not a real cut the editor chose, and
+      // flashing at every one of them (there can be dozens per clip) reads
+      // as a strobing glitch rather than the intended punchy flash-cut look.
+      if (!t.xfadeType && !clips[i].internalCutOnly) flashPoints.push(cum);
     }
     if (flashPoints.length > 0) {
       onProgress?.("Adding camera flicker", 63);

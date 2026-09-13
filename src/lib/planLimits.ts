@@ -58,24 +58,27 @@ export const PLAN_TIER_LABEL: Record<PlanTier, string> = {
 };
 
 // FEATURE — audit finding (critical): the three PLANS tiers on the pricing
-// page (LandingPage.tsx) advertise Alfred as Crew+ and trash-can routes /
-// campaign blasts as Growth-only, but nothing in the app ever checked that
-// — every account got every feature regardless of which tier they paid
-// for. This is the feature-level counterpart to the customer/seat-count
-// limits above (those were already enforced; named features were not).
+// page (LandingPage.tsx) advertise trash-can routes / campaign blasts as
+// Growth-only, but nothing in the app ever checked that — every account
+// got every feature regardless of which tier they paid for. This is the
+// feature-level counterpart to the customer/seat-count limits above
+// (those were already enforced; named features were not).
 // `unlimited`/`trialing` stay full-access by the same grandfathering
 // logic getPlanLimits() already applies; `free` (lapsed trial or lapsed
 // subscription) is the most restricted, same as its customer/seat caps.
-export type GatedFeature = "alfred" | "campaigns" | "trashcans";
+// NOTE — Alfred is deliberately NOT gated here (owner explicit call):
+// every owner brings their own AI model key and their own Twilio account,
+// so Alfred costs this platform nothing regardless of which plan someone
+// is on — there's no revenue-leakage argument for it the way there is for
+// campaigns/trash-cans, which run on this platform's own infrastructure.
+export type GatedFeature = "campaigns" | "trashcans";
 const FEATURE_TIERS: Record<GatedFeature, PlanTier[]> = {
-  alfred: ["unlimited", "trialing", "crew", "growth"],
   campaigns: ["unlimited", "trialing", "growth"],
   trashcans: ["unlimited", "trialing", "growth"],
 };
 export const hasPlanFeature = (tier: PlanTier, feature: GatedFeature): boolean =>
   FEATURE_TIERS[feature].includes(tier);
 export const FEATURE_MIN_TIER_LABEL: Record<GatedFeature, string> = {
-  alfred: "the Crew plan",
   campaigns: "the Growth plan",
   trashcans: "the Growth plan",
 };
