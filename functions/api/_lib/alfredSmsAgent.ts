@@ -981,6 +981,17 @@ const TOOLS = [
     input_schema: { type: "object", properties: {} },
   },
   {
+    name: "set_autonomy_level",
+    description: "Sets the owner's STANDING (non-vacation) autonomy level — how much Alfred can do on its own day-to-day, not just while on vacation. Use when the owner says things like 'always ask me before texting customers', 'you can handle things on your own from now on', or 'don't do anything without me'. This is separate from vacation mode (set_vacation_mode) — vacation mode temporarily overrides this while it's active, then this standing level takes over again once vacation ends.",
+    input_schema: {
+      type: "object",
+      properties: {
+        level: { type: "string", enum: ["manage_everything", "ask_first", "hold_everything"], description: "manage_everything = act immediately, no confirmation needed; ask_first = queue anything that sends a message, spends money, or changes a schedule/crew commitment for a quick yes/no first; hold_everything = never take those actions on your own, just answer questions and take messages" },
+      },
+      required: ["level"],
+    },
+  },
+  {
     name: "set_reminder",
     description: "Schedule a text reminder to be sent back to the owner at a specific future time — use for 'remind me to X at/in/on Y', or 'from now on, every day at Y, do/tell me X' (pass recurring). Resolve the due time to an exact ISO 8601 datetime yourself (you're told today's date and time in the system prompt) before calling this — never pass a vague phrase. Requires an external cron pinger to actually fire (Settings → AI Models explains the one-time setup) — mention that if the owner seems unaware.",
     input_schema: {
@@ -1095,6 +1106,30 @@ const TOOLS = [
     name: "decline_customer_request",
     description: "Decline a pending customer request and text the customer that it doesn't work, optionally with a reason.",
     input_schema: { type: "object", properties: { requestId: { type: "string" }, reason: { type: "string" } }, required: ["requestId"] },
+  },
+  // FEATURE — "build that autonomy level thing... every owner sets their
+  // own personalized permissions." When alfredAutonomyLevel (or a
+  // vacation-mode override) is "ask_first", a capability-gated tool call
+  // (see SMS_TOOL_CAPABILITY) doesn't run — it's queued here instead (same
+  // alfred_pending_actions table the customer-reschedule flow above
+  // already uses, generalized via kind:"action_confirmation" — see
+  // migration 0096). These three let the owner review/approve/decline
+  // those queued actions from the SAME text thread, same shape as
+  // list_pending_customer_requests/approve_customer_request above.
+  {
+    name: "list_pending_approvals",
+    description: "List Alfred's own queued actions awaiting your approval — things Alfred wanted to do (send a text, apply a discount, reschedule a job, etc.) but held because your autonomy level is set to 'ask first'. Use when the owner asks 'what's waiting on me' or replies 'yes'/'approve' after Alfred said something was queued.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "approve_pending_action",
+    description: "Approve one of Alfred's own queued actions (from list_pending_approvals) — actually performs it now. Use list_pending_approvals first if you don't already have the actionId.",
+    input_schema: { type: "object", properties: { actionId: { type: "string" } }, required: ["actionId"] },
+  },
+  {
+    name: "decline_pending_action",
+    description: "Decline one of Alfred's own queued actions (from list_pending_approvals) — it will never be performed.",
+    input_schema: { type: "object", properties: { actionId: { type: "string" } }, required: ["actionId"] },
   },
 ];
 
@@ -1218,7 +1253,63 @@ const effectiveSmsCapability = (ctx: Ctx, key: string): boolean => {
   return legacy && raw[legacy] !== undefined ? raw[legacy] : true;
 };
 
-const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): Promise<any> => {
+// FEATURE — autonomy level (see set_autonomy_level/set_vacation_mode tool
+// defs above). Resolution order: an ACTIVE vacation-mode window's own
+// autonomyLevel is a temporary override (matches the App.tsx check-in
+// cadence logic and the twilio-sms-webhook.ts front-desk gate — same
+// active+date-range check, kept consistent across all three); otherwise
+// the owner's standing (non-vacation) alfredAutonomyLevel applies.
+// Defaulting a MISSING value to "manage_everything" (not "ask_first",
+// even though the system prompt elsewhere describes "ask_first" as the
+// assumed default for PHRASING purposes) is deliberate — every account
+// that existed before this setting did is unset, and enforcement must
+// never start blocking/queuing actions for them just because they never
+// visited this setting.
+type AutonomyLevel = "manage_everything" | "ask_first" | "hold_everything";
+const resolveEffectiveAutonomy = (ctx: Ctx): AutonomyLevel => {
+  const vac = ctx.vacationMode;
+  if (vac?.active && vac.autonomyLevel) {
+    const inWindow = !vac.startDate || !vac.endDate || (today() >= vac.startDate && today() <= vac.endDate);
+    if (inWindow) return vac.autonomyLevel as AutonomyLevel;
+  }
+  return (ctx.alfredAutonomyLevel as AutonomyLevel) || "manage_everything";
+};
+// Tools that must NEVER be autonomy-gated even though they (or their
+// capability) touch settings/approvals — gating them would deadlock the
+// owner out of ever changing their own mind (hold_everything blocking the
+// very tool that turns hold_everything off) or out of clearing their own
+// approval queue (ask_first blocking the tools that resolve ask_first
+// items).
+const AUTONOMY_EXEMPT_TOOLS = new Set([
+  "set_vacation_mode", "set_autonomy_level",
+  "list_pending_approvals", "approve_pending_action", "decline_pending_action",
+  "list_pending_customer_requests", "approve_customer_request", "decline_customer_request",
+]);
+// Short, plain-English description of what a gated tool call would do —
+// shown to the owner in the approval queue and in Alfred's own "queued
+// for your approval" reply. Falls back to a generic description for any
+// gated tool not called out by name here (still functional, just less
+// specific — safer than throwing on an unrecognized name).
+const describeActionForOwner = (name: string, input: Record<string, any>): string => {
+  switch (name) {
+    case "text_customer": case "text_phone_number": return `text "${String(input.message || "").slice(0, 80)}" to ${input.phone || input.customerName || "a customer"}`;
+    case "notify_all_customers": return `text every customer: "${String(input.message || "").slice(0, 80)}"`;
+    case "send_estimate": return `send estimate ${input.estimateId || ""} to the customer`;
+    case "send_invoice": return `send invoice ${input.invoiceId || ""} to the customer`;
+    case "reschedule_job": return `reschedule job ${input.jobId || ""} to ${input.newDate || input.requestedDate || "a new date"}`;
+    case "cancel_job": return `cancel job ${input.jobId || ""}`;
+    case "assign_employee": return `assign an employee to job ${input.jobId || ""}`;
+    case "request_employee": return `request an employee for job ${input.jobId || ""}`;
+    case "mark_invoice_paid": return `mark invoice ${input.invoiceId || ""} as paid`;
+    case "respond_to_review": return `post a reply to a review`;
+    case "text_supplier": case "email_supplier": case "contact_general_supplier": return `contact a supplier: "${String(input.message || "").slice(0, 80)}"`;
+    case "send_email_via_gmail": return `send an email: "${input.subject || ""}"`;
+    case "delete_calendar_event": return `delete a calendar event`;
+    case "create_promotion": return `create a promotion${input.name ? ": " + input.name : ""}`;
+    default: return `run "${name}"`;
+  }
+};
+const executeToolCore = async (ctx: Ctx, name: string, input: Record<string, any>): Promise<any> => {
   try {
     const __cap = SMS_TOOL_CAPABILITY[name];
     if (__cap && effectiveSmsCapability(ctx, __cap) === false) {
@@ -2198,6 +2289,21 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         const isCurrentlyOut = todayStr >= vac.startDate && todayStr <= vac.endDate;
         return { success: true, active: true, isCurrentlyOut, ...vac };
       }
+      case "set_autonomy_level": {
+        if (!input.level) return { error: "level required (manage_everything, ask_first, or hold_everything)" };
+        const rows = await sbGet(ctx, `app_settings?select=owner_id,data${ownerScope(ctx)}&limit=1`);
+        const row = rows[0];
+        if (!row?.owner_id) return { error: "Couldn't find your settings to update." };
+        const patch = { ...row.data, alfredAutonomyLevel: input.level };
+        const res = await fetch(`${SUPABASE_URL}/rest/v1/app_settings?owner_id=eq.${encodeURIComponent(row.owner_id)}&select=owner_id`, {
+          method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=representation" },
+          body: JSON.stringify({ data: patch }),
+        });
+        if (!res.ok) return { error: "Couldn't save — " + (await res.text().catch(() => "")).slice(0, 200) };
+        const savedRows = await res.json().catch(() => []);
+        if (!Array.isArray(savedRows) || savedRows.length === 0) return { error: "Couldn't save — settings row didn't match." };
+        return { success: true, level: input.level };
+      }
       case "set_reminder": {
         if (!input.message || !input.dueAtIso) return { error: "message and dueAtIso required" };
         const dueAt = new Date(input.dueAtIso);
@@ -2415,12 +2521,81 @@ const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): 
         const smsRes = await sendSms(ctx, row.customer_phone, declineMsg, false, { name: `${custRow?.firstName || ""} ${custRow?.lastName || ""}`.trim(), customerId: row.customer_id });
         return { success: true, ...(smsRes.ok ? {} : { notifyWarning: smsRes.error }) };
       }
+      case "list_pending_approvals": {
+        const rows = await sbGet(ctx, `alfred_pending_actions?status=eq.pending&kind=eq.action_confirmation&select=id,proposed,created_at${ownerScope(ctx)}&order=created_at.desc&limit=25`);
+        if (rows.length === 0) return { success: true, actions: [], summary: "Nothing waiting on your approval." };
+        return { success: true, actions: rows.map((r: any) => ({ actionId: r.id, summary: r.proposed?.summary || describeActionForOwner(r.proposed?.toolName, r.proposed?.input || {}), createdAt: r.created_at })) };
+      }
+      case "approve_pending_action": {
+        if (!input.actionId) return { error: "actionId required" };
+        const row = (await sbGet(ctx, `alfred_pending_actions?id=eq.${encodeURIComponent(input.actionId)}&kind=eq.action_confirmation&select=id,proposed,status`))[0];
+        if (!row) return { error: "Queued action not found." };
+        if (row.status !== "pending") return { error: `That action was already ${row.status}.` };
+        // Executes the ORIGINAL tool call for real — executeToolCore, not
+        // executeTool, deliberately bypasses the autonomy gate here (it
+        // already ran once when this was queued; running it again would
+        // just re-queue the same action forever instead of performing it).
+        const result = await executeToolCore(ctx, row.proposed.toolName, row.proposed.input || {});
+        await fetch(`${SUPABASE_URL}/rest/v1/alfred_pending_actions?id=eq.${encodeURIComponent(row.id)}`, {
+          method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+          body: JSON.stringify({ status: "approved", resolved_at: new Date().toISOString() }),
+        });
+        return { success: true, approved: true, result };
+      }
+      case "decline_pending_action": {
+        if (!input.actionId) return { error: "actionId required" };
+        const row = (await sbGet(ctx, `alfred_pending_actions?id=eq.${encodeURIComponent(input.actionId)}&kind=eq.action_confirmation&select=id,status`))[0];
+        if (!row) return { error: "Queued action not found." };
+        if (row.status !== "pending") return { error: `That action was already ${row.status}.` };
+        await fetch(`${SUPABASE_URL}/rest/v1/alfred_pending_actions?id=eq.${encodeURIComponent(row.id)}`, {
+          method: "PATCH", headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+          body: JSON.stringify({ status: "declined", resolved_at: new Date().toISOString() }),
+        });
+        return { success: true, declined: true };
+      }
       default:
         return { error: `Unknown tool "${name}".` };
     }
   } catch (e: any) {
     return { error: e?.message || "Tool execution failed." };
   }
+};
+
+// FEATURE — "build that autonomy level thing for Alfred... every owner
+// sets their own personalized permissions." The real gate: sits IN FRONT
+// of executeToolCore rather than inside it, so approve_pending_action can
+// call executeToolCore directly to actually perform an already-approved
+// action without hitting this gate a second time. Only tools with a
+// capability mapping (SMS_TOOL_CAPABILITY) — the same "creates/sends/
+// changes something" set Settings → Alfred → Capabilities already
+// gates — are eligible; read-only lookups, reminders, and memory are
+// never held up regardless of autonomy level, same scope the existing
+// capability gate already uses.
+const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): Promise<any> => {
+  const cap = SMS_TOOL_CAPABILITY[name];
+  if (!cap || AUTONOMY_EXEMPT_TOOLS.has(name)) return executeToolCore(ctx, name, input);
+  const autonomy = resolveEffectiveAutonomy(ctx);
+  if (autonomy === "manage_everything") return executeToolCore(ctx, name, input);
+  const summary = describeActionForOwner(name, input);
+  if (autonomy === "hold_everything") {
+    return { error: `Your autonomy level is set to "hold everything," so Alfred won't ${summary} on its own right now. Say "set autonomy to ask first" or "manage everything" if you want Alfred to act again.` };
+  }
+  // ask_first — queue it instead of running it. Reuses the same table the
+  // customer-reschedule proposal flow already uses (alfred_pending_actions,
+  // migration 0096 generalized it to allow a row with no customer attached).
+  const id = crypto.randomUUID();
+  const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/alfred_pending_actions`, {
+    method: "POST",
+    headers: { ...ctx.authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
+    body: JSON.stringify({ id, owner_id: ctx.ownerId, kind: "action_confirmation", proposed: { toolName: name, input, summary }, status: "pending", created_at: new Date().toISOString() }),
+  });
+  if (!insertRes.ok) {
+    // If queuing itself fails, fail safe by NOT silently skipping the
+    // action — surface the error instead of either running it unconfirmed
+    // or pretending it's queued when it isn't.
+    return { error: "Couldn't queue this for your approval — " + (await insertRes.text().catch(() => "")).slice(0, 200) };
+  }
+  return { success: true, awaitingApproval: true, actionId: id, summary, message: `Queued for your approval — I'll ${summary} once you approve it. Reply "approve" or "list pending approvals".` };
 };
 
 // ─── Conversation persistence ──────────────────────────────────────────────
@@ -2580,7 +2755,7 @@ CASUAL CONVERSATION: the owner can talk to you like a person, not just issue com
 
 STANDING PREFERENCES: when the owner says something like "from now on...", "always...", "don't ask me about... anymore", or "call me...", that's a persistent instruction, not just for this one reply — call set_standing_preference to save it (it'll be listed above automatically in every future conversation from then on). Don't wait to be asked twice.
 
-VACATION MODE: when the owner says they're going on vacation, taking time off, or will be unreachable, DO NOT guess the details — walk them through it one or two questions at a time over text (how long/what dates, how they want you to handle things while they're out, how often to check in with them) and only call set_vacation_mode once you actually have their answers, then confirm the plan back in one short text. ${ctx.vacationMode?.active ? `VACATION MODE IS CURRENTLY ${(today() >= (ctx.vacationMode.startDate || "") && today() <= (ctx.vacationMode.endDate || "")) ? "ACTIVE" : "SCHEDULED"} — out ${ctx.vacationMode.startDate} to ${ctx.vacationMode.endDate}, autonomy: ${ctx.vacationMode.autonomyLevel}, check-ins: ${ctx.vacationMode.checkInFrequency}${ctx.vacationMode.notes ? ", notes: " + ctx.vacationMode.notes : ""}. Let this shape how proactively you act right now — if autonomyLevel is ask_first or hold_everything, don't send/commit things on the owner's behalf without checking first, even if you normally would.` : `Vacation mode is currently off. GENERAL AUTONOMY LEVEL (owner's standing preference, set at signup, changeable in Settings): ${ctx.alfredAutonomyLevel || "ask_first"} (manage_everything = act on the owner's behalf without asking first; ask_first = prepare/draft things but confirm with the owner before sending/committing anything customer-facing or irreversible; hold_everything = don't take proactive action, just answer and take messages).`}
+VACATION MODE: when the owner says they're going on vacation, taking time off, or will be unreachable, DO NOT guess the details — walk them through it one or two questions at a time over text (how long/what dates, how they want you to handle things while they're out, how often to check in with them) and only call set_vacation_mode once you actually have their answers, then confirm the plan back in one short text. ${ctx.vacationMode?.active ? `VACATION MODE IS CURRENTLY ${(today() >= (ctx.vacationMode.startDate || "") && today() <= (ctx.vacationMode.endDate || "")) ? "ACTIVE" : "SCHEDULED"} — out ${ctx.vacationMode.startDate} to ${ctx.vacationMode.endDate}, autonomy: ${ctx.vacationMode.autonomyLevel}, check-ins: ${ctx.vacationMode.checkInFrequency}${ctx.vacationMode.notes ? ", notes: " + ctx.vacationMode.notes : ""}.` : `Vacation mode is currently off. GENERAL (STANDING) AUTONOMY LEVEL: ${ctx.alfredAutonomyLevel || "manage_everything"}.`} This is ENFORCED in code, not just a tone guideline — a capability-gated action (texting/emailing someone, money changes, schedule/crew changes, automations) under ask_first gets automatically queued instead of run, and under hold_everything gets refused outright; you don't need to self-censor those calls, the system handles it and tells you what happened. Just make the call naturally and relay whatever it reports back (done / queued for approval / on hold) — never claim something is done unless the tool result actually said so. The owner can change the standing level anytime by saying things like "always ask me first" or "you can handle things yourself" (set_autonomy_level), separate from vacation mode (set_vacation_mode, which only overrides it temporarily). If they ask what's waiting on them, or reply "approve"/"yes" after something got queued, use list_pending_approvals/approve_pending_action/decline_pending_action.
 
 MULTI-PART REQUESTS: when a single text asks for several distinct things ("who's working, AND create this customer, AND quote them, AND text it"), treat each as its own tool call and report EACH ONE'S real outcome by name in your reply — don't roll them into one vague summary line, and never describe a step as done unless its own tool result actually said so. If one step's tool result is an "error", say exactly which step failed and why, but still report the outcome of every OTHER step you did complete — don't let one failure make the whole reply vague about what did or didn't happen.
 

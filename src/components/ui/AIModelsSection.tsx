@@ -333,6 +333,37 @@ export function AIModelsSection({ f, setF, setSettings, modelStatus, setModelSta
         </div>
       </Glass>
 
+      {/* FEATURE — "build that autonomy level thing... make sure it works
+          the same for vacation mode and normal Alfred in general... every
+          owner sets their own personalized permissions." Capabilities
+          above are a hard on/off per action group; this is the STANDING
+          (non-vacation) confirmation level layered on top of whichever
+          capabilities are on — for any capability-gated tool, does Alfred
+          just do it, or hold it for a quick yes/no first? Same
+          alfredAutonomyLevel field Alfred's own set_autonomy_level tool
+          writes (in-app chat or text — "always ask me before texting
+          customers"), enforced in the exact same executeTool wrapper as
+          Capabilities, in both AlfredPage.tsx and alfredSmsAgent.ts. An
+          active vacation-mode window's own autonomy level (below)
+          temporarily overrides this — this is what applies the rest of
+          the time. */}
+      <Glass className="p-4">
+        <div className="font-semibold text-sm flex items-center gap-1.5 mb-1"><Shield size={13} />Alfred's Standing Autonomy Level</div>
+        <div className="text-[10px] text-white/40 mb-2">For anything Capabilities above allows — a text, a discount, a reschedule — does Alfred just do it, or check with you first? Vacation Mode below can temporarily override this while it's active.</div>
+        <div className="space-y-1.5">
+          {([
+            { v: "manage_everything", label: "Manage everything", desc: "Alfred acts immediately — no confirmation needed." },
+            { v: "ask_first", label: "Ask first", desc: "Alfred queues anything that sends a message, spends money, or changes a schedule/crew commitment for your quick approval." },
+            { v: "hold_everything", label: "Hold everything", desc: "Alfred never takes those actions on its own — just answers questions and takes messages." },
+          ] as const).map(opt => (
+            <button key={opt.v} onClick={() => setF({ ...f, alfredAutonomyLevel: opt.v })} className={"w-full text-left px-3 py-2 rounded-xl border transition " + ((f.alfredAutonomyLevel || "manage_everything") === opt.v ? "bg-red-950/30 border-red-600/50" : "bg-white/5 border-white/10 hover:border-white/20")}>
+              <div className="text-xs font-medium text-white/85">{opt.label}</div>
+              <div className="text-[10px] text-white/45 mt-0.5">{opt.desc}</div>
+            </button>
+          ))}
+        </div>
+      </Glass>
+
       {/* FEATURE — vacation/out-of-office mode. Alfred itself sets this via
           the set_vacation_mode tool (in-app chat or text — "I'm heading out
           next week", it asks the follow-up questions and calls the tool),

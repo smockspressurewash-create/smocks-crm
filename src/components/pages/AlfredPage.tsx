@@ -1171,6 +1171,61 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     return out;
   })();
 
+  // FEATURE — "build that autonomy level thing... make sure it works the
+  // same for vacation mode and normal Alfred in general... every owner
+  // sets their own personalized permissions." Same logic, same tool
+  // taxonomy, and same enforcement mechanism as functions/api/_lib/
+  // alfredSmsAgent.ts's mirror of this — see that file's matching comment
+  // for the full reasoning (duplicated rather than shared since this file
+  // is a browser bundle and that one's a separate Cloudflare Function
+  // runtime, no common import path between them).
+  // Resolution order: an ACTIVE vacation-mode window's own autonomyLevel
+  // is a temporary override (same active+date-range check used everywhere
+  // else vacation mode is checked); otherwise the owner's standing
+  // (non-vacation) alfredAutonomyLevel applies. A MISSING value resolves
+  // to "manage_everything" (today's real behavior), not "ask_first" —
+  // every account that existed before this setting did must never start
+  // getting its actions silently queued just because it's unset.
+  const resolveEffectiveAutonomy = (): "manage_everything" | "ask_first" | "hold_everything" => {
+    const vac = (settings as any)?.vacationMode;
+    if (vac?.active && vac.autonomyLevel) {
+      const t = today();
+      const inWindow = !vac.startDate || !vac.endDate || (t >= vac.startDate && t <= vac.endDate);
+      if (inWindow) return vac.autonomyLevel;
+    }
+    return (settings as any)?.alfredAutonomyLevel || "manage_everything";
+  };
+  // Never autonomy-gated — gating these would deadlock the owner out of
+  // changing their own mind (hold_everything blocking the tool that turns
+  // it off) or out of clearing their own approval queue.
+  const AUTONOMY_EXEMPT_TOOLS = new Set([
+    "set_vacation_mode", "set_autonomy_level",
+    "list_pending_approvals", "approve_pending_action", "decline_pending_action",
+    "list_pending_customer_requests", "approve_customer_request", "decline_customer_request",
+  ]);
+  const describeActionForOwner = (name: string, inputs: Record<string, any>): string => {
+    switch (name) {
+      case "text_phone_number": return `text "${String(inputs.message || "").slice(0, 80)}" to ${inputs.phone || "a number"}`;
+      case "notify_all_customers": return `text every customer: "${String(inputs.message || "").slice(0, 80)}"`;
+      case "send_reminder": return `send a ${inputs.channel || "message"} to ${inputs.customerName || inputs.customerId || "a customer"}: "${String(inputs.message || "").slice(0, 80)}"`;
+      case "send_estimate": return `send estimate ${inputs.estimateId || ""} to the customer`;
+      case "reschedule_job": return `reschedule job ${inputs.jobId || ""} to ${inputs.newDate || ""}`;
+      case "cancel_job": return `cancel job ${inputs.jobId || ""}`;
+      case "assign_employee": return `assign an employee to job ${inputs.jobId || ""}`;
+      case "request_employee": return `request an employee for job ${inputs.jobId || ""}`;
+      case "apply_discount_to_estimate": return `apply a discount to estimate ${inputs.estimateId || ""}`;
+      case "update_job_price": return `change the price on job ${inputs.jobId || ""}`;
+      case "mark_invoice_paid": return `mark invoice ${inputs.invoiceId || ""} as paid`;
+      case "respond_to_review": return `post a reply to a review`;
+      case "text_supplier": case "email_supplier": case "contact_general_supplier": return `contact a supplier: "${String(inputs.message || "").slice(0, 80)}"`;
+      case "send_email_via_gmail": return `send an email: "${inputs.subject || ""}"`;
+      case "delete_calendar_event": return `delete a calendar event`;
+      case "create_automation": return `create an automation${inputs.name ? ": " + inputs.name : ""}`;
+      case "toggle_automation": return `turn ${inputs.enabled === false ? "off" : "on"} an automation`;
+      default: return `run "${name}"`;
+    }
+  };
+
   // BUG FIX — "assign employee to the job I just scheduled" (in the SAME
   // Alfred turn) failed with "Job not found" even though schedule_job had
   // just verified the row exists in Supabase. Root cause: schedule_job's
@@ -1220,6 +1275,24 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       const cap = ALFRED_TOOL_CAPABILITY[name];
       if (cap && alfredCapabilities[cap] === false) {
         __result = { error: `The owner has turned off Alfred's "${cap}" capability in Settings → Alfred → Capabilities — this action can't be performed until they turn it back on.` };
+      } else if (cap && !AUTONOMY_EXEMPT_TOOLS.has(name) && resolveEffectiveAutonomy() !== "manage_everything") {
+        const autonomy = resolveEffectiveAutonomy();
+        const summary = describeActionForOwner(name, inputs);
+        if (autonomy === "hold_everything") {
+          __result = { error: `Your autonomy level is set to "hold everything," so Alfred won't ${summary} on its own right now. Say "set autonomy to ask first" or "manage everything" if you want Alfred to act again.` };
+        } else {
+          // ask_first — queue instead of running it now (same
+          // alfred_pending_actions table/flow the customer-reschedule
+          // proposal cases above use, generalized via
+          // kind:"action_confirmation" — see migration 0096).
+          const id = uid();
+          const insertRes = await (supabase as any).from("alfred_pending_actions").insert({ id, owner_id: ownerId, kind: "action_confirmation", proposed: { toolName: name, input: inputs, summary }, status: "pending", created_at: new Date().toISOString() });
+          if (insertRes?.error) {
+            __result = { error: "Couldn't queue this for your approval — " + insertRes.error.message };
+          } else {
+            __result = { success: true, awaitingApproval: true, actionId: id, summary, message: `Queued for your approval — I'll ${summary} once you approve it.` };
+          }
+        }
       } else {
         __result = await executeToolCore(name, inputs);
       }
@@ -2644,6 +2717,45 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           toast("Customer request declined");
           return { success: true, ...(notifyWarning ? { notifyWarning } : {}) };
         }
+        case "list_pending_approvals": {
+          const { data: rows } = await (supabase as any).from("alfred_pending_actions").select("id,proposed,created_at").eq("owner_id", ownerId).eq("status", "pending").eq("kind", "action_confirmation").order("created_at", { ascending: false }).limit(25);
+          if (!rows || rows.length === 0) return { success: true, actions: [], summary: "Nothing waiting on your approval." };
+          return { success: true, actions: rows.map((r: any) => ({ actionId: r.id, summary: r.proposed?.summary || describeActionForOwner(r.proposed?.toolName, r.proposed?.input || {}), createdAt: r.created_at })) };
+        }
+        case "approve_pending_action": {
+          if (!inputs.actionId) return { error: "actionId required" };
+          const { data: row } = await (supabase as any).from("alfred_pending_actions").select("id,proposed,status").eq("id", inputs.actionId).eq("kind", "action_confirmation").maybeSingle();
+          if (!row) return { error: "Queued action not found." };
+          if (row.status !== "pending") return { error: `That action was already ${row.status}.` };
+          // executeToolCore, not executeTool — deliberately bypasses the
+          // autonomy gate here (it already ran once when this was queued;
+          // running it again would just re-queue it forever instead of
+          // actually performing it).
+          const result = await executeToolCore(row.proposed.toolName, row.proposed.input || {});
+          const resolveRes = await (supabase as any).from("alfred_pending_actions").update({ status: "approved", resolved_at: new Date().toISOString() }).eq("id", row.id).select("id");
+          if (resolveRes?.error || !Array.isArray(resolveRes?.data) || resolveRes.data.length === 0) console.warn("[Alfred Autonomy] couldn't mark action approved:", resolveRes?.error?.message);
+          toast("Action approved");
+          return { success: true, approved: true, result };
+        }
+        case "decline_pending_action": {
+          if (!inputs.actionId) return { error: "actionId required" };
+          const { data: row } = await (supabase as any).from("alfred_pending_actions").select("id,status").eq("id", inputs.actionId).eq("kind", "action_confirmation").maybeSingle();
+          if (!row) return { error: "Queued action not found." };
+          if (row.status !== "pending") return { error: `That action was already ${row.status}.` };
+          const resolveRes = await (supabase as any).from("alfred_pending_actions").update({ status: "declined", resolved_at: new Date().toISOString() }).eq("id", row.id).select("id");
+          if (resolveRes?.error || !Array.isArray(resolveRes?.data) || resolveRes.data.length === 0) return { error: "Couldn't decline it — " + (resolveRes?.error?.message || "it may belong to a different account") };
+          toast("Action declined");
+          return { success: true, declined: true };
+        }
+        case "set_autonomy_level": {
+          if (!inputs.level) return { error: "level required (manage_everything, ask_first, or hold_everything)" };
+          const patch = { ...(settings as any), alfredAutonomyLevel: inputs.level };
+          const res = await (supabase as any).from("app_settings").update({ data: patch }).eq("owner_id", ownerId).select("owner_id");
+          if (res?.error || !Array.isArray(res?.data) || res.data.length === 0) return { error: "Couldn't save — " + (res?.error?.message || "settings row didn't match") };
+          setSettings((prev: any) => ({ ...prev, alfredAutonomyLevel: inputs.level }));
+          toast("Alfred's autonomy level set to " + inputs.level.replace(/_/g, " "));
+          return { success: true, level: inputs.level };
+        }
         case "send_reminder": {
           // CRITICAL (Alfred functionality audit) — this used to look up
           // ONLY by customerId (no name fallback, unlike every other tool
@@ -3451,6 +3563,28 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       description: "Decline a pending customer request and text the customer that it doesn't work, optionally with a reason.",
       input_schema: { type: "object", properties: { requestId: { type: "string" }, reason: { type: "string" } }, required: ["requestId"] }
     },
+    // FEATURE — "build that autonomy level thing... every owner sets their
+    // own personalized permissions." When alfredAutonomyLevel (or a
+    // vacation-mode override) is "ask_first", a capability-gated tool call
+    // doesn't run — it's queued in alfred_pending_actions instead (same
+    // table the customer-reschedule flow above already uses, generalized
+    // via kind:"action_confirmation" — see migration 0096). These three
+    // let the owner review/approve/decline those from the SAME chat.
+    {
+      name: "list_pending_approvals",
+      description: "List Alfred's own queued actions awaiting your approval — things Alfred wanted to do (send a text, apply a discount, reschedule a job, etc.) but held because your autonomy level is set to 'ask first'. Use when the owner asks 'what's waiting on me' or replies 'yes'/'approve' after Alfred said something was queued.",
+      input_schema: { type: "object", properties: {} }
+    },
+    {
+      name: "approve_pending_action",
+      description: "Approve one of Alfred's own queued actions (from list_pending_approvals) — actually performs it now. Use list_pending_approvals first if you don't already have the actionId.",
+      input_schema: { type: "object", properties: { actionId: { type: "string" } }, required: ["actionId"] }
+    },
+    {
+      name: "decline_pending_action",
+      description: "Decline one of Alfred's own queued actions (from list_pending_approvals) — it will never be performed.",
+      input_schema: { type: "object", properties: { actionId: { type: "string" } }, required: ["actionId"] }
+    },
     {
       name: "send_reminder",
       description: "Send a real, custom text or email message to a customer via SMS or email (requires Twilio/Gmail configured in Settings). Use this for 'text/email [customer] and tell them [anything]' as well as payment/appointment reminders — pass the exact wording as `message`.",
@@ -3491,6 +3625,17 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       name: "get_vacation_status",
       description: "Check whether vacation/out-of-office mode is currently active and what its settings are. Use before answering 'am I on vacation mode' or before deciding how autonomously to act.",
       input_schema: { type: "object", properties: {} }
+    },
+    {
+      name: "set_autonomy_level",
+      description: "Sets the owner's STANDING (non-vacation) autonomy level — how much Alfred can do on its own day-to-day, not just while on vacation. Use when the owner says things like 'always ask me before texting customers', 'you can handle things on your own from now on', or 'don't do anything without me'. Separate from vacation mode (set_vacation_mode) — vacation mode temporarily overrides this while active, then this standing level takes over again once vacation ends.",
+      input_schema: {
+        type: "object",
+        properties: {
+          level: { type: "string", enum: ["manage_everything", "ask_first", "hold_everything"], description: "manage_everything = act immediately, no confirmation needed; ask_first = queue anything that sends a message, spends money, or changes a schedule/crew commitment for a quick yes/no first; hold_everything = never take those actions on your own, just answer questions and take messages" }
+        },
+        required: ["level"]
+      }
     },
     // FEATURE — capability parity with text-Alfred's set_reminder/
     // list_reminders/cancel_reminder: a REAL scheduled text sent to the
