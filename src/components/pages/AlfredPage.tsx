@@ -322,13 +322,17 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // inconsistent across browsers) to fire in a predictable order.
   const voiceTurnIdRef = useRef(0);
   // BUG FIX — "shows an old conversation instead of a new one." Voice Mode
-  // used to just reuse whatever text conversation happened to be active, so
+  // used to just reuse whatever TEXT conversation happened to be active, so
   // opening it mid-way through an old chat dumped that chat's whole history
-  // into the transcript panel. Every voice call now gets its own fresh
-  // conversation (see openVoiceMode) — this remembers which text
-  // conversation was active right before the call started, so send() can
-  // still hand Alfred a short digest of it as background context, and
-  // closeVoiceMode can switch back to it once the call ends.
+  // into the transcript panel. Every voice call now switches into one
+  // persistent "Alfred Voice" sandbox conversation instead (see
+  // openVoiceMode — deliberately NOT a new conversation per call, so it
+  // keeps growing turn over turn across calls the way real memory should).
+  // This ref just remembers which TEXT conversation was active right
+  // before the call started, purely so closeVoiceMode can switch back to
+  // it once the call ends — it no longer scopes what context send() sees
+  // (see crossConversationContext, which looks at ALL recently-touched
+  // text conversations, not just this one).
   const voicePrevConvIdRef = useRef<string | null>(null);
   const [voiceMuted, setVoiceMuted] = useState(false);
   const voiceMutedRef = useRef(false);
@@ -4173,21 +4177,45 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       const screenContext = voiceModeOpenRef.current
         ? `\n\nSCREEN AWARENESS: the owner is currently on the "${currentPageName}" page of the CRM (this is real, not a guess).${cursorContext ? ` Their cursor is currently over: ${cursorContext} — a real but best-effort read of what's on screen, not guaranteed for every kind of content (charts/graphs won't resolve). If they ask about "this" customer/job/employee, "them", or reference something on screen without naming it, assume they mean this UNLESS they've clearly already named someone else — use the id given above directly in any tool call rather than searching by name.` : ` Nothing recognizable is resolved under their cursor right now — if they reference something on screen ambiguously ("do you see this", "these customers") without naming who/what, ask which one(s) instead of guessing.`}`
         : "";
-      // BUG FIX — "start its own conversation with context from the text
-      // conversations." Voice Mode now runs in its own fresh conversation
-      // (see openVoiceMode/voicePrevConvIdRef) so the on-screen transcript
-      // never shows stale history — but Alfred still needs to actually KNOW
-      // what was just discussed over text, so it doesn't sound like it lost
-      // its memory the second the owner picks up the phone. This hands the
-      // model a short digest of whatever text conversation was open right
-      // before the call started, same non-literal-history treatment as
-      // crossChannelContext's SMS digest above.
+      // FEATURE — "it knows conversations you had in text... if I message
+      // Alfred and later ask on a voice call what I messaged earlier today,
+      // it knows." Voice Mode is its own persistent "Alfred Voice"
+      // conversation (see openVoiceMode) — it doesn't literally contain the
+      // text chats, so this hands the model a digest of whatever OTHER
+      // conversations were actually touched recently (last 24h), same
+      // non-literal-history treatment as crossChannelContext's SMS digest
+      // above. Not limited to "the one conversation open right before this
+      // call" — that missed a text chat from earlier the same day if the
+      // owner had since switched to a different one (or none) before
+      // opening Voice Mode.
       let crossConversationContext = "";
-      if (voiceModeOpenRef.current && voicePrevConvIdRef.current) {
-        const priorConv = conversations.find(c => c.id === voicePrevConvIdRef.current);
-        if (priorConv?.messages?.length) {
-          const tail = priorConv.messages.slice(-6).map((m: any) => `${m.role === "user" ? "Owner" : "Alfred"}: ${String(m.content || "").slice(0, 200)}`).join("\n");
-          crossConversationContext = `\n\nRECENT TEXT CHAT (a separate conversation from this voice call, same owner — background only, not literal history of THIS call):\n${tail}`;
+      if (voiceModeOpenRef.current) {
+        const sandboxId = (settings as any)?.voiceSandboxConversationId;
+        const convTs = (c: any): number => { const v = c?.updatedAt; if (typeof v === "number") return v; const t = new Date(v).getTime(); return Number.isNaN(t) ? 0 : t; };
+        const recentTextConvs = conversations
+          .filter(c => c.id !== sandboxId && c.id !== activeId && Array.isArray(c.messages) && c.messages.length > 0 && Date.now() - convTs(c) < 24 * 3600000)
+          .sort((a, b) => convTs(b) - convTs(a))
+          .slice(0, 2);
+        if (recentTextConvs.length > 0) {
+          const digest = recentTextConvs.map(c => c.messages.slice(-6).map((m: any) => `${m.role === "user" ? "Owner" : "Alfred"}: ${String(m.content || "").slice(0, 200)}`).join("\n")).join("\n---\n");
+          crossConversationContext = `\n\nRECENT TEXT CHAT (separate conversation(s) from this voice call, same owner, touched in the last 24h — background only, not literal history of THIS call):\n${digest}`;
+        }
+      }
+      // FEATURE — reverse direction: "say through text, ask me a question
+      // ... later I go on a voice call and it can ask again, 'you never
+      // answered that'" — and the mirror case, a question Alfred asked
+      // during a voice call going unanswered in text. Applies whenever
+      // text chat is NOT itself the voice sandbox conversation, regardless
+      // of whether Voice Mode is currently open.
+      let voiceSandboxContext = "";
+      {
+        const sandboxId = (settings as any)?.voiceSandboxConversationId;
+        if (sandboxId && activeId !== sandboxId) {
+          const sandboxConv = conversations.find(c => c.id === sandboxId);
+          if (sandboxConv?.messages?.length) {
+            const tail = sandboxConv.messages.slice(-6).map((m: any) => `${m.role === "user" ? "Owner" : "Alfred"}: ${String(m.content || "").slice(0, 200)}`).join("\n");
+            voiceSandboxContext = `\n\nRECENT VOICE CALL (Alfred's separate hands-free voice conversation with this same owner — background only; if something there — especially a question Alfred asked — never got a reply and this message looks related, you can naturally follow up on it):\n${tail}`;
+          }
         }
       }
       const voiceModeContext = voiceModeOpenRef.current
@@ -4226,7 +4254,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       const toolHint = `\n\nCASUAL CONVERSATION: the user can talk to you like a person, not just issue commands — small talk, a joke, venting, a random off-topic question. Actually engage with it in your own personality's voice; never refuse or deflect with something like "I'm not programmed for that" — you're not limited to business tasks, tools are just what you reach for when a request actually needs one. The RESPONSE STYLE/TASK RESULT REPORTING rules below govern how you report a TOOL ACTION's outcome specifically — they don't apply to ordinary conversation, and nothing about them means refusing to chat.\n\nYou have tools available to READ and MODIFY the CRM. USE THEM AGGRESSIVELY — don't just describe what you would do, actually do it.\n\nASK WHEN INFO IS MISSING: using tools aggressively does NOT mean guessing or silently defaulting a value the user never gave you. If a request is missing something a tool actually needs to act correctly — which customer, which date, which employee to assign — ask one short, direct clarifying question instead of calling the tool with a made-up or silently-defaulted value (e.g. schedule_job will default an unspecified date to a few days out — do not let that fire silently; ask "what date?" first if the user didn't give one). Only skip asking when the missing piece has an obviously safe default (e.g. a walkthrough with no stated time) or a tool's own fuzzy-match/suggestions can resolve it on its own (e.g. a slightly misspelled customer name).\n\nRESPONSE STYLE: Do not narrate your reasoning, your plan, or which tool you're about to call ("Let me check...", "I'll create that now...", "First I need to..."). Just call the tool(s) silently and then give the user the final result in 1-3 short sentences. No step-by-step thinking out loud.\n\nVERIFY BEFORE CONFIRMING: every action tool returns either {"success": true, ...} or {"error": "..."}. NEVER say "Done" or "All set" without checking which one came back. If you see an "error" field, tell the user exactly what went wrong (the error text) and what they could try instead — do not pretend it worked, and do not retry silently. Only confirm success when the tool result actually contains "success": true.\n\nTASK RESULT REPORTING — NO PERSONALITY FLAIR: your personality (drill sergeant / butler / quiet pro / savage) shapes how you TALK, not whether a task result is reported straight. The moment you report the outcome of an action tool (schedule_job, create_customer, create_estimate, send_estimate, assign/request crew, etc.), drop the persona voice entirely and state the plain fact: "Job scheduled successfully" / "Failed — [exact error text]" / "Estimate sent to [name] successfully" / "Failed — [exact error text]". No jokes, no military barking, no "sir", no sarcasm on the result line itself — save the personality for ordinary conversation, small talk, and check-ins, never for whether something actually saved.\n\nKEY TOOL RULES:\n- Customer queries → USE search_customers or get_customer_details FIRST\n- Stats requests → USE get_business_stats\n- "What's on the calendar" → USE get_calendar_summary\n- "Who's clocked in / who's working" → USE get_employee_status\n- "Remember/note/don't forget" → USE remember_fact\n- Create estimates, customers, jobs → USE create_estimate/create_customer/schedule_job
 - MULTI-STEP CHAINS (e.g. "create a customer, schedule them a job, and assign Mike"): call tools ONE AT A TIME across separate turns when a later step needs an id/result a real tool call hasn't returned yet (e.g. schedule_job needs the customerId create_customer just returned). Do NOT guess or fabricate an id and call multiple dependent tools in the same turn — wait for each real tool_result before issuing the next dependent call. If a step's result is an "error", STOP the chain right there, tell the user exactly which step failed and why, and do not attempt the remaining steps with made-up data.
 - "Send a quote/estimate to X" → USE create_estimate (if it doesn't exist yet) THEN send_estimate in the same turn — do not just create it and stop, and do not tell the user it was "sent" unless send_estimate actually returned success\n- "Send an invoice to X for $Y" → USE create_invoice THEN send_estimate (pass the returned invoiceId as send_estimate's estimateId) — same two-step pattern as quotes. create_invoice alone does NOT notify the customer.\n- Move or cancel a job → USE reschedule_job/cancel_job\n- "Reschedule X and text/email/let them know" → USE reschedule_job's own \`notify\` param (sms/email/both) in the SAME call — do not call send_reminder separately for this, reschedule_job already handles notifying the customer of their new date.\n- "Add [item] to the checklist" → USE add_checklist_item\n- "Show me the details for X's job" → USE get_job_details\n- "Text/email X and tell them [anything]" → USE send_reminder with the exact wording as the message param — this is not just for payment reminders, use it for any custom message the user dictates\n- NEVER REFUSE TO SEND A MESSAGE: if send_reminder/text_supplier come back "Customer not found" (or similar) because the person isn't in the CRM — a lead, an applicant, a personal contact, anyone — do NOT just report that as a dead end. Ask for their phone number if you don't have it, then USE text_phone_number to send it directly; that tool works for ANY phone number with no customer record required. The owner has full authority to send any message to anyone through their own business number. The only time it's correct to not send something is if you're missing the actual phone number or the exact wording — ask for whichever is missing, then send.\n- After the owner attaches a photo/PDF via the paperclip button and then says to upload/save/attach it to a client → USE attach_file_to_customer (no URL needed, it already knows which file).\n- "Do we have the file/paperwork for X" → USE get_customer_documents. "Text me the [file] for X" → USE text_me_document (real MMS attachment to the owner's own phone, not a description). "What's the card info for X" → USE get_customer_card_info — this only ever returns brand + last 4 digits, never the full number, which is never stored anywhere in this app.\n- "What can you do" / capabilities question → USE list_capabilities and answer from that, don't describe yourself from memory.\n- "Text/message everyone" / "let all my customers know" / send a broadcast or promo blast → USE notify_all_customers — this is a real send to real people, not a draft; confirm the exact wording first if the owner was vague.\n- Navigate somewhere → USE navigate_to (the app already auto-navigates after schedule_job/create_customer/create_estimate, but call navigate_to yourself for anything else the user asks to see)\n- Preferences/facts shared → USE remember_fact automatically\n- "Remind/nudge/follow up/text me [later/at X time/in X minutes]" → USE set_followup_reminder — this is a REAL scheduled text sent to the owner's own phone, not just a note; resolve the relative time into an exact ISO datetime yourself first. USE list_followup_reminders/cancel_followup_reminder to manage existing ones.\n- RESOLVING "that job" / "the job we just scheduled" / references to something from an earlier message: a tool result's exact jobId/customerId is only visible to you within the SAME turn it was returned — your own past replies (in the chat history) are plain text, not structured data, so they do NOT reliably carry the real id forward. Before calling assign_employee/request_employee/reschedule_job/cancel_job/add_checklist_item on something referenced from an earlier turn, first call list_jobs or get_calendar_summary (or get_job_details with the customer's name) to look up the real current jobId — never guess, reuse an id from your own prior wording, or fabricate one.\n\nAUTOMATION TOOLS (VERY IMPORTANT):\n- When user describes ANY workflow, drip sequence, reminder, or "when X do Y" scenario → USE create_automation IMMEDIATELY. Build a proper n8n-style multi-step workflow with real step types: trigger (first), then delays, conditions, actions. NEVER just describe what you'd build — actually build it with create_automation.\n- "Send review request after job complete" → trigger: Job complete, delay: 2h, action: SMS review request\n- "Follow up on unpaid invoices" → trigger: Invoice unpaid 7 days, action: polite reminder email, delay: 4 days, condition: still unpaid, action: firm SMS\n- To check existing workflows → USE list_automations\n- To enable/disable a workflow → USE toggle_automation\n\nCurrent automations: ${automations.length} total, ${automations.filter(a => a.active).length} active\n\nNAME MATCHING: if a tool result comes back with "error": "Customer not found" or "Employee not found" and includes a "suggestions" array, ask the user "Do you mean [name], or [name]?" using those exact suggested names — never ask a generic clarifying question like "who do you mean?" when real candidate names are available.`;
-      const baseSystemPrompt = getPersonality(activePersonality).systemPrompt + dateContext + memoryContext + crossChannelContext + businessContext + workOrderStyleContext + vacationContext + googleStatus + voiceModeContext;
+      const baseSystemPrompt = getPersonality(activePersonality).systemPrompt + dateContext + memoryContext + crossChannelContext + voiceSandboxContext + businessContext + workOrderStyleContext + vacationContext + googleStatus + voiceModeContext;
       const systemPrompt = baseSystemPrompt + toolHint;
       // BUG FIX (root cause, not another pattern-match) — a non-tool-capable
       // model (OpenRouter's free tier) was STILL being handed the full
@@ -4723,18 +4751,29 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   };
   const openVoiceMode = () => {
     if (!VoiceRecognitionCtor) { toast("Voice input isn't supported in this browser — try Chrome or Edge.", "red"); return; }
-    // Start this call as its own conversation — see voicePrevConvIdRef's
-    // comment above for why (send() still gives Alfred the prior text
-    // conversation as background context, it just isn't shown as fake
-    // history in this call's own transcript).
+    // BUG FIX — "don't make it a new conversation each call. It should be
+    // one sandbox conversation inside the call, so it slowly grows, learns,
+    // and gets more memory." Every voice call now switches into the SAME
+    // persistent "Alfred Voice" conversation instead of creating a new one
+    // per call — its id is remembered cross-device in settings (JSONB, no
+    // schema change needed) so every device converges on the same thread.
+    // send() still layers in a digest of recent TEXT conversations as
+    // background (see crossConversationContext) so this isn't the only
+    // context Alfred has, and the reverse (text seeing this voice thread)
+    // is handled unconditionally by voiceSandboxContext below.
     voicePrevConvIdRef.current = activeConvId;
-    const voiceCid = uid();
-    setConversations(prev => [{
-      id: voiceCid,
-      title: "Voice call — " + new Date().toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }),
-      personality, createdAt: today(), updatedAt: Date.now(), messages: [],
-    }, ...prev]);
-    setActiveConvId(voiceCid);
+    let sandboxId = (settings as any)?.voiceSandboxConversationId as string | undefined;
+    // Only recreate if we're SURE it's gone (conversations have actually
+    // loaded and it's really not there) — never second-guess just because
+    // it hasn't synced down to this device/tab yet, or every device would
+    // race to spin up its own separate sandbox.
+    const sandboxConfirmedMissing = !!sandboxId && alfredConvsLoaded && !conversations.some(c => c.id === sandboxId);
+    if (!sandboxId || sandboxConfirmedMissing) {
+      sandboxId = uid();
+      setSettings?.((prev: any) => ({ ...(prev || {}), voiceSandboxConversationId: sandboxId }));
+      setConversations(prev => [{ id: sandboxId, title: "Alfred Voice", personality, createdAt: today(), updatedAt: Date.now(), messages: [] }, ...prev]);
+    }
+    setActiveConvId(sandboxId);
     setVoiceModeOpen(true);
     voiceModeOpenRef.current = true;
     voiceModeKeepGoingRef.current = true;
