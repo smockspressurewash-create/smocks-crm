@@ -581,6 +581,15 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // keyed by the same ownerId.
   const [alfredMemoryLoaded, setAlfredMemoryLoaded] = useState(false);
   const knownMemIdsRef = useRef<Set<string>>(new Set());
+  // BUG FIX — "memories don't stay deleted." removeMemory's DB delete is a
+  // real network round-trip; if the 60-120s poll's SELECT below happens to
+  // land WHILE that delete is still in flight, it still sees the
+  // (not-yet-deleted) row and the merge below put it right back into local
+  // state — the real delete then succeeds a moment later against Supabase,
+  // but nothing corrected the local re-add until the NEXT poll cycle, so a
+  // just-deleted memory could sit "back" for up to a whole poll interval.
+  // Same fix as deletedConvIdsRef above, applied to memory.
+  const deletedMemIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!ownerId) return;
     const loadMemory = async () => {
@@ -592,10 +601,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         }
         const data: any[] = Array.isArray(res.data) ? res.data : [];
         data.forEach(m => knownMemIdsRef.current.add(m.id));
-        const fromServer = data.map(m => ({ id: m.id, text: m.text, category: m.category || "general", createdAt: m.created_at || today() }));
+        let fromServer = data.map(m => ({ id: m.id, text: m.text, category: m.category || "general", createdAt: m.created_at || today() }));
+        fromServer = fromServer.filter((m: any) => !deletedMemIdsRef.current.has(m.id));
         setMemory((prev: any[]) => {
           const byId = new Map(fromServer.map(m => [m.id, m]));
-          const localOnly = (prev || []).filter((m: any) => !byId.has(m.id));
+          const localOnly = (prev || []).filter((m: any) => !byId.has(m.id) && !deletedMemIdsRef.current.has(m.id));
           return [...fromServer, ...localOnly];
         });
         setAlfredMemoryLoaded(true);
@@ -915,22 +925,24 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // .select("id"), and reverted + surfaced to the user on a real 0-row miss.
   const removeMemory = id => {
     const prev = memory;
+    deletedMemIdsRef.current.add(id);
     setMemory(memory.filter(m => m.id !== id));
     (supabase as any).from("alfred_memory").delete().eq("id", id).eq("owner_id", ownerId).select("id")
       .then((r: any) => {
-        if (r?.error) { console.warn("[Alfred Memory Sync] delete failed:", r.error.message); setMemory(prev); toast("Couldn't delete memory — " + r.error.message, "error"); return; }
-        if (!Array.isArray(r?.data) || r.data.length === 0) { console.warn("[Alfred Memory Sync] delete matched 0 rows"); setMemory(prev); toast("Couldn't delete memory — try again", "error"); }
+        if (r?.error) { console.warn("[Alfred Memory Sync] delete failed:", r.error.message); deletedMemIdsRef.current.delete(id); setMemory(prev); toast("Couldn't delete memory — " + r.error.message, "error"); return; }
+        if (!Array.isArray(r?.data) || r.data.length === 0) { console.warn("[Alfred Memory Sync] delete matched 0 rows"); deletedMemIdsRef.current.delete(id); setMemory(prev); toast("Couldn't delete memory — try again", "error"); }
       });
   };
   const clearMemory = () => {
     if (!confirm("Wipe all Alfred memory?")) return;
     const prev = memory;
     const ids = memory.map((m: any) => m.id);
+    ids.forEach(id => deletedMemIdsRef.current.add(id));
     setMemory([]);
     if (ids.length > 0) {
       (supabase as any).from("alfred_memory").delete().in("id", ids).eq("owner_id", ownerId).select("id")
         .then((r: any) => {
-          if (r?.error) { console.warn("[Alfred Memory Sync] bulk delete failed:", r.error.message); setMemory(prev); toast("Couldn't clear memory — " + r.error.message, "error"); return; }
+          if (r?.error) { console.warn("[Alfred Memory Sync] bulk delete failed:", r.error.message); ids.forEach(id => deletedMemIdsRef.current.delete(id)); setMemory(prev); toast("Couldn't clear memory — " + r.error.message, "error"); return; }
           if (!Array.isArray(r?.data) || r.data.length !== ids.length) console.warn("[Alfred Memory Sync] bulk delete matched", r?.data?.length ?? 0, "of", ids.length, "rows");
           toast("Memory cleared");
         });
@@ -5363,18 +5375,22 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         const catMeta = c => memCats.find(x => x.k === (c || "general")) || memCats[4];
         const filteredMem = memFilter === "all" ? memory : memory.filter(m => (m.category || "general") === memFilter);
         return <>
-          <div className="fixed inset-0 bg-black/70 z-40" onClick={() => setMemoryOpen(false)} />
-          <div className="fixed right-0 top-0 bottom-0 w-full max-w-md bg-black/95 border-l border-red-900/40 z-50 flex flex-col backdrop-blur-xl">
-            <div className="p-4 border-b border-red-900/30 flex items-center gap-3">
-              <div className="p-2 rounded-lg bg-purple-900/30"><Bot size={14} className="text-purple-400" /></div>
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 transition-opacity duration-300" onClick={() => setMemoryOpen(false)} />
+          <div className="fixed right-0 top-0 bottom-0 w-full max-w-md bg-white/[0.04] backdrop-blur-2xl border-l border-white/10 shadow-2xl shadow-black/60 z-50 flex flex-col animate-slide-right">
+            <div className="p-4 border-b border-white/10 flex items-center gap-3">
+              <div className="relative w-9 h-9 flex-shrink-0">
+                <div className="absolute inset-0 rounded-xl bg-gradient-to-br from-red-500 to-red-800 shadow-lg shadow-red-950/50" />
+                <div className="absolute inset-0 rounded-xl bg-gradient-to-b from-white/25 to-transparent" />
+                <div className="relative w-full h-full flex items-center justify-center"><Bot size={16} className="text-white" /></div>
+              </div>
               <div className="flex-1">
                 <div className="font-semibold text-sm">Alfred Memory</div>
                 <div className="text-[10px] text-white/50">{memory.length} facts · Alfred references these in every conversation</div>
               </div>
-              <button onClick={() => setMemoryOpen(false)} className="p-2 rounded-lg hover:bg-white/5"><X size={14} /></button>
+              <button onClick={() => setMemoryOpen(false)} className="p-2 rounded-lg hover:bg-white/10 transition"><X size={14} /></button>
             </div>
 
-            <div className="p-4 border-b border-red-900/20 space-y-2">
+            <div className="p-4 border-b border-white/10 space-y-2">
               <div className="flex gap-2">
                 <GInput placeholder="Add a fact..." value={newMemoryText} onChange={e => setNewMemoryText(e.target.value)} onKeyDown={e => e.key === "Enter" && addMemory()} className="!text-xs !py-2" />
                 <GSel value={newMemoryCat} onChange={e => setNewMemoryCat(e.target.value)} className="!text-xs !py-2 !w-32">
@@ -5386,12 +5402,12 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             </div>
 
             {/* Category filter pills */}
-            <div className="px-4 py-2 border-b border-red-900/20 flex gap-1 flex-wrap">
-              <button onClick={() => setMemFilter("all")} className={"text-[10px] px-2 py-1 rounded-full border " + (memFilter === "all" ? "bg-red-900/40 border-red-500/50" : "bg-white/5 border-white/10 text-white/50")}>All ({memory.length})</button>
+            <div className="px-4 py-2.5 border-b border-white/10 flex gap-1.5 flex-wrap">
+              <button onClick={() => setMemFilter("all")} className={"text-[10px] px-2.5 py-1 rounded-full border font-medium transition " + (memFilter === "all" ? "bg-gradient-to-r from-red-600 to-red-800 border-red-500/50 text-white" : "bg-white/[0.04] border-white/10 text-white/50 hover:text-white/80")}>All ({memory.length})</button>
               {memCats.map(c => {
                 const n = memory.filter(m => (m.category || "general") === c.k).length;
                 if (n === 0) return null;
-                return <button key={c.k} onClick={() => setMemFilter(c.k)} className={"text-[10px] px-2 py-1 rounded-full border " + (memFilter === c.k ? "bg-red-900/40 border-red-500/50 text-white" : "bg-white/5 border-white/10 text-white/50")}>{c.icon} {c.l} ({n})</button>;
+                return <button key={c.k} onClick={() => setMemFilter(c.k)} className={"text-[10px] px-2.5 py-1 rounded-full border font-medium transition " + (memFilter === c.k ? "bg-gradient-to-r from-red-600 to-red-800 border-red-500/50 text-white" : "bg-white/[0.04] border-white/10 text-white/50 hover:text-white/80")}>{c.icon} {c.l} ({n})</button>;
               })}
             </div>
 
@@ -5402,22 +5418,22 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               </div>}
               {filteredMem.map(m => {
                 const meta = catMeta(m.category);
-                return <div key={m.id} className="group flex items-start gap-2 p-3 bg-white/5 hover:bg-white/10 border border-white/5 rounded-xl">
+                return <div key={m.id} className="group flex items-start gap-2.5 p-3 bg-white/[0.03] hover:bg-white/[0.07] border border-white/[0.06] hover:border-white/15 rounded-xl transition">
                   <div className={"flex-shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-sm border " + meta.color}>{meta.icon}</div>
                   <div className="flex-1 min-w-0">
-                    <div className="text-xs leading-relaxed">{m.text}</div>
-                    <div className="text-[9px] text-white/40 mt-1 flex items-center gap-1.5">
+                    <div className="text-xs leading-relaxed text-white/85">{m.text}</div>
+                    <div className="text-[9px] text-white/40 mt-1.5 flex items-center gap-1.5">
                       <span>{m.createdAt}</span>
                       <span>·</span>
                       <span>{meta.l.toLowerCase()}</span>
-                      {m.autoLearned && <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-purple-900/40 border border-purple-700/40 text-purple-300 text-[8px]"><Zap size={6} />auto-learned</span>}
+                      {m.autoLearned && <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-red-950/40 border border-red-800/40 text-red-300 text-[8px]"><Zap size={6} />auto-learned</span>}
                     </div>
                   </div>
-                  <button onClick={() => removeMemory(m.id)} className="opacity-0 group-hover:opacity-100 p-1 text-white/40 hover:text-red-400 transition"><Trash2 size={11} /></button>
+                  <button onClick={() => removeMemory(m.id)} title="Delete this memory" className="flex-shrink-0 opacity-0 group-hover:opacity-100 w-6 h-6 rounded-lg flex items-center justify-center text-white/40 hover:text-red-300 hover:bg-red-950/40 transition"><Trash2 size={11} /></button>
                 </div>;
               })}
             </div>
-            {memory.length > 0 && <div className="p-4 border-t border-red-900/30"><GBtn variant="danger" onClick={clearMemory} className="w-full !text-xs"><Trash2 size={12} className="inline mr-1.5" />Clear all memory</GBtn></div>}
+            {memory.length > 0 && <div className="p-4 border-t border-white/10"><GBtn variant="danger" onClick={clearMemory} className="w-full !text-xs"><Trash2 size={12} className="inline mr-1.5" />Clear all memory</GBtn></div>}
           </div>
         </>;
       })()}
