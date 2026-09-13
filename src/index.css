@@ -92,6 +92,17 @@ body {
 .animate-slide-right { animation: slide-in-right 0.25s ease both; }
 .animate-pulse-ring  { animation: pulse-ring 2s ease infinite; }
 
+/* FEATURE — "add an animation when Alfred is talking." Alfred Voice Mode's
+   speaking indicator — a lively staggered bar bounce (via animation-delay
+   per bar), not truly amplitude-synced to the actual speech audio (the
+   Web Speech Synthesis API doesn't expose that), but reads clearly as
+   "talking" the same way most voice-assistant UIs fake it. */
+@keyframes speaking-bar {
+  0%, 100% { transform: scaleY(0.35); }
+  50%      { transform: scaleY(1); }
+}
+.animate-speaking-bar { animation: speaking-bar 0.9s ease-in-out infinite; transform-origin: center; }
+
 /* Gradient text */
 .gradient-text {
   background: linear-gradient(135deg, #dc2626, #f87171);

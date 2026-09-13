@@ -13,7 +13,7 @@ import {
   Globe, Share2, Trophy, ExternalLink, Workflow, ToggleLeft, ToggleRight,
   Navigation, TrendingDown, PieChart as PieIcon, Package, Wrench,
   CheckSquare, Route, Users2, Layers, ArrowRight, BarChart2, Filter,
-  Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User, Sparkles, PhoneOff
+  Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User, Sparkles, PhoneOff, Pause, MicOff
 } from "lucide-react";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
@@ -267,18 +267,32 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // send(), cleared/replaced each turn.
   const [voiceModeOpen, setVoiceModeOpen] = useState(false);
   const voiceModeOpenRef = useRef(false);
-  const [voiceModeState, setVoiceModeState] = useState<"listening" | "thinking" | "speaking">("listening");
+  const [voiceModeState, setVoiceModeState] = useState<"listening" | "thinking" | "speaking" | "paused">("listening");
   const [voiceModeTranscript, setVoiceModeTranscript] = useState("");
   const voiceModeTranscriptRef = useRef("");
   const voiceModeKeepGoingRef = useRef(false);
   const voiceModeRecognitionRef = useRef<any>(null);
   const ttsEndCallbackRef = useRef<(() => void) | null>(null);
+  // FEATURE — "interrupt Alfred's sentence, tell it to resume what it was
+  // saying, hold up, or have a mute button." voiceTurnIdRef is a
+  // cancellation token: every genuinely NEW turn (a normal reply, or a
+  // barge-in that abandons the current one) increments it, and any
+  // in-flight async completion (speakAloud resolving, a safety timeout)
+  // checks its captured id against the current one before acting — a
+  // stale completion from an abandoned turn is simply ignored instead of
+  // needing every browser TTS event (onend/onerror on cancel/pause are
+  // inconsistent across browsers) to fire in a predictable order.
+  const voiceTurnIdRef = useRef(0);
+  const [voiceMuted, setVoiceMuted] = useState(false);
+  const voiceMutedRef = useRef(false);
+  const interruptRecognitionRef = useRef<any>(null);
   // Safety net — stop the mic/speech if this whole page unmounts (owner
   // navigates to a different CRM page) while Voice Mode is still open,
   // rather than leaving a live microphone/recognizer running unseen.
   useEffect(() => () => {
     voiceModeKeepGoingRef.current = false;
     try { voiceModeRecognitionRef.current?.stop(); } catch { /* already stopped */ }
+    try { interruptRecognitionRef.current?.stop(); } catch { /* already stopped */ }
     if (typeof window !== "undefined" && window.speechSynthesis) window.speechSynthesis.cancel();
   }, []);
   // FIX 2 (mobile round 3) — tracks which conversation ids we've already sent
@@ -4341,9 +4355,18 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       // comment) so Voice Mode's listen-loop can await the SAME completion
       // signal a plain chat reply's speech uses, instead of duplicating this.
       if (settings.ttsEnabled || voiceModeOpenRef.current) {
-        if (voiceModeOpenRef.current) setVoiceModeState("speaking");
+        // turnId captured NOW (before speaking starts) — if a barge-in
+        // abandons this reply while it's talking, voiceTurnIdRef will have
+        // moved on by the time this promise resolves, and this completion
+        // correctly no-ops instead of firing the wrong (or a duplicate)
+        // resume. See voiceTurnIdRef's own comment for the full reasoning.
+        const speakingTurnId = voiceTurnIdRef.current;
+        if (voiceModeOpenRef.current) {
+          setVoiceModeState("speaking");
+          startInterruptListener();
+        }
         speakAloud(finalText, settings.elevenlabsKey).then(() => {
-          if (voiceModeOpenRef.current) ttsEndCallbackRef.current?.();
+          if (voiceModeOpenRef.current && voiceTurnIdRef.current === speakingTurnId) ttsEndCallbackRef.current?.();
         });
       }
 
@@ -4391,12 +4414,29 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // On each turn: listen -> send(transcript) (the exact same pipeline text
   // chat uses — same memory, same tools, same personality) -> speak the
   // reply (see the TTS block in send() above) -> resume listening once
-  // speech actually finishes (ttsEndCallbackRef). No barge-in — the owner
-  // waits for Alfred to finish before the mic reopens, same turn-taking
-  // shape a phone call has.
+  // speech actually finishes (ttsEndCallbackRef).
   const VoiceRecognitionCtor = typeof window !== "undefined" ? ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition) : null;
+  // Shared by both a normal listening turn and a barge-in that abandons
+  // Alfred's current reply for a new one — see voiceTurnIdRef's own
+  // comment for why every completion here is guarded by a turn id instead
+  // of trusting speechSynthesis's event ordering.
+  const processVoiceTurn = (text: string) => {
+    voiceTurnIdRef.current++;
+    const turnId = voiceTurnIdRef.current;
+    const thisTurnCallback = () => { if (voiceModeKeepGoingRef.current && voiceTurnIdRef.current === turnId) startVoiceListeningTurn(); };
+    ttsEndCallbackRef.current = thisTurnCallback;
+    setVoiceModeState("thinking");
+    send(text);
+    // Safety net — if send() ever returns without reaching its TTS block
+    // (a thrown/caught error, a recognized slash command's early return,
+    // any future code path that skips it) ttsEndCallbackRef would never
+    // fire and Voice Mode would silently hang on "Thinking…" forever.
+    setTimeout(() => {
+      if (ttsEndCallbackRef.current === thisTurnCallback) { ttsEndCallbackRef.current = null; thisTurnCallback(); }
+    }, 45000);
+  };
   const startVoiceListeningTurn = () => {
-    if (!voiceModeKeepGoingRef.current || !VoiceRecognitionCtor) return;
+    if (!voiceModeKeepGoingRef.current || !VoiceRecognitionCtor || voiceMutedRef.current) return;
     setVoiceModeState("listening");
     setVoiceModeTranscript("");
     voiceModeTranscriptRef.current = "";
@@ -4423,29 +4463,110 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       if (!voiceModeKeepGoingRef.current) return;
       const finalText = voiceModeTranscriptRef.current.trim();
       if (!finalText) { startVoiceListeningTurn(); return; } // nothing said — just keep listening
-      // Safety net — if send() ever returns without reaching its TTS block
-      // (a thrown/caught error, a recognized slash command's early return,
-      // any future code path that skips it) ttsEndCallbackRef would never
-      // fire and Voice Mode would silently hang on "Thinking…" forever.
-      // Reference equality lets a genuine completion (which replaces this
-      // ref with the NEXT turn's callback) suppress this fallback, so a
-      // normal reply never double-fires the resume.
-      const thisTurnCallback = () => { if (voiceModeKeepGoingRef.current) startVoiceListeningTurn(); };
-      ttsEndCallbackRef.current = thisTurnCallback;
-      setVoiceModeState("thinking");
-      send(finalText);
-      setTimeout(() => {
-        if (ttsEndCallbackRef.current === thisTurnCallback) { ttsEndCallbackRef.current = null; thisTurnCallback(); }
-      }, 45000);
+      processVoiceTurn(finalText);
     };
     voiceModeRecognitionRef.current = rec;
     try { rec.start(); } catch { setTimeout(() => { if (voiceModeKeepGoingRef.current) startVoiceListeningTurn(); }, 300); }
+  };
+  // FEATURE — "interrupt Alfred's sentence, tell it to resume what it was
+  // saying, hold up." Starts the moment Alfred begins speaking (see
+  // send()'s TTS block) — a SEPARATE recognizer from the turn-taking one
+  // above (that one only runs during "listening", this one only runs
+  // during "speaking"/"paused", so they never actually overlap). The
+  // instant it detects the owner has started talking (onspeechstart —
+  // fires on speech ONSET, before any transcript is ready, same as a
+  // human stopping mid-sentence the moment someone talks over them) it
+  // pauses Alfred (speechSynthesis.pause() — a real pause, not a cancel;
+  // resumable) and switches to "paused". Once the owner finishes their
+  // own sentence, what they actually said decides what happens next:
+  // a resume cue ("keep going"/"continue"/etc.) resumes the SAME
+  // paused reply where it left off; a hold cue ("hold on"/"wait"/etc. with
+  // nothing else) just stays paused, waiting; anything else is treated as
+  // a real new instruction — the paused reply is abandoned and the new
+  // words are processed as the next turn. Best-effort by nature (a single
+  // mic can't perfectly separate the owner's voice from Alfred's own
+  // speaker output without dedicated echo-cancelling hardware — a
+  // headset makes this far more reliable than open speakers).
+  const RESUME_CUE = /^(resume|continue|keep going|go on|go ahead|carry on|please continue|yes continue)\.?!?$/i;
+  const HOLD_CUE = /^(hold on|hold up|wait|pause|one sec|one second|give me a sec|just a sec|hang on|stop)\.?!?$/i;
+  const startInterruptListener = () => {
+    if (!VoiceRecognitionCtor || voiceMutedRef.current) return;
+    const listenerTurnId = voiceTurnIdRef.current;
+    let heardSpeech = false;
+    let heardText = "";
+    const rec = new VoiceRecognitionCtor();
+    rec.lang = "en-US";
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.onspeechstart = () => {
+      if (voiceTurnIdRef.current !== listenerTurnId) return; // this reply was already abandoned/finished
+      if (heardSpeech) return;
+      heardSpeech = true;
+      if (typeof window !== "undefined" && window.speechSynthesis?.speaking) {
+        try { window.speechSynthesis.pause(); } catch { /* some browsers throw pausing an already-finishing utterance */ }
+      }
+      setVoiceModeState("paused");
+    };
+    rec.onresult = (e: any) => {
+      let text = "";
+      for (let i = 0; i < e.results.length; i++) text += e.results[i][0].transcript + " ";
+      heardText = text.trim();
+      setVoiceModeTranscript(heardText);
+    };
+    rec.onend = () => {
+      if (voiceTurnIdRef.current !== listenerTurnId) return; // stale — a new turn already started elsewhere
+      if (!heardSpeech) return; // Alfred just finished naturally, nothing was said over it
+      const said = heardText.trim();
+      if (RESUME_CUE.test(said)) {
+        try { window.speechSynthesis?.resume(); } catch { /* nothing to resume */ }
+        setVoiceModeState("speaking");
+        startInterruptListener(); // keep watching in case they interrupt again
+      } else if (!said || HOLD_CUE.test(said)) {
+        // Stay paused — listen again for either a resume cue or a real instruction.
+        startInterruptListener();
+      } else {
+        // A real new instruction — abandon the paused reply for good.
+        if (typeof window !== "undefined" && window.speechSynthesis) window.speechSynthesis.cancel();
+        processVoiceTurn(said);
+      }
+    };
+    rec.onerror = () => { /* best-effort listener — a transient error here just means no interrupt was caught this round */ };
+    interruptRecognitionRef.current = rec;
+    try { rec.start(); } catch { /* best-effort — speaking still completes normally without barge-in this once */ }
+  };
+  const toggleVoiceMute = () => {
+    const next = !voiceMuted;
+    voiceMutedRef.current = next;
+    setVoiceMuted(next);
+    if (next) {
+      // Muting stops the mic outright — including a barge-in listener
+      // mid-speech, since "mute" means the owner's mic is off, full stop.
+      try { voiceModeRecognitionRef.current?.stop(); } catch { /* already stopped */ }
+      try { interruptRecognitionRef.current?.stop(); } catch { /* already stopped */ }
+    } else if (voiceModeState !== "thinking" && voiceModeState !== "speaking" && voiceModeState !== "paused") {
+      startVoiceListeningTurn();
+    }
+  };
+  // Manual equivalent of the verbal "hold up"/"resume" — a reliable
+  // button press for when barge-in detection doesn't catch a soft-spoken
+  // interruption (open speakers, background noise, no headset).
+  const toggleVoicePause = () => {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+    if (voiceModeState === "speaking") {
+      try { window.speechSynthesis.pause(); } catch { /* nothing playing */ }
+      setVoiceModeState("paused");
+    } else if (voiceModeState === "paused") {
+      try { window.speechSynthesis.resume(); } catch { /* nothing paused */ }
+      setVoiceModeState("speaking");
+    }
   };
   const openVoiceMode = () => {
     if (!VoiceRecognitionCtor) { toast("Voice input isn't supported in this browser — try Chrome or Edge.", "red"); return; }
     setVoiceModeOpen(true);
     voiceModeOpenRef.current = true;
     voiceModeKeepGoingRef.current = true;
+    setVoiceMuted(false);
+    voiceMutedRef.current = false;
     selectBritishVoice().then(v => {
       if (!v) toast("No British voice found on this device — Alfred will still talk, just in your system's default voice.", "yellow");
     });
@@ -4454,8 +4575,10 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   const closeVoiceMode = () => {
     voiceModeKeepGoingRef.current = false;
     voiceModeOpenRef.current = false;
+    voiceTurnIdRef.current++; // invalidate any in-flight turn/interrupt listener
     ttsEndCallbackRef.current = null;
     try { voiceModeRecognitionRef.current?.stop(); } catch { /* already stopped */ }
+    try { interruptRecognitionRef.current?.stop(); } catch { /* already stopped */ }
     if (typeof window !== "undefined" && window.speechSynthesis) window.speechSynthesis.cancel();
     setVoiceModeOpen(false);
   };
@@ -5067,7 +5190,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         <div className="fixed inset-0 z-[400] bg-gradient-to-b from-black via-purple-950/30 to-black flex flex-col items-center justify-center px-6">
           <div className="absolute top-6 left-1/2 -translate-x-1/2 text-center">
             <div className="text-xs font-semibold text-white/50 uppercase tracking-widest">Alfred — Voice Mode</div>
-            <div className="text-[10px] text-white/30 mt-0.5">{getPersonality(active?.personality || personality).name} · free browser voice</div>
+            <div className="text-[10px] text-white/30 mt-0.5">{getPersonality(active?.personality || personality).name} · free browser voice{voiceMuted ? " · muted" : ""}</div>
           </div>
 
           <div className="relative flex items-center justify-center mb-10">
@@ -5076,6 +5199,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
                 "w-40 h-40 md:w-52 md:h-52 rounded-full transition-all duration-500 " +
                 (voiceModeState === "listening" ? "bg-purple-600/30 animate-pulse-ring" :
                  voiceModeState === "thinking" ? "bg-amber-500/25" :
+                 voiceModeState === "paused" ? "bg-orange-500/20" :
                  "bg-green-500/25 animate-pulse-ring")
               }
             />
@@ -5084,28 +5208,67 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
                 "absolute w-24 h-24 md:w-32 md:h-32 rounded-full flex items-center justify-center transition-all duration-300 " +
                 (voiceModeState === "listening" ? "bg-purple-600/60 scale-100" :
                  voiceModeState === "thinking" ? "bg-amber-500/50 scale-90" :
+                 voiceModeState === "paused" ? "bg-orange-500/50 scale-95" :
                  "bg-green-500/60 scale-105")
               }
             >
-              {voiceModeState === "thinking"
-                ? <div className="w-8 h-8 border-[3px] border-white/30 border-t-white rounded-full animate-spin" />
-                : <Mic size={32} className="text-white" />}
+              {voiceModeState === "thinking" ? (
+                <div className="w-8 h-8 border-[3px] border-white/30 border-t-white rounded-full animate-spin" />
+              ) : voiceModeState === "paused" ? (
+                <Pause size={30} className="text-white" />
+              ) : voiceModeState === "speaking" ? (
+                // FEATURE — "add an animation when Alfred is talking." A
+                // decorative staggered bar bounce, not literally synced to
+                // the speech audio's amplitude (speechSynthesis doesn't
+                // expose that) — same honest limit as most voice-assistant
+                // "talking" indicators.
+                <div className="flex items-end gap-1 h-8">
+                  {[0, 1, 2, 3, 4].map(i => (
+                    <div key={i} className="w-1.5 bg-white rounded-full animate-speaking-bar" style={{ height: "100%", animationDelay: `${i * 0.12}s` }} />
+                  ))}
+                </div>
+              ) : (
+                <Mic size={32} className="text-white" />
+              )}
             </div>
           </div>
 
           <div className="text-sm font-semibold text-white/80 mb-2">
-            {voiceModeState === "listening" ? "Listening…" : voiceModeState === "thinking" ? "Thinking…" : "Speaking…"}
+            {voiceMuted ? "Muted" : voiceModeState === "listening" ? "Listening…" : voiceModeState === "thinking" ? "Thinking…" : voiceModeState === "paused" ? "Paused — say \"resume\" or a new request" : "Speaking…"}
           </div>
           <div className="text-xs text-white/40 text-center max-w-sm min-h-[2.5rem]">
-            {voiceModeState === "listening" ? (voiceModeTranscript || "Say something — Alfred's listening.") : ""}
+            {(voiceModeState === "listening" || voiceModeState === "paused") ? (voiceModeTranscript || (voiceModeState === "paused" ? "Go ahead…" : "Say something — Alfred's listening.")) : ""}
           </div>
 
-          <button
-            onClick={closeVoiceMode}
-            className="absolute bottom-10 flex items-center gap-2 px-6 py-3.5 rounded-full bg-red-600 hover:bg-red-500 text-white font-semibold text-sm shadow-xl shadow-red-950/50 transition"
-          >
-            <PhoneOff size={16} />End Conversation
-          </button>
+          {/* FEATURE — "interrupt Alfred's sentence, tell it to resume...
+              hold up, or have a mute button." Manual, 100%-reliable
+              controls alongside the verbal barge-in above — useful
+              whenever the automatic listener doesn't catch a soft
+              interruption (open speakers, background noise). */}
+          <div className="absolute bottom-10 flex items-center gap-3">
+            <button
+              onClick={toggleVoiceMute}
+              title={voiceMuted ? "Unmute microphone" : "Mute microphone"}
+              className={"w-12 h-12 rounded-full flex items-center justify-center border transition " + (voiceMuted ? "bg-red-950/60 border-red-700/60 text-red-300" : "bg-white/5 border-white/15 text-white/60 hover:text-white hover:border-white/30")}
+            >
+              {voiceMuted ? <MicOff size={18} /> : <Mic size={18} />}
+            </button>
+            <button
+              onClick={closeVoiceMode}
+              className="flex items-center gap-2 px-6 py-3.5 rounded-full bg-red-600 hover:bg-red-500 text-white font-semibold text-sm shadow-xl shadow-red-950/50 transition"
+            >
+              <PhoneOff size={16} />End Conversation
+            </button>
+            {(voiceModeState === "speaking" || voiceModeState === "paused") && (
+              <button
+                onClick={toggleVoicePause}
+                title={voiceModeState === "paused" ? "Resume" : "Pause (hold up)"}
+                className="w-12 h-12 rounded-full flex items-center justify-center border border-white/15 bg-white/5 text-white/60 hover:text-white hover:border-white/30 transition"
+              >
+                {voiceModeState === "paused" ? <Play size={18} /> : <Pause size={18} />}
+              </button>
+            )}
+          </div>
         </div>
       )}
     </div>
