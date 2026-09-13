@@ -14,7 +14,7 @@ import {
   Globe, Share2, Trophy, ExternalLink, Workflow, ToggleLeft, ToggleRight,
   Navigation, TrendingDown, PieChart as PieIcon, Package, Wrench,
   CheckSquare, Route, Users2, Layers, ArrowRight, BarChart2, Filter,
-  Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User, Sparkles, PhoneOff, Pause, MicOff, ChevronDown
+  Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User, Sparkles, PhoneOff, Pause, MicOff, ChevronDown, Maximize2
 } from "lucide-react";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
@@ -321,6 +321,15 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // needing every browser TTS event (onend/onerror on cancel/pause are
   // inconsistent across browsers) to fire in a predictable order.
   const voiceTurnIdRef = useRef(0);
+  // BUG FIX — "shows an old conversation instead of a new one." Voice Mode
+  // used to just reuse whatever text conversation happened to be active, so
+  // opening it mid-way through an old chat dumped that chat's whole history
+  // into the transcript panel. Every voice call now gets its own fresh
+  // conversation (see openVoiceMode) — this remembers which text
+  // conversation was active right before the call started, so send() can
+  // still hand Alfred a short digest of it as background context, and
+  // closeVoiceMode can switch back to it once the call ends.
+  const voicePrevConvIdRef = useRef<string | null>(null);
   const [voiceMuted, setVoiceMuted] = useState(false);
   const voiceMutedRef = useRef(false);
   const interruptRecognitionRef = useRef<any>(null);
@@ -347,6 +356,12 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   const [bubblePos, setBubblePos] = useState<{ x: number; y: number } | null>(null);
   const [bubbleDragging, setBubbleDragging] = useState(false);
   const [overDropZone, setOverDropZone] = useState(false);
+  // FEATURE — "right-click it, press mute or unmute, and use other quick
+  // actions." Right-click used to end the call outright with no way back;
+  // now it opens a small glass quick-actions menu instead (reopen, mute
+  // toggle, pause/resume, end call) — a real click on the bubble itself
+  // (no menu) still reopens the full overlay directly, unchanged.
+  const [bubbleMenu, setBubbleMenu] = useState<{ x: number; y: number } | null>(null);
   const bubbleDragStateRef = useRef<{ startClientX: number; startClientY: number; startLeft: number; startTop: number; moved: boolean } | null>(null);
   const isInBubbleDropZone = (cx: number, cy: number): boolean => {
     if (typeof window === "undefined") return false;
@@ -4158,8 +4173,25 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       const screenContext = voiceModeOpenRef.current
         ? `\n\nSCREEN AWARENESS: the owner is currently on the "${currentPageName}" page of the CRM (this is real, not a guess).${cursorContext ? ` Their cursor is currently over: ${cursorContext} — a real but best-effort read of what's on screen, not guaranteed for every kind of content (charts/graphs won't resolve). If they ask about "this" customer/job/employee, "them", or reference something on screen without naming it, assume they mean this UNLESS they've clearly already named someone else — use the id given above directly in any tool call rather than searching by name.` : ` Nothing recognizable is resolved under their cursor right now — if they reference something on screen ambiguously ("do you see this", "these customers") without naming who/what, ask which one(s) instead of guessing.`}`
         : "";
+      // BUG FIX — "start its own conversation with context from the text
+      // conversations." Voice Mode now runs in its own fresh conversation
+      // (see openVoiceMode/voicePrevConvIdRef) so the on-screen transcript
+      // never shows stale history — but Alfred still needs to actually KNOW
+      // what was just discussed over text, so it doesn't sound like it lost
+      // its memory the second the owner picks up the phone. This hands the
+      // model a short digest of whatever text conversation was open right
+      // before the call started, same non-literal-history treatment as
+      // crossChannelContext's SMS digest above.
+      let crossConversationContext = "";
+      if (voiceModeOpenRef.current && voicePrevConvIdRef.current) {
+        const priorConv = conversations.find(c => c.id === voicePrevConvIdRef.current);
+        if (priorConv?.messages?.length) {
+          const tail = priorConv.messages.slice(-6).map((m: any) => `${m.role === "user" ? "Owner" : "Alfred"}: ${String(m.content || "").slice(0, 200)}`).join("\n");
+          crossConversationContext = `\n\nRECENT TEXT CHAT (a separate conversation from this voice call, same owner — background only, not literal history of THIS call):\n${tail}`;
+        }
+      }
       const voiceModeContext = voiceModeOpenRef.current
-        ? "\n\nVOICE MODE: this message arrived through a live, hands-free SPOKEN conversation (speech-to-text in, text-to-speech out) — not the text chat. Reply in natural, flowing spoken sentences only: no markdown, no bullet points, no asterisks, no headers, nothing that only makes sense written down. Keep it conversational and reasonably brief, like a real phone call, unless the owner clearly wants more detail. If this message is a casual opener (\"hey\", \"how's it going\", \"what's up\", or similar small talk) rather than a specific request, warmly greet the owner (by name if you know it), give a brief natural-sounding rundown of today's business from the snapshot below, and ask what they'd like to do — don't wait to be asked for a summary." + screenContext
+        ? "\n\nVOICE MODE: this message arrived through a live, hands-free SPOKEN conversation (speech-to-text in, text-to-speech out) — not the text chat. Reply in natural, flowing spoken sentences only: no markdown, no bullet points, no asterisks, no headers, nothing that only makes sense written down. Keep it conversational and reasonably brief, like a real phone call, unless the owner clearly wants more detail. If this message is a casual opener (\"hey\", \"how's it going\", \"what's up\", or similar small talk) rather than a specific request, warmly greet the owner (by name if you know it), give a brief natural-sounding rundown of today's business from the snapshot below, and ask what they'd like to do — don't wait to be asked for a summary." + screenContext + crossConversationContext
         : "";
       // FEATURE — "each company should have their own work-order email
       // identity — Alfred learns it from Settings, not a generic default."
@@ -4691,6 +4723,18 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   };
   const openVoiceMode = () => {
     if (!VoiceRecognitionCtor) { toast("Voice input isn't supported in this browser — try Chrome or Edge.", "red"); return; }
+    // Start this call as its own conversation — see voicePrevConvIdRef's
+    // comment above for why (send() still gives Alfred the prior text
+    // conversation as background context, it just isn't shown as fake
+    // history in this call's own transcript).
+    voicePrevConvIdRef.current = activeConvId;
+    const voiceCid = uid();
+    setConversations(prev => [{
+      id: voiceCid,
+      title: "Voice call — " + new Date().toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }),
+      personality, createdAt: today(), updatedAt: Date.now(), messages: [],
+    }, ...prev]);
+    setActiveConvId(voiceCid);
     setVoiceModeOpen(true);
     voiceModeOpenRef.current = true;
     voiceModeKeepGoingRef.current = true;
@@ -4719,7 +4763,13 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     if (typeof window !== "undefined" && window.speechSynthesis) window.speechSynthesis.cancel();
     setVoiceModeMounted(false);
     setVoiceModeMinimized(false);
-    setTimeout(() => setVoiceModeOpen(false), 250); // let the exit transition finish before unmounting
+    setBubbleMenu(null);
+    const prevConvId = voicePrevConvIdRef.current;
+    voicePrevConvIdRef.current = null;
+    setTimeout(() => {
+      setVoiceModeOpen(false); // let the exit transition finish before unmounting
+      if (prevConvId) setActiveConvId(prevConvId); // back to whatever text chat was open before the call
+    }, 250);
   };
 
   const onInputChange = e => {
@@ -5367,78 +5417,103 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           purple tint is a separate decorative glow layered ON TOP instead
           of being part of the opacity-bearing background itself. */}
       {voiceModeOpen && !voiceModeMinimized && (
-        <div className={"fixed inset-0 z-[400] bg-black flex flex-col items-center justify-center px-6 transition-opacity duration-300 " + (voiceModeMounted ? "opacity-100" : "opacity-0")}>
+        <div className={"fixed inset-0 z-[400] flex flex-col items-center justify-center px-6 transition-opacity duration-300 bg-gradient-to-b from-neutral-950 via-black to-neutral-950 " + (voiceModeMounted ? "opacity-100" : "opacity-0")}>
+          {/* Ambient glass backdrop — two soft, deliberately off-center
+              blobs instead of one large dead-center blur (which read as
+              "a weird black circle" against the flat black background it
+              replaced). */}
           <div className="absolute inset-0 pointer-events-none overflow-hidden">
-            <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-[32rem] h-[32rem] rounded-full bg-red-700/10 blur-3xl" />
+            <div className="absolute -top-24 -right-24 w-[26rem] h-[26rem] rounded-full bg-red-600/20 blur-[100px]" />
+            <div className="absolute -bottom-32 -left-24 w-[24rem] h-[24rem] rounded-full bg-orange-500/10 blur-[100px]" />
           </div>
 
-          <div className={"absolute top-6 left-1/2 -translate-x-1/2 text-center transition-all duration-300 " + (voiceModeMounted ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-2")}>
-            {/* FEATURE — "a red logo for Alfred." */}
-            <div className="w-11 h-11 mx-auto mb-2 rounded-2xl bg-gradient-to-br from-red-600 to-red-800 flex items-center justify-center shadow-lg shadow-red-950/50">
-              <Bot size={22} className="text-white" />
-            </div>
-            <div className="text-xs font-semibold text-white/50 uppercase tracking-widest">Alfred — Voice Mode</div>
-            <div className="text-[10px] text-white/30 mt-0.5">{getPersonality(active?.personality || personality).name} · free browser voice{voiceMuted ? " · muted" : ""}</div>
-          </div>
+          {/* Glass panel — everything sits inside one frosted card instead
+              of floating loose on the black backdrop. */}
+          <div className={"relative w-full max-w-md rounded-[2rem] bg-white/[0.04] backdrop-blur-2xl border border-white/10 shadow-2xl shadow-black/60 px-6 pt-6 pb-5 flex flex-col items-center transition-all duration-500 " + (voiceModeMounted ? "opacity-100 translate-y-0" : "opacity-0 translate-y-3")}>
+            <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/25 to-transparent rounded-t-[2rem]" />
 
-          <div className={"relative flex items-center justify-center mb-8 transition-all duration-500 " + (voiceModeMounted ? "opacity-100 scale-100" : "opacity-0 scale-75")}>
-            <div
-              className={
-                "w-36 h-36 md:w-44 md:h-44 rounded-full transition-all duration-500 " +
-                (voiceModeState === "listening" ? "bg-red-600/30 animate-pulse-ring" :
-                 voiceModeState === "thinking" ? "bg-amber-500/25" :
-                 voiceModeState === "paused" ? "bg-orange-500/20" :
-                 "bg-green-500/25 animate-pulse-ring")
-              }
-            />
-            <div
-              className={
-                "absolute rounded-full flex items-center justify-center transition-all duration-300 " +
-                (voiceModeState === "listening" ? "bg-red-600/60 scale-100" :
-                 voiceModeState === "thinking" ? "bg-amber-500/50 scale-90" :
-                 voiceModeState === "paused" ? "bg-orange-500/50 scale-95" :
-                 "bg-green-500/60 scale-105")
-              }
-              style={{ width: "6.5rem", height: "6.5rem" }}
-            >
-              {voiceModeState === "thinking" ? (
-                <div className="w-7 h-7 border-[3px] border-white/30 border-t-white rounded-full animate-spin" />
-              ) : voiceModeState === "paused" ? (
-                <Pause size={28} className="text-white" />
-              ) : voiceModeState === "speaking" ? (
-                // FEATURE — "add an animation when Alfred is talking." A
-                // decorative staggered bar bounce, not literally synced to
-                // the speech audio's amplitude (speechSynthesis doesn't
-                // expose that) — same honest limit as most voice-assistant
-                // "talking" indicators.
-                <div className="flex items-end gap-1 h-7">
-                  {[0, 1, 2, 3, 4].map(i => (
-                    <div key={i} className="w-1.5 bg-white rounded-full animate-speaking-bar" style={{ height: "100%", animationDelay: `${i * 0.12}s` }} />
-                  ))}
+            <div className="text-center mb-5">
+              {/* FEATURE — "a red logo for Alfred" + "the logo... looks
+                  basic and bad." Glass ring + inner sheen instead of a flat
+                  gradient square. */}
+              <div className="relative w-14 h-14 mx-auto mb-2.5">
+                <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-red-500 to-red-800 shadow-lg shadow-red-950/60" />
+                <div className="absolute inset-0 rounded-2xl bg-gradient-to-b from-white/25 to-transparent" />
+                <div className="absolute inset-0 rounded-2xl border border-white/20" />
+                <div className="relative w-full h-full flex items-center justify-center">
+                  <Bot size={26} className="text-white drop-shadow" />
                 </div>
-              ) : (
-                <Mic size={28} className="text-white" />
+              </div>
+              <div className="text-xs font-semibold text-white/60 uppercase tracking-widest">Alfred — Voice Mode</div>
+              <div className="text-[10px] text-white/35 mt-0.5">{getPersonality(active?.personality || personality).name} · free browser voice{voiceMuted ? " · muted" : ""}</div>
+            </div>
+
+            {/* Mic orb — layered glass rings around a solid inner core
+                instead of two flat overlapping circles. */}
+            <div className={"relative flex items-center justify-center mb-6 transition-all duration-500 " + (voiceModeMounted ? "opacity-100 scale-100" : "opacity-0 scale-75")}>
+              <div
+                className={
+                  "w-36 h-36 md:w-40 md:h-40 rounded-full border transition-all duration-500 " +
+                  (voiceModeState === "listening" ? "border-red-500/30 bg-red-600/10 animate-pulse-ring" :
+                   voiceModeState === "thinking" ? "border-amber-500/25 bg-amber-500/10" :
+                   voiceModeState === "paused" ? "border-orange-500/25 bg-orange-500/10" :
+                   "border-emerald-500/25 bg-emerald-500/10 animate-pulse-ring")
+                }
+              />
+              <div className="absolute w-28 h-28 md:w-32 md:h-32 rounded-full backdrop-blur-md bg-white/[0.06] border border-white/15" />
+              <div
+                className={
+                  "absolute rounded-full flex items-center justify-center transition-all duration-300 shadow-xl " +
+                  (voiceModeState === "listening" ? "bg-gradient-to-br from-red-500 to-red-700 shadow-red-950/50 scale-100" :
+                   voiceModeState === "thinking" ? "bg-gradient-to-br from-amber-400 to-amber-600 shadow-amber-950/50 scale-90" :
+                   voiceModeState === "paused" ? "bg-gradient-to-br from-orange-400 to-orange-600 shadow-orange-950/50 scale-95" :
+                   "bg-gradient-to-br from-emerald-400 to-emerald-600 shadow-emerald-950/50 scale-105")
+                }
+                style={{ width: "6rem", height: "6rem" }}
+              >
+                <div className="absolute inset-0 rounded-full bg-gradient-to-b from-white/25 to-transparent" />
+                {voiceModeState === "thinking" ? (
+                  <div className="w-7 h-7 border-[3px] border-white/30 border-t-white rounded-full animate-spin" />
+                ) : voiceModeState === "paused" ? (
+                  <Pause size={26} className="text-white relative" />
+                ) : voiceModeState === "speaking" ? (
+                  // FEATURE — "add an animation when Alfred is talking." A
+                  // decorative staggered bar bounce, not literally synced to
+                  // the speech audio's amplitude (speechSynthesis doesn't
+                  // expose that) — same honest limit as most voice-assistant
+                  // "talking" indicators.
+                  <div className="flex items-end gap-1 h-7 relative">
+                    {[0, 1, 2, 3, 4].map(i => (
+                      <div key={i} className="w-1.5 bg-white rounded-full animate-speaking-bar" style={{ height: "100%", animationDelay: `${i * 0.12}s` }} />
+                    ))}
+                  </div>
+                ) : (
+                  <Mic size={26} className="text-white relative" />
+                )}
+              </div>
+            </div>
+
+            <div className="text-sm font-semibold text-white/80 mb-3">
+              {voiceMuted ? "Muted" : voiceModeState === "listening" ? "Listening…" : voiceModeState === "thinking" ? "Thinking…" : voiceModeState === "paused" ? "Paused — say \"resume\" or a new request" : "Speaking…"}
+            </div>
+
+            {/* FEATURE — "you can see both the text you say and the text it
+                says." This voice call is its own conversation (see
+                openVoiceMode) so only THIS call's turns ever show here —
+                no more landing in the middle of an old text chat. */}
+            <div className="w-full flex-1 min-h-0 max-h-[36vh] overflow-y-auto space-y-2 px-1 py-2">
+              {(active?.messages || []).length === 0 && voiceModeState === "listening" && !voiceModeTranscript && (
+                <div className="text-center text-[11px] text-white/30 py-4">Say something to get started…</div>
+              )}
+              {(active?.messages || []).slice(-8).map((m: any) => (
+                <div key={m.id} className={"text-xs rounded-xl px-3 py-2 max-w-[85%] backdrop-blur-sm " + (m.role === "user" ? "ml-auto bg-red-600/20 border border-red-500/20 text-red-100" : "mr-auto bg-white/[0.06] border border-white/10 text-white/70")}>
+                  {m.content}
+                </div>
+              ))}
+              {(voiceModeState === "listening" || voiceModeState === "paused") && voiceModeTranscript && (
+                <div className="ml-auto text-xs rounded-xl px-3 py-2 max-w-[85%] bg-red-600/10 border border-red-500/10 text-red-100/60 italic">{voiceModeTranscript}…</div>
               )}
             </div>
-          </div>
-
-          <div className="text-sm font-semibold text-white/80 mb-3">
-            {voiceMuted ? "Muted" : voiceModeState === "listening" ? "Listening…" : voiceModeState === "thinking" ? "Thinking…" : voiceModeState === "paused" ? "Paused — say \"resume\" or a new request" : "Speaking…"}
-          </div>
-
-          {/* FEATURE — "you can see both the text you say and the text it
-              says." Reuses the SAME conversation messages send() already
-              appends every turn to (voice and text chat share one
-              history) — no separate transcript to keep in sync. */}
-          <div className="w-full max-w-md flex-1 min-h-0 max-h-[40vh] overflow-y-auto space-y-2 px-1 py-2">
-            {(active?.messages || []).slice(-8).map((m: any) => (
-              <div key={m.id} className={"text-xs rounded-xl px-3 py-2 max-w-[85%] " + (m.role === "user" ? "ml-auto bg-red-950/40 text-red-100" : "mr-auto bg-white/5 text-white/70")}>
-                {m.content}
-              </div>
-            ))}
-            {(voiceModeState === "listening" || voiceModeState === "paused") && voiceModeTranscript && (
-              <div className="ml-auto text-xs rounded-xl px-3 py-2 max-w-[85%] bg-red-950/20 text-red-100/60 italic">{voiceModeTranscript}…</div>
-            )}
           </div>
 
           {/* FEATURE — "interrupt Alfred's sentence, tell it to resume...
@@ -5450,30 +5525,26 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             <button
               onClick={toggleVoiceMute}
               title={voiceMuted ? "Unmute microphone" : "Mute microphone"}
-              className={"w-12 h-12 rounded-full flex items-center justify-center border transition " + (voiceMuted ? "bg-red-950/60 border-red-700/60 text-red-300" : "bg-white/5 border-white/15 text-white/60 hover:text-white hover:border-white/30")}
+              className={"w-12 h-12 rounded-full flex items-center justify-center border backdrop-blur-md transition " + (voiceMuted ? "bg-red-600/20 border-red-500/40 text-red-300" : "bg-white/[0.06] border-white/15 text-white/60 hover:text-white hover:border-white/30")}
             >
               {voiceMuted ? <MicOff size={18} /> : <Mic size={18} />}
             </button>
             {/* FEATURE — "should be minimizable so you can keep talking to
                 it while looking through the CRM." Collapses to a small
                 bubble (see below) without ending the call — the
-                conversation loop keeps running exactly as-is underneath.
-                NOTE — deliberately scoped to this page for now: it does
-                NOT yet float across other CRM pages, isn't draggable, and
-                has no right-click-to-end gesture — those are a real,
-                bigger follow-up (would need lifting this whole feature to
-                an app-wide layer, the same kind of change Auto-Edit's
-                background job status got), flagged rather than rushed. */}
+                conversation loop keeps running exactly as-is underneath,
+                floats across every CRM page, and supports drag-to-end /
+                right-click quick actions (see the bubble itself). */}
             <button
               onClick={() => setVoiceModeMinimized(true)}
               title="Minimize — keep talking while you look around"
-              className="w-12 h-12 rounded-full flex items-center justify-center border border-white/15 bg-white/5 text-white/60 hover:text-white hover:border-white/30 transition"
+              className="w-12 h-12 rounded-full flex items-center justify-center border border-white/15 bg-white/[0.06] backdrop-blur-md text-white/60 hover:text-white hover:border-white/30 transition"
             >
               <ChevronDown size={20} />
             </button>
             <button
               onClick={closeVoiceMode}
-              className="flex items-center gap-2 px-6 py-3.5 rounded-full bg-red-600 hover:bg-red-500 text-white font-semibold text-sm shadow-xl shadow-red-950/50 transition"
+              className="flex items-center gap-2 px-6 py-3.5 rounded-full bg-gradient-to-br from-red-500 to-red-700 hover:from-red-400 hover:to-red-600 text-white font-semibold text-sm shadow-xl shadow-red-950/50 transition"
             >
               <PhoneOff size={16} />End Conversation
             </button>
@@ -5481,7 +5552,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               <button
                 onClick={toggleVoicePause}
                 title={voiceModeState === "paused" ? "Resume" : "Pause (hold up)"}
-                className="w-12 h-12 rounded-full flex items-center justify-center border border-white/15 bg-white/5 text-white/60 hover:text-white hover:border-white/30 transition"
+                className="w-12 h-12 rounded-full flex items-center justify-center border border-white/15 bg-white/[0.06] backdrop-blur-md text-white/60 hover:text-white hover:border-white/30 transition"
               >
                 {voiceModeState === "paused" ? <Play size={18} /> : <Pause size={18} />}
               </button>
@@ -5507,7 +5578,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               noise the rest of the time. */}
           {bubbleDragging && (
             <div
-              className={"fixed z-[399] left-1/2 -translate-x-1/2 bottom-6 w-52 h-24 rounded-2xl border-2 border-dashed flex items-center justify-center text-xs font-semibold transition-colors " + (overDropZone ? "bg-red-600/40 border-red-400 text-white scale-105" : "bg-black/60 border-white/20 text-white/50")}
+              className={"fixed z-[399] left-1/2 -translate-x-1/2 bottom-6 w-52 h-24 rounded-2xl border-2 border-dashed backdrop-blur-md flex items-center justify-center text-xs font-semibold transition-colors " + (overDropZone ? "bg-red-600/40 border-red-400 text-white scale-105" : "bg-black/40 border-white/20 text-white/50")}
             >
               <PhoneOff size={16} className="inline mr-1.5" />Drop to end call
             </div>
@@ -5517,16 +5588,53 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             onPointerMove={onBubblePointerMove}
             onPointerUp={onBubblePointerUp}
             onPointerCancel={onBubblePointerUp}
-            onContextMenu={e => { e.preventDefault(); closeVoiceMode(); }}
-            title="Drag to move · click to reopen · drop at bottom-middle or right-click to end"
-            className={"fixed z-[400] w-16 h-16 rounded-full bg-gradient-to-br from-red-600 to-red-800 shadow-2xl shadow-red-950/60 flex items-center justify-center animate-fade-in touch-none select-none " + (bubbleDragging ? "cursor-grabbing scale-110" : "cursor-grab")}
+            onContextMenu={e => { e.preventDefault(); setBubbleMenu({ x: e.clientX, y: e.clientY }); }}
+            title="Drag to move · click to reopen · right-click for quick actions"
+            className={"fixed z-[400] w-16 h-16 rounded-full backdrop-blur-md bg-gradient-to-br from-red-500/90 to-red-800/90 border border-white/20 shadow-2xl shadow-red-950/60 flex items-center justify-center animate-fade-in touch-none select-none " + (bubbleDragging ? "cursor-grabbing scale-110" : "cursor-grab")}
             style={bubblePos ? { left: bubblePos.x, top: bubblePos.y, right: "auto", bottom: "auto" } : { right: "1.5rem", bottom: "1.5rem" }}
           >
+            <div className="absolute inset-0 rounded-full bg-gradient-to-b from-white/20 to-transparent" />
             <div className={"absolute inset-0 rounded-full " + (voiceModeState === "listening" || voiceModeState === "speaking" ? "animate-pulse-ring" : "")} />
             {voiceModeState === "thinking"
-              ? <div className="w-5 h-5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
-              : <Bot size={24} className="text-white" />}
+              ? <div className="w-5 h-5 border-2 border-white/40 border-t-white rounded-full animate-spin relative" />
+              : <Bot size={24} className="text-white relative" />}
+            {/* Quick at-a-glance mute status — "press mute or unmute" is a
+                menu action below, this is just the visible indicator. */}
+            {voiceMuted && (
+              <div className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-neutral-900 border border-white/20 flex items-center justify-center">
+                <MicOff size={12} className="text-red-400" />
+              </div>
+            )}
           </button>
+        </>
+      )}
+
+      {/* FEATURE — "right-click it, press mute or unmute, and use other
+          quick actions." Right-click used to end the call outright with no
+          way back; now it opens a small glass menu instead — a plain click
+          on the bubble (no menu) still reopens the full overlay directly. */}
+      {bubbleMenu && (
+        <>
+          <div className="fixed inset-0 z-[449]" onClick={() => setBubbleMenu(null)} onContextMenu={e => { e.preventDefault(); setBubbleMenu(null); }} />
+          <div
+            className="fixed z-[450] w-52 rounded-2xl bg-white/10 backdrop-blur-2xl border border-white/15 shadow-2xl shadow-black/60 overflow-hidden py-1.5"
+            style={{ left: Math.max(8, Math.min(bubbleMenu.x, window.innerWidth - 216)), top: Math.max(8, Math.min(bubbleMenu.y, window.innerHeight - 220)) }}
+          >
+            <button onClick={() => { setVoiceModeMinimized(false); setBubbleMenu(null); }} className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-xs text-white/80 hover:bg-white/10 transition">
+              <Maximize2 size={14} />Reopen full screen
+            </button>
+            <button onClick={() => { toggleVoiceMute(); setBubbleMenu(null); }} className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-xs text-white/80 hover:bg-white/10 transition">
+              {voiceMuted ? <><Mic size={14} />Unmute microphone</> : <><MicOff size={14} />Mute microphone</>}
+            </button>
+            {(voiceModeState === "speaking" || voiceModeState === "paused") && (
+              <button onClick={() => { toggleVoicePause(); setBubbleMenu(null); }} className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-xs text-white/80 hover:bg-white/10 transition">
+                {voiceModeState === "paused" ? <><Play size={14} />Resume</> : <><Pause size={14} />Pause (hold up)</>}
+              </button>
+            )}
+            <button onClick={() => { setBubbleMenu(null); closeVoiceMode(); }} className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-xs text-red-300 hover:bg-red-950/40 transition border-t border-white/10 mt-1">
+              <PhoneOff size={14} />End call
+            </button>
+          </div>
         </>
       )}
       </>,
