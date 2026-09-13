@@ -13,7 +13,7 @@ import {
   Globe, Share2, Trophy, ExternalLink, Workflow, ToggleLeft, ToggleRight,
   Navigation, TrendingDown, PieChart as PieIcon, Package, Wrench,
   CheckSquare, Route, Users2, Layers, ArrowRight, BarChart2, Filter,
-  Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User, Sparkles
+  Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User, Sparkles, PhoneOff
 } from "lucide-react";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
@@ -94,6 +94,78 @@ import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 // "undefined" + (shared context) regardless of which personality was
 // selected — the personality never actually reached the model at all.
 const getPersonality = (id: string) => personalities.find(p => p.id === id) || personalities[0];
+
+// FEATURE — "I don't want to use ElevenLabs, I want something actually
+// free... I think Google has a free one." The browser's own SpeechSynthesis
+// API (window.speechSynthesis) IS that — genuinely free, no API key, no
+// signup, built into every Chromium/Edge/Safari browser. On many systems
+// (ChromeOS, Android, and some Windows/Chrome installs) it surfaces actual
+// Google-branded network voices (e.g. "Google UK English Male") for free;
+// on others it surfaces the OS's own built-in voices (Windows ships decent
+// "Microsoft Ryan"/"Microsoft Hazel" UK voices on Windows 10/11). Either
+// way, a real en-GB voice for a "British butler" feel, at zero cost,
+// requires querying whatever's ACTUALLY installed at runtime rather than
+// hardcoding one voice name — availability genuinely varies by OS/browser,
+// confirmed via research rather than assumed.
+let cachedVoicesPromise: Promise<SpeechSynthesisVoice[]> | null = null;
+const loadSpeechVoices = (): Promise<SpeechSynthesisVoice[]> => {
+  if (typeof window === "undefined" || !window.speechSynthesis) return Promise.resolve([]);
+  if (cachedVoicesPromise) return cachedVoicesPromise;
+  cachedVoicesPromise = new Promise(resolve => {
+    const existing = window.speechSynthesis.getVoices();
+    if (existing.length > 0) { resolve(existing); return; }
+    // Chrome loads the voice list asynchronously — getVoices() can come back
+    // empty on the very first call even though voices exist.
+    window.speechSynthesis.onvoiceschanged = () => resolve(window.speechSynthesis.getVoices());
+    setTimeout(() => resolve(window.speechSynthesis.getVoices()), 1200); // fallback if the event never fires
+  });
+  return cachedVoicesPromise;
+};
+const selectBritishVoice = async (): Promise<SpeechSynthesisVoice | null> => {
+  const voices = await loadSpeechVoices();
+  const enGB = voices.filter(v => v.lang?.toLowerCase().startsWith("en-gb"));
+  if (enGB.length === 0) return null;
+  // Prefer an actual Google network voice when present, then a named male
+  // UK voice (the "old butler" register), else whichever en-GB voice exists.
+  return enGB.find(v => /google/i.test(v.name))
+    || enGB.find(v => /male|ryan|george|daniel/i.test(v.name))
+    || enGB[0];
+};
+
+// Refactored out of the old inline block so it can be reused for both a
+// normal chat reply (ttsEnabled toggle) and Voice Mode's hands-free loop —
+// returns a Promise that resolves once speech genuinely finishes, so a
+// caller (Voice Mode) can reliably resume listening only after Alfred is
+// actually done talking, not immediately after firing .speak().
+const speakAloud = (text: string, elevenlabsKey?: string): Promise<void> => new Promise(async (resolve) => {
+  const ttsText = text.replace(/\*\*?([^*]+)\*\*?/g, "$1").replace(/\n+/g, " ").slice(0, 500);
+  if (elevenlabsKey) {
+    try {
+      const voiceId = "21m00Tcm4TlvDq8ikWAM"; // Rachel voice
+      const ttsRes = await fetch("https://api.elevenlabs.io/v1/text-to-speech/" + voiceId, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "xi-api-key": elevenlabsKey },
+        body: JSON.stringify({ text: ttsText, model_id: "eleven_monolingual_v1", voice_settings: { stability: 0.5, similarity_boost: 0.75 } })
+      });
+      if (ttsRes.ok) {
+        const blob = await ttsRes.blob();
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
+        audio.onerror = () => { URL.revokeObjectURL(url); resolve(); };
+        audio.play().catch(() => resolve());
+        return;
+      }
+    } catch { /* fall through to the free browser voice below */ }
+  }
+  if (typeof window === "undefined" || !window.speechSynthesis) { resolve(); return; }
+  const utterance = new SpeechSynthesisUtterance(ttsText);
+  const britishVoice = await selectBritishVoice();
+  if (britishVoice) utterance.voice = britishVoice;
+  utterance.onend = () => resolve();
+  utterance.onerror = () => resolve();
+  window.speechSynthesis.speak(utterance);
+});
 
 export function AlfredPage({ conversations, setConversations, activeConvId, setActiveConvId, memory = [], setMemory, personality, setPersonality, apiKey, openSettings, toast, jobs = [], setJobs, estimates = [], setEstimates, customers = [], setCustomers, employees = [], automations = [], setAutomations = () => {}, stats, setWins, goals = [], setGoals, setSettings, settings = {} as AppSettings, modelStatus = {}, setModelStatus = () => {}, onNav, onSpotlight, expenses = [], setExpenses, entries = [], chemicals = [], ownerId = "", reviews = [], setReviews = () => {}, vehicles = [], setVehicles = () => {}, maintenance = [], setMaintenance = () => {}, trainingModules = [], services = [] }: { conversations?: any; setConversations?: any; activeConvId?: any; setActiveConvId?: any; memory?: any; setMemory?: any; personality?: any; setPersonality?: any; apiKey?: any; openSettings?: any; toast?: any; jobs?: any; setJobs?: any; estimates?: any; setEstimates?: any; customers?: any; setCustomers?: any; employees?: any; automations?: any; setAutomations?: any; stats?: any; setWins?: any; goals?: any; setGoals?: any; setSettings?: any; settings?: AppSettings; modelStatus?: any; setModelStatus?: any; onNav?: any; onSpotlight?: (step: { page: string; type?: string; id?: string; label?: string }) => void; expenses?: any[]; setExpenses?: any; entries?: any[]; chemicals?: any[]; ownerId?: string; reviews?: any[]; setReviews?: any; vehicles?: any[]; setVehicles?: any; maintenance?: any[]; setMaintenance?: any; trainingModules?: any[]; services?: any[] }) {
   const [input, setInput] = useState("");
@@ -185,6 +257,30 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // reads as broken even though the actual failover logic works correctly
   // each time. Show it once per conversation id, not once per message.
   const failoverNoticeShownRef = useRef<Set<string>>(new Set());
+  // FEATURE — "a real continuous hands-free conversation loop... like
+  // ChatGPT's voice mode." voiceModeOpen drives the full-screen overlay;
+  // voiceModeOpenRef mirrors it for use inside send()'s TTS block and
+  // other async closures that shouldn't rely on a possibly-stale render
+  // closure. voiceModeState drives the orb's listening/thinking/speaking
+  // animation. ttsEndCallbackRef is how send()'s TTS completion hands
+  // control back to the listen-loop below — set right before each call to
+  // send(), cleared/replaced each turn.
+  const [voiceModeOpen, setVoiceModeOpen] = useState(false);
+  const voiceModeOpenRef = useRef(false);
+  const [voiceModeState, setVoiceModeState] = useState<"listening" | "thinking" | "speaking">("listening");
+  const [voiceModeTranscript, setVoiceModeTranscript] = useState("");
+  const voiceModeTranscriptRef = useRef("");
+  const voiceModeKeepGoingRef = useRef(false);
+  const voiceModeRecognitionRef = useRef<any>(null);
+  const ttsEndCallbackRef = useRef<(() => void) | null>(null);
+  // Safety net — stop the mic/speech if this whole page unmounts (owner
+  // navigates to a different CRM page) while Voice Mode is still open,
+  // rather than leaving a live microphone/recognizer running unseen.
+  useEffect(() => () => {
+    voiceModeKeepGoingRef.current = false;
+    try { voiceModeRecognitionRef.current?.stop(); } catch { /* already stopped */ }
+    if (typeof window !== "undefined" && window.speechSynthesis) window.speechSynthesis.cancel();
+  }, []);
   // FIX 2 (mobile round 3) — tracks which conversation ids we've already sent
   // at least one upsert for, so the save-effect below can tell "brand new
   // conversation" apart from "edited an existing one" and save the new one
@@ -3910,7 +4006,18 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           crossChannelContext = `\n\nRECENT ACTIVITY OVER TEXT (SMS, not this web chat — phone ${thread.phone}, updated ${new Date(thread.updated_at).toLocaleString()}):\n${tail}\nThis is a DIFFERENT conversation channel than this web chat — treat it as background context on what the owner's been doing/asking about recently, not as literal history of THIS conversation.`;
         }
       } catch { /* non-fatal — proceed without cross-channel context */ }
-      const businessContext = "\n\nCurrent business snapshot:\n- Active jobs: " + stats.activeJobs + "\n- Pending quotes: " + stats.pendingEst + "\n- Revenue MTD: " + fmt(stats.totalRev) + "\n- Close rate: " + stats.closeRate + "%\n- Jobs completed this month: " + stats.doneMonth + "\n- Total customers: " + customers.length;
+      const ownerName = (settings as any)?.ownerName || (settings as any)?.companyName;
+      const businessContext = (ownerName ? `\n\nThe owner's name is ${ownerName} — use it naturally when greeting them or in casual conversation, not on every single reply.` : "") + "\n\nCurrent business snapshot:\n- Active jobs: " + stats.activeJobs + "\n- Pending quotes: " + stats.pendingEst + "\n- Revenue MTD: " + fmt(stats.totalRev) + "\n- Close rate: " + stats.closeRate + "%\n- Jobs completed this month: " + stats.doneMonth + "\n- Total customers: " + customers.length;
+      // FEATURE — "a real continuous hands-free conversation... like
+      // ChatGPT's voice mode... Alfred would give me a summary of the
+      // business, greet me, and ask what I want to start doing today."
+      // Text meant to be READ (markdown, bullet lists, headers) sounds
+      // broken read aloud by TTS — this is the one thing that has to
+      // differ about how Alfred replies in Voice Mode, not what it knows
+      // or can do (same tools, same memory, same personality either way).
+      const voiceModeContext = voiceModeOpenRef.current
+        ? "\n\nVOICE MODE: this message arrived through a live, hands-free SPOKEN conversation (speech-to-text in, text-to-speech out) — not the text chat. Reply in natural, flowing spoken sentences only: no markdown, no bullet points, no asterisks, no headers, nothing that only makes sense written down. Keep it conversational and reasonably brief, like a real phone call, unless the owner clearly wants more detail. If this message is a casual opener (\"hey\", \"how's it going\", \"what's up\", or similar small talk) rather than a specific request, warmly greet the owner (by name if you know it), give a brief natural-sounding rundown of today's business from the snapshot below, and ask what they'd like to do — don't wait to be asked for a summary."
+        : "";
       // FEATURE — "each company should have their own work-order email
       // identity — Alfred learns it from Settings, not a generic default."
       const woTmpl = (settings as any)?.workOrderEmailTemplate;
@@ -3944,7 +4051,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       const toolHint = `\n\nCASUAL CONVERSATION: the user can talk to you like a person, not just issue commands — small talk, a joke, venting, a random off-topic question. Actually engage with it in your own personality's voice; never refuse or deflect with something like "I'm not programmed for that" — you're not limited to business tasks, tools are just what you reach for when a request actually needs one. The RESPONSE STYLE/TASK RESULT REPORTING rules below govern how you report a TOOL ACTION's outcome specifically — they don't apply to ordinary conversation, and nothing about them means refusing to chat.\n\nYou have tools available to READ and MODIFY the CRM. USE THEM AGGRESSIVELY — don't just describe what you would do, actually do it.\n\nASK WHEN INFO IS MISSING: using tools aggressively does NOT mean guessing or silently defaulting a value the user never gave you. If a request is missing something a tool actually needs to act correctly — which customer, which date, which employee to assign — ask one short, direct clarifying question instead of calling the tool with a made-up or silently-defaulted value (e.g. schedule_job will default an unspecified date to a few days out — do not let that fire silently; ask "what date?" first if the user didn't give one). Only skip asking when the missing piece has an obviously safe default (e.g. a walkthrough with no stated time) or a tool's own fuzzy-match/suggestions can resolve it on its own (e.g. a slightly misspelled customer name).\n\nRESPONSE STYLE: Do not narrate your reasoning, your plan, or which tool you're about to call ("Let me check...", "I'll create that now...", "First I need to..."). Just call the tool(s) silently and then give the user the final result in 1-3 short sentences. No step-by-step thinking out loud.\n\nVERIFY BEFORE CONFIRMING: every action tool returns either {"success": true, ...} or {"error": "..."}. NEVER say "Done" or "All set" without checking which one came back. If you see an "error" field, tell the user exactly what went wrong (the error text) and what they could try instead — do not pretend it worked, and do not retry silently. Only confirm success when the tool result actually contains "success": true.\n\nTASK RESULT REPORTING — NO PERSONALITY FLAIR: your personality (drill sergeant / butler / quiet pro / savage) shapes how you TALK, not whether a task result is reported straight. The moment you report the outcome of an action tool (schedule_job, create_customer, create_estimate, send_estimate, assign/request crew, etc.), drop the persona voice entirely and state the plain fact: "Job scheduled successfully" / "Failed — [exact error text]" / "Estimate sent to [name] successfully" / "Failed — [exact error text]". No jokes, no military barking, no "sir", no sarcasm on the result line itself — save the personality for ordinary conversation, small talk, and check-ins, never for whether something actually saved.\n\nKEY TOOL RULES:\n- Customer queries → USE search_customers or get_customer_details FIRST\n- Stats requests → USE get_business_stats\n- "What's on the calendar" → USE get_calendar_summary\n- "Who's clocked in / who's working" → USE get_employee_status\n- "Remember/note/don't forget" → USE remember_fact\n- Create estimates, customers, jobs → USE create_estimate/create_customer/schedule_job
 - MULTI-STEP CHAINS (e.g. "create a customer, schedule them a job, and assign Mike"): call tools ONE AT A TIME across separate turns when a later step needs an id/result a real tool call hasn't returned yet (e.g. schedule_job needs the customerId create_customer just returned). Do NOT guess or fabricate an id and call multiple dependent tools in the same turn — wait for each real tool_result before issuing the next dependent call. If a step's result is an "error", STOP the chain right there, tell the user exactly which step failed and why, and do not attempt the remaining steps with made-up data.
 - "Send a quote/estimate to X" → USE create_estimate (if it doesn't exist yet) THEN send_estimate in the same turn — do not just create it and stop, and do not tell the user it was "sent" unless send_estimate actually returned success\n- "Send an invoice to X for $Y" → USE create_invoice THEN send_estimate (pass the returned invoiceId as send_estimate's estimateId) — same two-step pattern as quotes. create_invoice alone does NOT notify the customer.\n- Move or cancel a job → USE reschedule_job/cancel_job\n- "Reschedule X and text/email/let them know" → USE reschedule_job's own \`notify\` param (sms/email/both) in the SAME call — do not call send_reminder separately for this, reschedule_job already handles notifying the customer of their new date.\n- "Add [item] to the checklist" → USE add_checklist_item\n- "Show me the details for X's job" → USE get_job_details\n- "Text/email X and tell them [anything]" → USE send_reminder with the exact wording as the message param — this is not just for payment reminders, use it for any custom message the user dictates\n- NEVER REFUSE TO SEND A MESSAGE: if send_reminder/text_supplier come back "Customer not found" (or similar) because the person isn't in the CRM — a lead, an applicant, a personal contact, anyone — do NOT just report that as a dead end. Ask for their phone number if you don't have it, then USE text_phone_number to send it directly; that tool works for ANY phone number with no customer record required. The owner has full authority to send any message to anyone through their own business number. The only time it's correct to not send something is if you're missing the actual phone number or the exact wording — ask for whichever is missing, then send.\n- After the owner attaches a photo/PDF via the paperclip button and then says to upload/save/attach it to a client → USE attach_file_to_customer (no URL needed, it already knows which file).\n- "Do we have the file/paperwork for X" → USE get_customer_documents. "Text me the [file] for X" → USE text_me_document (real MMS attachment to the owner's own phone, not a description). "What's the card info for X" → USE get_customer_card_info — this only ever returns brand + last 4 digits, never the full number, which is never stored anywhere in this app.\n- "What can you do" / capabilities question → USE list_capabilities and answer from that, don't describe yourself from memory.\n- "Text/message everyone" / "let all my customers know" / send a broadcast or promo blast → USE notify_all_customers — this is a real send to real people, not a draft; confirm the exact wording first if the owner was vague.\n- Navigate somewhere → USE navigate_to (the app already auto-navigates after schedule_job/create_customer/create_estimate, but call navigate_to yourself for anything else the user asks to see)\n- Preferences/facts shared → USE remember_fact automatically\n- "Remind/nudge/follow up/text me [later/at X time/in X minutes]" → USE set_followup_reminder — this is a REAL scheduled text sent to the owner's own phone, not just a note; resolve the relative time into an exact ISO datetime yourself first. USE list_followup_reminders/cancel_followup_reminder to manage existing ones.\n- RESOLVING "that job" / "the job we just scheduled" / references to something from an earlier message: a tool result's exact jobId/customerId is only visible to you within the SAME turn it was returned — your own past replies (in the chat history) are plain text, not structured data, so they do NOT reliably carry the real id forward. Before calling assign_employee/request_employee/reschedule_job/cancel_job/add_checklist_item on something referenced from an earlier turn, first call list_jobs or get_calendar_summary (or get_job_details with the customer's name) to look up the real current jobId — never guess, reuse an id from your own prior wording, or fabricate one.\n\nAUTOMATION TOOLS (VERY IMPORTANT):\n- When user describes ANY workflow, drip sequence, reminder, or "when X do Y" scenario → USE create_automation IMMEDIATELY. Build a proper n8n-style multi-step workflow with real step types: trigger (first), then delays, conditions, actions. NEVER just describe what you'd build — actually build it with create_automation.\n- "Send review request after job complete" → trigger: Job complete, delay: 2h, action: SMS review request\n- "Follow up on unpaid invoices" → trigger: Invoice unpaid 7 days, action: polite reminder email, delay: 4 days, condition: still unpaid, action: firm SMS\n- To check existing workflows → USE list_automations\n- To enable/disable a workflow → USE toggle_automation\n\nCurrent automations: ${automations.length} total, ${automations.filter(a => a.active).length} active\n\nNAME MATCHING: if a tool result comes back with "error": "Customer not found" or "Employee not found" and includes a "suggestions" array, ask the user "Do you mean [name], or [name]?" using those exact suggested names — never ask a generic clarifying question like "who do you mean?" when real candidate names are available.`;
-      const baseSystemPrompt = getPersonality(activePersonality).systemPrompt + dateContext + memoryContext + crossChannelContext + businessContext + workOrderStyleContext + vacationContext + googleStatus;
+      const baseSystemPrompt = getPersonality(activePersonality).systemPrompt + dateContext + memoryContext + crossChannelContext + businessContext + workOrderStyleContext + vacationContext + googleStatus + voiceModeContext;
       const systemPrompt = baseSystemPrompt + toolHint;
       // BUG FIX (root cause, not another pattern-match) — a non-tool-capable
       // model (OpenRouter's free tier) was STILL being handed the full
@@ -4227,39 +4334,17 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       }
       appendMessage({ id: uid(), role: "alfred", content: displayText, timestamp: Date.now(), toolTraces, modelUsed, failoverChain });
 
-      // TTS — read Alfred's response aloud when enabled. BUG FIX — "you can
-      // send a voice message, but there's no toggle for whether Alfred talks
-      // back." settings.ttsEnabled/elevenlabsKey were both already read here,
-      // but nothing in the whole app ever set ttsEnabled — no UI existed to
-      // turn it on at all (see the new toggle button in this page's header).
-      // ElevenLabs (paid key) still wins when configured for higher quality;
-      // otherwise falls back to the browser's free built-in speechSynthesis
-      // so the toggle actually works with zero setup.
-      if (settings.ttsEnabled) {
-        const ttsText = finalText.replace(/\*\*?([^*]+)\*\*?/g, "$1").replace(/\n+/g, " ").slice(0, 500);
-        if (settings.elevenlabsKey) {
-          try {
-            const voiceId = "21m00Tcm4TlvDq8ikWAM"; // Rachel voice
-            const ttsRes = await fetch("https://api.elevenlabs.io/v1/text-to-speech/" + voiceId, {
-              method: "POST",
-              headers: { "Content-Type": "application/json", "xi-api-key": settings.elevenlabsKey },
-              body: JSON.stringify({ text: ttsText, model_id: "eleven_monolingual_v1", voice_settings: { stability: 0.5, similarity_boost: 0.75 } })
-            });
-            if (ttsRes.ok) {
-              const blob = await ttsRes.blob();
-              const url = URL.createObjectURL(blob);
-              const audio = new Audio(url);
-              audio.play().catch(() => {});
-              audio.onended = () => URL.revokeObjectURL(url);
-            } else if (typeof window !== "undefined" && window.speechSynthesis) {
-              window.speechSynthesis.speak(new SpeechSynthesisUtterance(ttsText));
-            }
-          } catch {
-            if (typeof window !== "undefined" && window.speechSynthesis) window.speechSynthesis.speak(new SpeechSynthesisUtterance(ttsText));
-          }
-        } else if (typeof window !== "undefined" && window.speechSynthesis) {
-          window.speechSynthesis.speak(new SpeechSynthesisUtterance(ttsText));
-        }
+      // TTS — read Alfred's response aloud when enabled, or always in Voice
+      // Mode (a hands-free conversation with no toggle to check). Refactored
+      // into the shared speakAloud() helper (free browser voice, picks a
+      // real British one when the OS has one installed — see its own
+      // comment) so Voice Mode's listen-loop can await the SAME completion
+      // signal a plain chat reply's speech uses, instead of duplicating this.
+      if (settings.ttsEnabled || voiceModeOpenRef.current) {
+        if (voiceModeOpenRef.current) setVoiceModeState("speaking");
+        speakAloud(finalText, settings.elevenlabsKey).then(() => {
+          if (voiceModeOpenRef.current) ttsEndCallbackRef.current?.();
+        });
       }
 
       // Explicit, user-signaled memory shortcut — the ONLY text-pattern
@@ -4295,6 +4380,84 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     } finally {
       setLoading(false);
     }
+  };
+
+  // FEATURE — "a real continuous hands-free conversation loop." Each turn
+  // is its own SpeechRecognition instance with continuous:false — the
+  // browser's own endpointing (it waits for a natural pause) decides when
+  // the owner is done talking and fires ONE complete result, unlike
+  // VoiceMicButton's dictation mode (continuous:true, manually stopped),
+  // which is built for "keep typing until I press stop," not turn-taking.
+  // On each turn: listen -> send(transcript) (the exact same pipeline text
+  // chat uses — same memory, same tools, same personality) -> speak the
+  // reply (see the TTS block in send() above) -> resume listening once
+  // speech actually finishes (ttsEndCallbackRef). No barge-in — the owner
+  // waits for Alfred to finish before the mic reopens, same turn-taking
+  // shape a phone call has.
+  const VoiceRecognitionCtor = typeof window !== "undefined" ? ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition) : null;
+  const startVoiceListeningTurn = () => {
+    if (!voiceModeKeepGoingRef.current || !VoiceRecognitionCtor) return;
+    setVoiceModeState("listening");
+    setVoiceModeTranscript("");
+    voiceModeTranscriptRef.current = "";
+    const rec = new VoiceRecognitionCtor();
+    rec.lang = "en-US";
+    rec.continuous = false;
+    rec.interimResults = true;
+    rec.maxAlternatives = 1;
+    rec.onresult = (e: any) => {
+      let text = "";
+      for (let i = 0; i < e.results.length; i++) text += e.results[i][0].transcript;
+      voiceModeTranscriptRef.current = text;
+      setVoiceModeTranscript(text);
+    };
+    rec.onerror = (e: any) => {
+      if (e.error === "no-speech") return; // onend fires right after — handled there
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+        toast("Microphone access denied — Voice Mode needs it to listen.", "red");
+        closeVoiceMode();
+      }
+      // Other transient errors (network/aborted): onend still fires below and restarts the turn.
+    };
+    rec.onend = () => {
+      if (!voiceModeKeepGoingRef.current) return;
+      const finalText = voiceModeTranscriptRef.current.trim();
+      if (!finalText) { startVoiceListeningTurn(); return; } // nothing said — just keep listening
+      // Safety net — if send() ever returns without reaching its TTS block
+      // (a thrown/caught error, a recognized slash command's early return,
+      // any future code path that skips it) ttsEndCallbackRef would never
+      // fire and Voice Mode would silently hang on "Thinking…" forever.
+      // Reference equality lets a genuine completion (which replaces this
+      // ref with the NEXT turn's callback) suppress this fallback, so a
+      // normal reply never double-fires the resume.
+      const thisTurnCallback = () => { if (voiceModeKeepGoingRef.current) startVoiceListeningTurn(); };
+      ttsEndCallbackRef.current = thisTurnCallback;
+      setVoiceModeState("thinking");
+      send(finalText);
+      setTimeout(() => {
+        if (ttsEndCallbackRef.current === thisTurnCallback) { ttsEndCallbackRef.current = null; thisTurnCallback(); }
+      }, 45000);
+    };
+    voiceModeRecognitionRef.current = rec;
+    try { rec.start(); } catch { setTimeout(() => { if (voiceModeKeepGoingRef.current) startVoiceListeningTurn(); }, 300); }
+  };
+  const openVoiceMode = () => {
+    if (!VoiceRecognitionCtor) { toast("Voice input isn't supported in this browser — try Chrome or Edge.", "red"); return; }
+    setVoiceModeOpen(true);
+    voiceModeOpenRef.current = true;
+    voiceModeKeepGoingRef.current = true;
+    selectBritishVoice().then(v => {
+      if (!v) toast("No British voice found on this device — Alfred will still talk, just in your system's default voice.", "yellow");
+    });
+    startVoiceListeningTurn();
+  };
+  const closeVoiceMode = () => {
+    voiceModeKeepGoingRef.current = false;
+    voiceModeOpenRef.current = false;
+    ttsEndCallbackRef.current = null;
+    try { voiceModeRecognitionRef.current?.stop(); } catch { /* already stopped */ }
+    if (typeof window !== "undefined" && window.speechSynthesis) window.speechSynthesis.cancel();
+    setVoiceModeOpen(false);
   };
 
   const onInputChange = e => {
@@ -4427,6 +4590,14 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             <div className="p-1.5 rounded bg-purple-900/30"><Bot size={11} className="text-purple-400" /></div>
             <span className="flex-1 text-left">Memory</span>
             <span className="text-[10px] text-white/40">{memory.length}</span>
+          </button>
+          {/* FEATURE — "a real continuous hands-free conversation loop...
+              like ChatGPT's voice mode." Opens the full-screen overlay
+              below — continuous listen/reply/speak, no manual send. */}
+          <button onClick={openVoiceMode} className="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg hover:bg-white/5 text-xs text-white/70 hover:text-white transition">
+            <div className="p-1.5 rounded bg-purple-900/30"><Mic size={11} className="text-purple-400" /></div>
+            <span className="flex-1 text-left">Voice Mode</span>
+            <span className="text-[9px] text-white/30">free, hands-free</span>
           </button>
           {/* FEATURE — "you need a toggle for whether Alfred talks back."
               Reads Alfred's reply aloud via ElevenLabs (if a key's set in
@@ -4885,6 +5056,58 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           </div>
         </div>
       </Modal>
+
+      {/* FEATURE — "a real continuous hands-free conversation loop... like
+          ChatGPT's voice mode." Full-screen, not a small widget — this is
+          meant to be used instead of looking at the screen, same reasoning
+          a phone call UI is full-screen. Orb color/motion communicates
+          state (listening/thinking/speaking) since there's often nothing
+          else to look at while using this hands-free. */}
+      {voiceModeOpen && (
+        <div className="fixed inset-0 z-[400] bg-gradient-to-b from-black via-purple-950/30 to-black flex flex-col items-center justify-center px-6">
+          <div className="absolute top-6 left-1/2 -translate-x-1/2 text-center">
+            <div className="text-xs font-semibold text-white/50 uppercase tracking-widest">Alfred — Voice Mode</div>
+            <div className="text-[10px] text-white/30 mt-0.5">{getPersonality(active?.personality || personality).name} · free browser voice</div>
+          </div>
+
+          <div className="relative flex items-center justify-center mb-10">
+            <div
+              className={
+                "w-40 h-40 md:w-52 md:h-52 rounded-full transition-all duration-500 " +
+                (voiceModeState === "listening" ? "bg-purple-600/30 animate-pulse-ring" :
+                 voiceModeState === "thinking" ? "bg-amber-500/25" :
+                 "bg-green-500/25 animate-pulse-ring")
+              }
+            />
+            <div
+              className={
+                "absolute w-24 h-24 md:w-32 md:h-32 rounded-full flex items-center justify-center transition-all duration-300 " +
+                (voiceModeState === "listening" ? "bg-purple-600/60 scale-100" :
+                 voiceModeState === "thinking" ? "bg-amber-500/50 scale-90" :
+                 "bg-green-500/60 scale-105")
+              }
+            >
+              {voiceModeState === "thinking"
+                ? <div className="w-8 h-8 border-[3px] border-white/30 border-t-white rounded-full animate-spin" />
+                : <Mic size={32} className="text-white" />}
+            </div>
+          </div>
+
+          <div className="text-sm font-semibold text-white/80 mb-2">
+            {voiceModeState === "listening" ? "Listening…" : voiceModeState === "thinking" ? "Thinking…" : "Speaking…"}
+          </div>
+          <div className="text-xs text-white/40 text-center max-w-sm min-h-[2.5rem]">
+            {voiceModeState === "listening" ? (voiceModeTranscript || "Say something — Alfred's listening.") : ""}
+          </div>
+
+          <button
+            onClick={closeVoiceMode}
+            className="absolute bottom-10 flex items-center gap-2 px-6 py-3.5 rounded-full bg-red-600 hover:bg-red-500 text-white font-semibold text-sm shadow-xl shadow-red-950/50 transition"
+          >
+            <PhoneOff size={16} />End Conversation
+          </button>
+        </div>
+      )}
     </div>
   );
 }
