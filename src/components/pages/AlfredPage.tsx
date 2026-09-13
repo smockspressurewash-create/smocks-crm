@@ -1,5 +1,6 @@
 // auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
   Settings, Bell, Menu, X, Plus, Search, Edit, Trash2, Send,
@@ -192,7 +193,19 @@ const speakAloud = (text: string, elevenlabsKey?: string): Promise<void> => new 
   window.speechSynthesis.speak(utterance);
 });
 
-export function AlfredPage({ conversations, setConversations, activeConvId, setActiveConvId, memory = [], setMemory, personality, setPersonality, apiKey, openSettings, toast, jobs = [], setJobs, estimates = [], setEstimates, customers = [], setCustomers, employees = [], automations = [], setAutomations = () => {}, stats, setWins, goals = [], setGoals, setSettings, settings = {} as AppSettings, modelStatus = {}, setModelStatus = () => {}, onNav, onSpotlight, expenses = [], setExpenses, entries = [], chemicals = [], ownerId = "", reviews = [], setReviews = () => {}, vehicles = [], setVehicles = () => {}, maintenance = [], setMaintenance = () => {}, trainingModules = [], services = [] }: { conversations?: any; setConversations?: any; activeConvId?: any; setActiveConvId?: any; memory?: any; setMemory?: any; personality?: any; setPersonality?: any; apiKey?: any; openSettings?: any; toast?: any; jobs?: any; setJobs?: any; estimates?: any; setEstimates?: any; customers?: any; setCustomers?: any; employees?: any; automations?: any; setAutomations?: any; stats?: any; setWins?: any; goals?: any; setGoals?: any; setSettings?: any; settings?: AppSettings; modelStatus?: any; setModelStatus?: any; onNav?: any; onSpotlight?: (step: { page: string; type?: string; id?: string; label?: string }) => void; expenses?: any[]; setExpenses?: any; entries?: any[]; chemicals?: any[]; ownerId?: string; reviews?: any[]; setReviews?: any; vehicles?: any[]; setVehicles?: any; maintenance?: any[]; setMaintenance?: any; trainingModules?: any[]; services?: any[] }) {
+export function AlfredPage({ conversations, setConversations, activeConvId, setActiveConvId, memory = [], setMemory, personality, setPersonality, apiKey, openSettings, toast, jobs = [], setJobs, estimates = [], setEstimates, customers = [], setCustomers, employees = [], automations = [], setAutomations = () => {}, stats, setWins, goals = [], setGoals, setSettings, settings = {} as AppSettings, modelStatus = {}, setModelStatus = () => {}, onNav, onSpotlight, expenses = [], setExpenses, entries = [], chemicals = [], ownerId = "", reviews = [], setReviews = () => {}, vehicles = [], setVehicles = () => {}, maintenance = [], setMaintenance = () => {}, trainingModules = [], services = [], isActivePage = true, currentPageName = "alfred", cursorContext = "" }: { conversations?: any; setConversations?: any; activeConvId?: any; setActiveConvId?: any; memory?: any; setMemory?: any; personality?: any; setPersonality?: any; apiKey?: any; openSettings?: any; toast?: any; jobs?: any; setJobs?: any; estimates?: any; setEstimates?: any; customers?: any; setCustomers?: any; employees?: any; automations?: any; setAutomations?: any; stats?: any; setWins?: any; goals?: any; setGoals?: any; setSettings?: any; settings?: AppSettings; modelStatus?: any; setModelStatus?: any; onNav?: any; onSpotlight?: (step: { page: string; type?: string; id?: string; label?: string }) => void; expenses?: any[]; setExpenses?: any; entries?: any[]; chemicals?: any[]; ownerId?: string; reviews?: any[]; setReviews?: any; vehicles?: any[]; setVehicles?: any; maintenance?: any[]; setMaintenance?: any; trainingModules?: any[]; services?: any[];
+  // FEATURE — "keep talking to it while looking through the CRM... Alfred
+  // should have the context of the screen you're on." isActivePage drives
+  // BOTH the poll-gating (see shouldPollAlfred usages below — this file's
+  // conversation/memory sync used to rely entirely on unmounting when the
+  // owner left this page to stop polling; now that App.tsx keeps this
+  // component mounted so Voice Mode can survive navigation, that same
+  // egress-conscious behavior has to be an explicit check instead) AND
+  // whether the normal chat UI portals into #alfred-mount-point at all.
+  isActivePage?: boolean;
+  currentPageName?: string;
+  cursorContext?: string;
+}) {
   const [input, setInput] = useState("");
   const [voiceMode, setVoiceMode] = useState<"dictate" | "note">("dictate");
   const [loading, setLoading] = useState(false);
@@ -323,6 +336,55 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // CRM pages).
   const [voiceModeMounted, setVoiceModeMounted] = useState(false);
   const [voiceModeMinimized, setVoiceModeMinimized] = useState(false);
+  // FEATURE — "drag it, hold it in, almost like a FAB button, and move it
+  // to the bottom middle of the screen and let go, which ends the voice
+  // conversation... right-click to end it." Pointer events (not separate
+  // mouse/touch handlers) so the same drag works with a mouse on PC and a
+  // finger on mobile alike. bubblePos is null until the owner actually
+  // drags it once — null means "use the default bottom-right corner,"
+  // not "dragged to (0,0)."
+  const BUBBLE_SIZE = 64;
+  const [bubblePos, setBubblePos] = useState<{ x: number; y: number } | null>(null);
+  const [bubbleDragging, setBubbleDragging] = useState(false);
+  const [overDropZone, setOverDropZone] = useState(false);
+  const bubbleDragStateRef = useRef<{ startClientX: number; startClientY: number; startLeft: number; startTop: number; moved: boolean } | null>(null);
+  const isInBubbleDropZone = (cx: number, cy: number): boolean => {
+    if (typeof window === "undefined") return false;
+    const zoneWidth = 208, zoneHeight = 96; // matches the w-52 h-24 drop-zone indicator below
+    const zoneLeft = window.innerWidth / 2 - zoneWidth / 2;
+    const zoneTop = window.innerHeight - zoneHeight - 24;
+    return cx >= zoneLeft && cx <= zoneLeft + zoneWidth && cy >= zoneTop;
+  };
+  const onBubblePointerDown = (e: React.PointerEvent<HTMLButtonElement>) => {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const rect = e.currentTarget.getBoundingClientRect();
+    bubbleDragStateRef.current = { startClientX: e.clientX, startClientY: e.clientY, startLeft: rect.left, startTop: rect.top, moved: false };
+    setBubbleDragging(true);
+  };
+  const onBubblePointerMove = (e: React.PointerEvent<HTMLButtonElement>) => {
+    const ds = bubbleDragStateRef.current;
+    if (!ds) return;
+    const dx = e.clientX - ds.startClientX;
+    const dy = e.clientY - ds.startClientY;
+    // A few px of jitter shouldn't count as a drag — otherwise every
+    // ordinary click would also register as "moved" and skip the
+    // click-to-reopen behavior below.
+    if (Math.abs(dx) > 5 || Math.abs(dy) > 5) ds.moved = true;
+    const maxLeft = Math.max(0, window.innerWidth - BUBBLE_SIZE);
+    const maxTop = Math.max(0, window.innerHeight - BUBBLE_SIZE);
+    setBubblePos({ x: Math.min(Math.max(0, ds.startLeft + dx), maxLeft), y: Math.min(Math.max(0, ds.startTop + dy), maxTop) });
+    setOverDropZone(isInBubbleDropZone(e.clientX, e.clientY));
+  };
+  const onBubblePointerUp = (e: React.PointerEvent<HTMLButtonElement>) => {
+    const ds = bubbleDragStateRef.current;
+    bubbleDragStateRef.current = null;
+    setBubbleDragging(false);
+    setOverDropZone(false);
+    if (!ds) return;
+    if (!ds.moved) { setVoiceModeMinimized(false); return; } // a real click, not a drag — reopen
+    if (isInBubbleDropZone(e.clientX, e.clientY)) closeVoiceMode();
+    // else: leave it wherever it was dropped (bubblePos already holds that).
+  };
   // Safety net — stop the mic/speech if this whole page unmounts (owner
   // navigates to a different CRM page) while Voice Mode is still open,
   // rather than leaving a live microphone/recognizer running unseen.
@@ -364,6 +426,23 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // DELETE once per session instead of re-checking on every 5s poll.
   const staleCleanupDoneRef = useRef(false);
   const shouldPollAlfred = usePollGate();
+  // BUG FIX — this file's conversation/memory poll used to be safe to run
+  // unconditionally because the WHOLE component only ever mounted while
+  // the owner was looking at this page (see App.tsx's own comment on
+  // where AlfredPage renders now) — unmounting was the only guard against
+  // polling "forever in the background" (a deliberate, documented egress
+  // decision). Now that this component stays mounted so Voice Mode can
+  // survive navigating away, that guard is gone unless replaced with an
+  // explicit check — isActivePageRef (kept fresh below) is that check.
+  const isActivePageRef = useRef(isActivePage);
+  useEffect(() => { isActivePageRef.current = isActivePage; }, [isActivePage]);
+  // Portal target for the normal chat UI — see the return statement's own
+  // comment for why this can't just be a direct document.getElementById()
+  // call in the render body.
+  const [mountEl, setMountEl] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    setMountEl(document.getElementById("alfred-mount-point"));
+  }, [isActivePage]);
   useEffect(() => {
     if (!ownerId) { console.warn("[Alfred Sync] no ownerId yet — skipping conversation fetch"); return; }
     const loadConversations = async () => {
@@ -472,7 +551,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     // fallback-poll interval (Settings, default 120s) — alfred_conversations
     // rows can carry a full chat history each, so polling that every 5s
     // while Alfred is open was a real contributor to the egress overage.
-    const interval = setInterval(() => { if (shouldPollAlfred()) loadConversations(); }, getPollIntervalMs(settings));
+    const interval = setInterval(() => { if (shouldPollAlfred() && isActivePageRef.current) loadConversations(); }, getPollIntervalMs(settings));
     return () => clearInterval(interval);
   }, [ownerId, (settings as any)?.pollIntervalMs]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -505,7 +584,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       } catch (e: any) { console.warn("[Alfred Memory Sync] fetch threw:", e?.message); }
     };
     loadMemory();
-    const interval = setInterval(() => { if (shouldPollAlfred()) loadMemory(); }, getPollIntervalMs(settings));
+    const interval = setInterval(() => { if (shouldPollAlfred() && isActivePageRef.current) loadMemory(); }, getPollIntervalMs(settings));
     return () => clearInterval(interval);
   }, [ownerId, (settings as any)?.pollIntervalMs]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -4066,8 +4145,21 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       // broken read aloud by TTS — this is the one thing that has to
       // differ about how Alfred replies in Voice Mode, not what it knows
       // or can do (same tools, same memory, same personality either way).
+      // FEATURE — "Alfred should have the context of the screen you're
+      // on... what customer is my cursor over." currentPageName is 100%
+      // reliable (it's just the router's own state, passed down from
+      // App.tsx). cursorContext is a real but best-effort heuristic — see
+      // App.tsx's own comment on exactly how it's resolved (text under the
+      // cursor, fuzzy-matched against loaded customers/jobs/employees) —
+      // it can legitimately be blank (cursor over empty space, a chart, a
+      // page this heuristic can't read), which the model is told to treat
+      // as "ask which one" rather than guessing, matching the exact "which
+      // ones?" behavior asked for.
+      const screenContext = voiceModeOpenRef.current
+        ? `\n\nSCREEN AWARENESS: the owner is currently on the "${currentPageName}" page of the CRM (this is real, not a guess).${cursorContext ? ` Their cursor is currently over: ${cursorContext} — a real but best-effort read of what's on screen, not guaranteed for every kind of content (charts/graphs won't resolve). If they ask about "this" customer/job/employee, "them", or reference something on screen without naming it, assume they mean this UNLESS they've clearly already named someone else — use the id given above directly in any tool call rather than searching by name.` : ` Nothing recognizable is resolved under their cursor right now — if they reference something on screen ambiguously ("do you see this", "these customers") without naming who/what, ask which one(s) instead of guessing.`}`
+        : "";
       const voiceModeContext = voiceModeOpenRef.current
-        ? "\n\nVOICE MODE: this message arrived through a live, hands-free SPOKEN conversation (speech-to-text in, text-to-speech out) — not the text chat. Reply in natural, flowing spoken sentences only: no markdown, no bullet points, no asterisks, no headers, nothing that only makes sense written down. Keep it conversational and reasonably brief, like a real phone call, unless the owner clearly wants more detail. If this message is a casual opener (\"hey\", \"how's it going\", \"what's up\", or similar small talk) rather than a specific request, warmly greet the owner (by name if you know it), give a brief natural-sounding rundown of today's business from the snapshot below, and ask what they'd like to do — don't wait to be asked for a summary."
+        ? "\n\nVOICE MODE: this message arrived through a live, hands-free SPOKEN conversation (speech-to-text in, text-to-speech out) — not the text chat. Reply in natural, flowing spoken sentences only: no markdown, no bullet points, no asterisks, no headers, nothing that only makes sense written down. Keep it conversational and reasonably brief, like a real phone call, unless the owner clearly wants more detail. If this message is a casual opener (\"hey\", \"how's it going\", \"what's up\", or similar small talk) rather than a specific request, warmly greet the owner (by name if you know it), give a brief natural-sounding rundown of today's business from the snapshot below, and ask what they'd like to do — don't wait to be asked for a summary." + screenContext
         : "";
       // FEATURE — "each company should have their own work-order email
       // identity — Alfred learns it from Settings, not a generic default."
@@ -4605,6 +4697,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     setVoiceMuted(false);
     voiceMutedRef.current = false;
     setVoiceModeMinimized(false);
+    setBubblePos(null); // reset to the default bottom-right corner each new call
     // Entrance transition — mount first (0 opacity/scale via
     // voiceModeMounted starting false), then flip visible a tick later so
     // the browser actually animates the change instead of snapping
@@ -4701,7 +4794,20 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // message-list scroll). App.tsx now gives this component's actual parent
   // chain (main → wrapper div → PageFade) a real flex height for the alfred
   // page specifically, so flex-1 here fills it exactly with no guesswork.
+  // FEATURE — "keep talking to it while looking through the CRM." The
+  // normal chat UI below only makes sense rendered where App.tsx's own
+  // page layout expects it (#alfred-mount-point, only present while
+  // page==="alfred") — portaled there instead of rendered directly, since
+  // this component itself is now mounted at a stable, always-present spot
+  // in App.tsx specifically so it survives navigating away (see that
+  // file's own comment). mountEl is looked up in an effect (below,
+  // near the other voice-mode refs) rather than read directly here,
+  // because a plain document.getElementById() call during render would
+  // see last frame's DOM, not the placeholder React is committing THIS
+  // pass — createPortal needs the target to already exist.
   return (
+    <>
+    {mountEl && createPortal(
     <div className="relative w-full flex-1 min-h-0 flex bg-black border border-red-900/30 rounded-2xl overflow-hidden">
       {/* Conversation sidebar */}
       <aside className={"bg-black/80 backdrop-blur-xl border-r border-red-900/30 flex flex-col transition-all duration-300 overflow-hidden " + (sidebarOpen ? "w-[280px] md:w-[280px]" : "w-0") + " absolute md:relative h-full z-20"}>
@@ -5237,7 +5343,16 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           </div>
         </div>
       </Modal>
-
+    </div>,
+    mountEl
+    )}
+    {/* FEATURE — "keep talking to it while looking through the CRM."
+        Voice Mode's overlay/bubble portal straight to document.body,
+        completely independent of #alfred-mount-point/mountEl above — this
+        is what actually keeps them visible and interactive on every other
+        CRM page, not just while page==="alfred". */}
+    {typeof document !== "undefined" && createPortal(
+      <>
       {/* FEATURE — "a real continuous hands-free conversation loop... like
           ChatGPT's voice mode." Full-screen, not a small widget — this is
           meant to be used instead of looking at the screen, same reasoning
@@ -5377,28 +5492,47 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
 
       {/* Minimized bubble — the conversation (listening/thinking/speaking,
           barge-in, everything) keeps running exactly as before; this is
-          purely a visual collapse. Click to reopen the full overlay,
-          the small X ends the call directly without reopening it first. */}
+          purely a visual collapse. Click (no real movement) reopens the
+          full overlay; drag it anywhere (pointer events — works for mouse
+          AND touch); drag it into the bottom-middle drop zone and release
+          to end the call; right-click ends it directly without reopening.
+          Now portals to document.body (see the return statement's own
+          comment) so it keeps floating over WHATEVER CRM page is
+          currently showing, not just this one. */}
       {voiceModeOpen && voiceModeMinimized && (
-        <button
-          onClick={() => setVoiceModeMinimized(false)}
-          title="Reopen Voice Mode"
-          className="fixed bottom-6 right-6 z-[400] w-16 h-16 rounded-full bg-gradient-to-br from-red-600 to-red-800 shadow-2xl shadow-red-950/60 flex items-center justify-center animate-fade-in"
-        >
-          <div className={"absolute inset-0 rounded-full " + (voiceModeState === "listening" || voiceModeState === "speaking" ? "animate-pulse-ring" : "")} />
-          {voiceModeState === "thinking"
-            ? <div className="w-5 h-5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
-            : <Bot size={24} className="text-white" />}
-          <span
-            onClick={e => { e.stopPropagation(); closeVoiceMode(); }}
-            title="End conversation"
-            className="absolute -top-1.5 -right-1.5 w-6 h-6 rounded-full bg-black border border-white/20 flex items-center justify-center text-white/60 hover:text-white"
+        <>
+          {/* FEATURE — "drag it to the bottom middle of the screen and let
+              go, which ends the voice conversation." Only shown while
+              actively dragging — a static drop-zone would just be visual
+              noise the rest of the time. */}
+          {bubbleDragging && (
+            <div
+              className={"fixed z-[399] left-1/2 -translate-x-1/2 bottom-6 w-52 h-24 rounded-2xl border-2 border-dashed flex items-center justify-center text-xs font-semibold transition-colors " + (overDropZone ? "bg-red-600/40 border-red-400 text-white scale-105" : "bg-black/60 border-white/20 text-white/50")}
+            >
+              <PhoneOff size={16} className="inline mr-1.5" />Drop to end call
+            </div>
+          )}
+          <button
+            onPointerDown={onBubblePointerDown}
+            onPointerMove={onBubblePointerMove}
+            onPointerUp={onBubblePointerUp}
+            onPointerCancel={onBubblePointerUp}
+            onContextMenu={e => { e.preventDefault(); closeVoiceMode(); }}
+            title="Drag to move · click to reopen · drop at bottom-middle or right-click to end"
+            className={"fixed z-[400] w-16 h-16 rounded-full bg-gradient-to-br from-red-600 to-red-800 shadow-2xl shadow-red-950/60 flex items-center justify-center animate-fade-in touch-none select-none " + (bubbleDragging ? "cursor-grabbing scale-110" : "cursor-grab")}
+            style={bubblePos ? { left: bubblePos.x, top: bubblePos.y, right: "auto", bottom: "auto" } : { right: "1.5rem", bottom: "1.5rem" }}
           >
-            <X size={12} />
-          </span>
-        </button>
+            <div className={"absolute inset-0 rounded-full " + (voiceModeState === "listening" || voiceModeState === "speaking" ? "animate-pulse-ring" : "")} />
+            {voiceModeState === "thinking"
+              ? <div className="w-5 h-5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+              : <Bot size={24} className="text-white" />}
+          </button>
+        </>
       )}
-    </div>
+      </>,
+      document.body
+    )}
+    </>
   );
 }
 

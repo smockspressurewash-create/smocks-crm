@@ -5143,6 +5143,65 @@ export function App() {
       <div className="text-sm max-w-xs">Your manager account doesn't have access to {label}. Ask the owner to grant it in Employees → Manager CRM Access.</div>
     </div>
   );
+  // FEATURE — "Alfred should have the context of the screen you're on...
+  // what customer is my cursor over." A real, honest best-effort heuristic,
+  // not deep DOM semantics: samples the cursor position on an interval (not
+  // every mousemove — that fires far too often for a DOM lookup), reads the
+  // nearest reasonably-sized element's text, and fuzzy-matches it against
+  // the SAME customers/jobs/employees arrays already loaded for the active
+  // page. Works well on any row/card that visibly shows a name (the
+  // overwhelming majority of real CRM list/table UI); won't understand a
+  // chart, a graph, or a custom widget with no plain-text name in it — that
+  // would need per-page semantic markup across the whole app, out of scope
+  // here. currentPageName is 100% reliable (it's just the router's own
+  // state) and always included regardless of what's under the cursor.
+  const cursorPosRef = useRef({ x: -1, y: -1 });
+  const [cursorContext, setCursorContext] = useState("");
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => { cursorPosRef.current = { x: e.clientX, y: e.clientY }; };
+    window.addEventListener("mousemove", onMove, { passive: true });
+    const interval = setInterval(() => {
+      try {
+        const { x, y } = cursorPosRef.current;
+        if (x < 0) { setCursorContext(""); return; }
+        const el = document.elementFromPoint(x, y) as HTMLElement | null;
+        if (!el) { setCursorContext(""); return; }
+        let node: HTMLElement | null = el;
+        let text = "";
+        for (let i = 0; i < 5 && node; i++) {
+          text = (node.innerText || "").trim();
+          if (text.length > 2 && text.length < 200) break;
+          node = node.parentElement;
+        }
+        if (!text || text.length < 2 || text.length > 300) { setCursorContext(""); return; }
+        const lower = text.toLowerCase();
+        const cust = customers.find((c: any) => {
+          const full = `${c.firstName || ""} ${c.lastName || ""}`.trim().toLowerCase();
+          return full.length > 2 && lower.includes(full);
+        });
+        if (cust) { setCursorContext(`Customer under cursor: ${cust.firstName} ${cust.lastName}${cust.phone ? " · " + cust.phone : ""}${cust.email ? " · " + cust.email : ""} (id ${cust.id})`); return; }
+        const emp = employees.find((e: any) => {
+          const full = `${e.firstName || ""} ${e.lastName || ""}`.trim().toLowerCase();
+          return full.length > 2 && lower.includes(full);
+        });
+        if (emp) { setCursorContext(`Employee under cursor: ${emp.firstName} ${emp.lastName} (id ${emp.id})`); return; }
+        // Job has no customerName field of its own — resolve via customerId,
+        // same as everywhere else in this app that needs a job's customer.
+        const job = jobs.find((j: any) => {
+          const c = customers.find((x: any) => x.id === j.customerId);
+          const full = c ? `${c.firstName || ""} ${c.lastName || ""}`.trim().toLowerCase() : "";
+          return full.length > 2 && lower.includes(full);
+        });
+        if (job) {
+          const jc = customers.find((x: any) => x.id === job.customerId);
+          setCursorContext(`Job under cursor: ${jc ? `${jc.firstName} ${jc.lastName}` : "unknown customer"} — ${job.address || ""}, status ${job.status || "unknown"} (id ${job.id})`);
+          return;
+        }
+        setCursorContext("");
+      } catch { /* best-effort only — never let this break the app */ }
+    }, 600);
+    return () => { window.removeEventListener("mousemove", onMove); clearInterval(interval); };
+  }, [customers, employees, jobs]);
   // FEATURE — audit finding (critical): named-feature plan gating (see
   // planLimits.ts's hasPlanFeature) — campaigns/trash-cans are advertised
   // as Growth-only on the pricing page but were never actually gated.
@@ -5512,7 +5571,26 @@ export function App() {
                 {page === "automations"    && <AutomationsPage automations={automations} setAutomations={setAutomations} jobs={jobs} customers={customers} estimates={estimates} settings={settings} setSettings={setSettings} toast={toast} />}
                 {page === "social"         && <SocialPage posts={socialPosts} setPosts={setSocialPosts} toast={toast} settings={settings} setSettings={setSettings} jobs={jobs} ownerId={crmUserId} onNav={setPage} />}
                 {page === "intake"         && <LeadIntakePage customers={customers} setCustomers={setCustomers} estimates={estimates} setEstimates={setEstimates} services={services} jobs={jobs} settings={settings} setSettings={setSettings} toast={toast} onNav={setPage} onConvertToEstimate={(customerId: string) => { setEstimatePresetCustomerId(customerId); setFabAutoOpenNew("estimates"); setPage("estimates"); }} ownerId={crmUserId} markRecentlyDeleted={markRecentlyDeleted} />}
-                {page === "alfred"         && (managerBlocked("alfred") ? <RestrictedNotice label="Alfred AI" /> : <AlfredPage conversations={alfredConversations} setConversations={setAlfredConversations} activeConvId={activeConvId} setActiveConvId={setActiveConvId} memory={alfredMemory} setMemory={setAlfredMemory} personality={personality} setPersonality={setPersonality} apiKey={settings.anthropicKey ?? settings.geminiKey ?? ""} openSettings={() => setSettingsOpen(true)} toast={toast} jobs={jobs} setJobs={setJobs} estimates={estimates} setEstimates={setEstimates} customers={customers} setCustomers={setCustomers} employees={employees} automations={automations} setAutomations={setAutomations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} setWins={setWins} goals={goalsList} setGoals={setGoalsList} setSettings={setSettings} settings={settings} modelStatus={modelStatus} setModelStatus={setModelStatus} onNav={setPage} onSpotlight={queueAlfredSpotlight} expenses={expenses} setExpenses={setExpenses} chemicals={chemicals} ownerId={crmUserId} reviews={reviews} setReviews={setReviews} vehicles={vehicles} setVehicles={setVehicles} maintenance={maintenance} setMaintenance={setMaintenance} trainingModules={trainingModules} services={services} />)}
+                {/* FEATURE — "Alfred should have the context of the screen
+                    you're on... keep talking to it while looking through
+                    the CRM." AlfredPage itself is now mounted OUTSIDE this
+                    page-routing switch (see near the bottom of this
+                    component's return) so Voice Mode survives navigating
+                    to a different page — this switch remounts its whole
+                    subtree on every page change (PageFade's key={page}),
+                    which would otherwise destroy an in-progress voice
+                    session the instant the owner left this page. This
+                    placeholder is a stable portal TARGET: it sits in the
+                    exact spot (same classes) AlfredPage used to render
+                    directly into, so the hoisted instance's real chat UI
+                    portals into it and inherits the correct layout with
+                    zero changes to <main>'s own page-dependent CSS above.
+                    When not on this page, or when a manager is blocked,
+                    the portal target doesn't exist and AlfredPage's chat
+                    UI simply doesn't render anywhere (Voice Mode's own
+                    overlay/bubble portals to document.body instead, so it
+                    keeps working regardless). */}
+                {page === "alfred" && (managerBlocked("alfred") ? <RestrictedNotice label="Alfred AI" /> : <div id="alfred-mount-point" className="flex-1 min-h-0 flex flex-col" />)}
                 {page === "google"         && (managerBlocked("google") ? <RestrictedNotice label="Google Workspace" /> : <GoogleWorkspacePage settings={settings} setSettings={setSettings} googleData={googleData as any} setGoogleData={setGoogleData} customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} onNav={setPage} />)}
                 {page === "employees"      && <EmployeesPage employees={employees} setEmployees={setEmployees} jobs={jobs} setJobs={setJobs} customers={customers} settings={settings} toast={toast} autoOpenManagerInvite={autoOpenManagerInvite} onAutoOpenManagerInviteConsumed={() => setAutoOpenManagerInvite(false)} initialView={employeesInitialView} onInitialViewConsumed={() => setEmployeesInitialView(undefined)} ownerId={crmUserId} planLimits={planLimits} onUpgrade={openBillingUpgrade} highlightId={alfredHighlight?.type === "employee" ? alfredHighlight.id : null} onHighlightConsumed={() => setAlfredHighlight(null)} />}
                 {page === "hiring"         && <HiringPage settings={settings} setSettings={setSettings} toast={toast} ownerId={crmUserId} onNav={setPage} />}
@@ -5536,6 +5614,20 @@ export function App() {
             </PageFade>
           </div>
         </main>
+
+        {/* FEATURE — "keep talking to it while looking through the CRM...
+            Alfred should have the context of the screen you're on."
+            AlfredPage is now mounted HERE — outside the page-routing
+            switch above — specifically so it survives navigating to a
+            different page (that switch remounts its whole subtree via
+            PageFade's key={page} on every navigation, which would
+            otherwise kill an in-progress Voice Mode session the instant
+            the owner left the Alfred page). Its normal chat UI portals
+            into #alfred-mount-point (rendered above, inside the switch,
+            only when page==="alfred") so it still gets that exact layout
+            treatment; Voice Mode's own overlay/bubble portals straight to
+            document.body, so those keep working on every other page too. */}
+        {!managerBlocked("alfred") && <AlfredPage conversations={alfredConversations} setConversations={setAlfredConversations} activeConvId={activeConvId} setActiveConvId={setActiveConvId} memory={alfredMemory} setMemory={setAlfredMemory} personality={personality} setPersonality={setPersonality} apiKey={settings.anthropicKey ?? settings.geminiKey ?? ""} openSettings={() => setSettingsOpen(true)} toast={toast} jobs={jobs} setJobs={setJobs} estimates={estimates} setEstimates={setEstimates} customers={customers} setCustomers={setCustomers} employees={employees} automations={automations} setAutomations={setAutomations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} setWins={setWins} goals={goalsList} setGoals={setGoalsList} setSettings={setSettings} settings={settings} modelStatus={modelStatus} setModelStatus={setModelStatus} onNav={setPage} onSpotlight={queueAlfredSpotlight} expenses={expenses} setExpenses={setExpenses} chemicals={chemicals} ownerId={crmUserId} reviews={reviews} setReviews={setReviews} vehicles={vehicles} setVehicles={setVehicles} maintenance={maintenance} setMaintenance={setMaintenance} trainingModules={trainingModules} services={services} isActivePage={page === "alfred"} currentPageName={page} cursorContext={cursorContext} />}
 
         {/* Mobile bottom nav — quick access to the 4 most-used sections,
             plus Feedback (5th slot) so "report a bug / request a feature"
