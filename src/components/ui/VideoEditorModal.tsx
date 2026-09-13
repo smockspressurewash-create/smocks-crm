@@ -27,9 +27,9 @@ import { createPortal } from "react-dom";
 import { GBtn } from "./GBtn";
 import { X, Plus, Trash2, Wand2, Scissors, Type, Upload, Sparkles, RotateCw, FlipHorizontal, Captions, Crop as CropIcon, Sliders, Maximize2, Minimize2, Layers, Music as MusicIcon, ImagePlus, Volume2, VolumeX, Play, Pause, Download as DownloadIcon, ChevronUp, ChevronDown } from "lucide-react";
 import { uid, uploadJobMedia, requestDesktopNotifPermission, notifyDesktop } from "../../lib/utils";
-import { sendOwnerGmailOnly, emailShell } from "../../lib/messaging";
+import { sendOwnerGmailOnly, emailShell, emailButton } from "../../lib/messaging";
 import { sendPushNotification } from "../../lib/push";
-import { startAutoEditJob, finishAutoEditJob, failAutoEditJob, createProgressEstimator, getAutoEditJobState, clearAutoEditJob } from "../../lib/autoEditJobStore";
+import { startAutoEditJob, updateAutoEditJob, finishAutoEditJob, failAutoEditJob, createProgressEstimator, getAutoEditJobState, clearAutoEditJob } from "../../lib/autoEditJobStore";
 import { CAPTION_STYLES, CAPTION_GOOGLE_FONTS_HREF, captionStyleToCss, getCaptionStyle, TRANSITION_EFFECTS } from "../../lib/captionStyles";
 import { readVideoMeta, readImageMeta, detectSilence, renderFinalVideo, extractAudioForTranscription, cleanupFsCache, autoCutClipDeadSpace, stripFillerWordsFromClip, isFillerWord, requestTranscription, groupWordsIntoCaptionLines, fitClipsToDuration, isLocalCaptionProvider, CAPTION_PROVIDERS, ASPECT_RATIOS, ASPECT_DIMENSIONS, SOUND_EFFECTS, COLOR_LOOKS, getColorLook, AUTO_EDIT_TEMPLATES, getAutoEditTemplate, interpretStylePrompt, type AspectRatio, type CaptionProvider, type CropRect, type EditorClip, type EditorCaption, type EditorOverlay, type MusicTrack } from "../../lib/videoEditor";
 import { resolveBaseFontSize, estimateMaxCharsPerLine } from "../../lib/assCaptions";
@@ -168,8 +168,21 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
   // effect, gated on pendingWizardClips — see its own comment for why this
   // needs two effects instead of one).
   const [pendingWizardClips, setPendingWizardClips] = useState<EditorClip[] | null>(null);
+  // FEATURE — "there should be a section for already-edited videos, they
+  // shouldn't disappear... should appear in the drafts section." A
+  // wizard-driven run is fire-and-forget by design (the owner may not be
+  // watching, may have navigated away) — so unlike the manual editor's
+  // own "Run Auto-Edit" button (which correctly stops at a reviewable,
+  // still-editable state), a wizard run automatically renders the final
+  // video and saves it as a real draft when it finishes. Set true only
+  // here (wizard path) and explicitly false in startAutoEditFlow (the
+  // manual button's own click handler) so the two entry points can share
+  // the rest of this pipeline without one silently taking on the other's
+  // behavior.
+  const autoRenderOnCompleteRef = useRef(false);
   useEffect(() => {
     if (!open || !initialAutoEdit) return;
+    autoRenderOnCompleteRef.current = true;
     (async () => {
       const newClips: EditorClip[] = [];
       for (const file of initialAutoEdit.files) {
@@ -941,8 +954,36 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
     const ownerEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail;
     if (ownerEmail && (autoEditEmailOnDone || durationMs > 60_000)) {
       const minutes = Math.round(durationMs / 6000) / 10;
-      const html = emailShell(settings, "Your video is ready", `<p>Auto-Edit finished${minutes >= 1 ? ` in about ${minutes} minute${minutes === 1 ? "" : "s"}` : ""}.</p><p>${summary}</p><p>Open CrewBoss and go to Social to review it.</p>`);
+      // BUG FIX — "it should also have a clickable button showing where
+      // you can view it." Was plain text with no link at all before.
+      const viewUrl = typeof window !== "undefined" ? `${window.location.origin}/#/social` : "";
+      const html = emailShell(settings, "Your video is ready", `<p>Auto-Edit finished${minutes >= 1 ? ` in about ${minutes} minute${minutes === 1 ? "" : "s"}` : ""}.</p><p>${summary}</p>` + (viewUrl ? emailButton("View in CrewBoss", viewUrl) : `<p>Open CrewBoss and go to Social to review it.</p>`));
       sendOwnerGmailOnly(settings, ownerEmail, "Your video is ready", html).catch((e: any) => console.warn("[Auto-Edit] completion email failed:", e?.message));
+    }
+  };
+
+  // FEATURE — "there should be a section for already-edited videos, they
+  // shouldn't disappear... should appear in the drafts section." Only
+  // called for a wizard-driven run (autoRenderOnCompleteRef — see its own
+  // comment) — renders the finished cut/caption/style result the SAME way
+  // the manual "Export" button does (renderFinalVideo), then hands it to
+  // onExported(blob, true) — true = draftOnly, the exact same path the
+  // manual editor's own "save as draft" checkbox already uses, so it
+  // lands in Social → Drafts as a real, findable, still-postable video
+  // instead of only ever existing as ephemeral in-editor state.
+  const runAutoRenderAndSaveDraft = async (finalClips: EditorClip[], finalCaptions: EditorCaption[], runStartedMs: number) => {
+    updateAutoEditJob({ phaseLabel: "Rendering final video…", pct: 0, etaSec: null });
+    try {
+      const blob = await renderFinalVideo(finalClips, finalCaptions, (phase, pct) => updateAutoEditJob({ phaseLabel: phase, pct }), aspectRatio, overlays, music, cameraFlickerEnabled);
+      onExported(blob, true);
+      const summary = `Your auto-edited video was rendered and saved as a draft — ${finalClips.length} clip${finalClips.length === 1 ? "" : "s"}, ${finalCaptions.length} caption${finalCaptions.length === 1 ? "" : "s"}. Find it in Social → Drafts.`;
+      toast?.(summary, "green");
+      finishAutoEditJob({ clips: finalClips, captions: finalCaptions, aspectRatio, summary });
+      notifyAutoEditDone(summary, Date.now() - runStartedMs);
+    } catch (e: any) {
+      const msg = "Auto-edit cut/captioned successfully, but rendering the final video failed — " + (e?.message || "unknown error") + ". The edit is still open below — press Export to try again.";
+      toast?.(msg, "red");
+      failAutoEditJob(msg);
     }
   };
 
@@ -1069,20 +1110,31 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
         // result in front of them immediately instead of leaving them
         // looking at the Auto-Edit panel they just clicked from.
         setTab("clips");
-        const doneSummary = `Auto-edit done — cut down to ${styledFinalClips.length} clip${styledFinalClips.length > 1 ? "s" : ""}${fillerNote}, added ${newCaptions.length} caption${newCaptions.length === 1 ? "" : "s"}${styleNote ? ` + ${styleNote}` : ""}${promptNote}${fitNote}. Review below, edit anything, then render ✓`;
-        toast?.(doneSummary, "green");
-        finishAutoEditJob({ clips: styledFinalClips, captions: [...captions, ...newCaptions], aspectRatio, summary: doneSummary });
-        notifyAutoEditDone(doneSummary, Date.now() - runStartedMs);
+        const finalCaptionsAll = [...captions, ...newCaptions];
+        if (autoRenderOnCompleteRef.current) {
+          toast?.(`Auto-edit cut and captioned — rendering the final video now (this can take a bit) ✓`, "green");
+          await runAutoRenderAndSaveDraft(styledFinalClips, finalCaptionsAll, runStartedMs);
+        } else {
+          const doneSummary = `Auto-edit done — cut down to ${styledFinalClips.length} clip${styledFinalClips.length > 1 ? "s" : ""}${fillerNote}, added ${newCaptions.length} caption${newCaptions.length === 1 ? "" : "s"}${styleNote ? ` + ${styleNote}` : ""}${promptNote}${fitNote}. Review below, edit anything, then render ✓`;
+          toast?.(doneSummary, "green");
+          finishAutoEditJob({ clips: styledFinalClips, captions: finalCaptionsAll, aspectRatio, summary: doneSummary });
+          notifyAutoEditDone(doneSummary, Date.now() - runStartedMs);
+        }
       } else {
         const styledCutClips = applyAutoStyling(cutClips, effective);
         setClips(styledCutClips);
         setActiveClipId(styledCutClips[0]?.id || null);
         setTab("clips");
-        const captionCaveat = effective.skipCaptions ? "(skipped captions, per your description)" : "Add a captions API key to also auto-generate captions, or add them manually below";
-        const doneSummary = `Auto-edit done — cut down to ${styledCutClips.length} clip${styledCutClips.length > 1 ? "s" : ""}${styleNote ? ` + ${styleNote}` : ""}${promptNote}${fitNote}. ${captionCaveat} ✓`;
-        toast?.(doneSummary, "green");
-        finishAutoEditJob({ clips: styledCutClips, captions, aspectRatio, summary: doneSummary });
-        notifyAutoEditDone(doneSummary, Date.now() - runStartedMs);
+        if (autoRenderOnCompleteRef.current) {
+          toast?.(`Auto-edit cut successfully — rendering the final video now (this can take a bit) ✓`, "green");
+          await runAutoRenderAndSaveDraft(styledCutClips, captions, runStartedMs);
+        } else {
+          const captionCaveat = effective.skipCaptions ? "(skipped captions, per your description)" : "Add a captions API key to also auto-generate captions, or add them manually below";
+          const doneSummary = `Auto-edit done — cut down to ${styledCutClips.length} clip${styledCutClips.length > 1 ? "s" : ""}${styleNote ? ` + ${styleNote}` : ""}${promptNote}${fitNote}. ${captionCaveat} ✓`;
+          toast?.(doneSummary, "green");
+          finishAutoEditJob({ clips: styledCutClips, captions, aspectRatio, summary: doneSummary });
+          notifyAutoEditDone(doneSummary, Date.now() - runStartedMs);
+        }
       }
     } catch (e: any) {
       toast?.("Auto-edit failed — " + (e?.message || "unknown error"), "red");
@@ -1099,6 +1151,10 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
   // copy, only applied to the real timeline once confirmed.
   const startAutoEditFlow = () => {
     if (clips.length === 0) { toast?.("Add at least one clip first", "red"); return; }
+    // Manual button click, inside the full editor — stop at a reviewable
+    // state as before, never auto-render (see autoRenderOnCompleteRef's
+    // own comment for why the wizard path differs).
+    autoRenderOnCompleteRef.current = false;
     if (clips.length > 1) {
       setOrderDraft(clips.slice());
       setOrderConfirmOpen(true);

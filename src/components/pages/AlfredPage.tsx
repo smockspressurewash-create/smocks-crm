@@ -13,7 +13,7 @@ import {
   Globe, Share2, Trophy, ExternalLink, Workflow, ToggleLeft, ToggleRight,
   Navigation, TrendingDown, PieChart as PieIcon, Package, Wrench,
   CheckSquare, Route, Users2, Layers, ArrowRight, BarChart2, Filter,
-  Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User, Sparkles, PhoneOff, Pause, MicOff
+  Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User, Sparkles, PhoneOff, Pause, MicOff, ChevronDown
 } from "lucide-react";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
@@ -121,14 +121,31 @@ const loadSpeechVoices = (): Promise<SpeechSynthesisVoice[]> => {
   });
   return cachedVoicesPromise;
 };
+// BUG FIX — "it's a female British voice, I want a male British voice."
+// Two real bugs: (1) /google/i was checked BEFORE any gender check, so
+// whichever Google voice happened to exist won regardless of gender — on
+// a system whose only Google en-GB voice is "Google UK English Female,"
+// that's exactly what got picked. (2) /male/i.test("Google UK English
+// Female") is ALSO true — "male" is literally a substring of "female" —
+// so even the gender check itself could misfire on a female voice name.
+// Fixed by checking "female" first (real exclusion) and only then
+// matching "male"/known-male voice names, with a preference for a
+// voice whose name suggests higher quality ("natural"/"neural" — some
+// Windows 11 OneCore voices are explicitly labeled this way) since that
+// also helps with "make it sound less robotic."
 const selectBritishVoice = async (): Promise<SpeechSynthesisVoice | null> => {
   const voices = await loadSpeechVoices();
   const enGB = voices.filter(v => v.lang?.toLowerCase().startsWith("en-gb"));
   if (enGB.length === 0) return null;
-  // Prefer an actual Google network voice when present, then a named male
-  // UK voice (the "old butler" register), else whichever en-GB voice exists.
-  return enGB.find(v => /google/i.test(v.name))
-    || enGB.find(v => /male|ryan|george|daniel/i.test(v.name))
+  const isFemale = (name: string) => /female/i.test(name);
+  const isMale = (name: string) => !isFemale(name) && /\bmale\b|ryan|george|daniel|arthur|oliver|thomas/i.test(name);
+  const isNatural = (name: string) => /natural|neural/i.test(name);
+  const isGoogle = (name: string) => /google/i.test(name);
+  return enGB.find(v => isMale(v.name) && isNatural(v.name))
+    || enGB.find(v => isMale(v.name) && isGoogle(v.name))
+    || enGB.find(v => isMale(v.name))
+    || enGB.find(v => isGoogle(v.name) && !isFemale(v.name))
+    || enGB.find(v => !isFemale(v.name))
     || enGB[0];
 };
 
@@ -162,6 +179,14 @@ const speakAloud = (text: string, elevenlabsKey?: string): Promise<void> => new 
   const utterance = new SpeechSynthesisUtterance(ttsText);
   const britishVoice = await selectBritishVoice();
   if (britishVoice) utterance.voice = britishVoice;
+  // BUG FIX — "make it sound less robotic." A flat rate=1/pitch=1 default
+  // is part of what reads as robotic on a synthetic voice — a touch
+  // slower and a hair lower reads noticeably more natural/measured (and
+  // suits an "old butler" register besides). Real, honest limit: this is
+  // still the browser's built-in engine, not a neural TTS model — these
+  // are the actual knobs it exposes, not a full fix for synthetic speech.
+  utterance.rate = 0.94;
+  utterance.pitch = 0.92;
   utterance.onend = () => resolve();
   utterance.onerror = () => resolve();
   window.speechSynthesis.speak(utterance);
@@ -286,6 +311,18 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   const [voiceMuted, setVoiceMuted] = useState(false);
   const voiceMutedRef = useRef(false);
   const interruptRecognitionRef = useRef<any>(null);
+  // FEATURE — "very smooth animation where it pops up" + "minimizable so
+  // you can keep talking to it while looking through the CRM." mounted
+  // drives the entrance/exit transition (same pattern Modal.tsx uses —
+  // mount first, THEN flip visible a tick later so the transition
+  // actually animates instead of snapping straight to its end state).
+  // voiceModeMinimized collapses the full overlay to a small bubble while
+  // the conversation keeps running underneath — scoped to this page for
+  // now (see the minimize button's own comment for what's deliberately
+  // NOT built yet: dragging it around, and it following you to other
+  // CRM pages).
+  const [voiceModeMounted, setVoiceModeMounted] = useState(false);
+  const [voiceModeMinimized, setVoiceModeMinimized] = useState(false);
   // Safety net — stop the mic/speech if this whole page unmounts (owner
   // navigates to a different CRM page) while Voice Mode is still open,
   // rather than leaving a live microphone/recognizer running unseen.
@@ -4567,6 +4604,13 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     voiceModeKeepGoingRef.current = true;
     setVoiceMuted(false);
     voiceMutedRef.current = false;
+    setVoiceModeMinimized(false);
+    // Entrance transition — mount first (0 opacity/scale via
+    // voiceModeMounted starting false), then flip visible a tick later so
+    // the browser actually animates the change instead of snapping
+    // straight to it (same two-step pattern Modal.tsx uses).
+    setVoiceModeMounted(false);
+    setTimeout(() => setVoiceModeMounted(true), 20);
     selectBritishVoice().then(v => {
       if (!v) toast("No British voice found on this device — Alfred will still talk, just in your system's default voice.", "yellow");
     });
@@ -4580,7 +4624,9 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     try { voiceModeRecognitionRef.current?.stop(); } catch { /* already stopped */ }
     try { interruptRecognitionRef.current?.stop(); } catch { /* already stopped */ }
     if (typeof window !== "undefined" && window.speechSynthesis) window.speechSynthesis.cancel();
-    setVoiceModeOpen(false);
+    setVoiceModeMounted(false);
+    setVoiceModeMinimized(false);
+    setTimeout(() => setVoiceModeOpen(false), 250); // let the exit transition finish before unmounting
   };
 
   const onInputChange = e => {
@@ -4714,14 +4760,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             <span className="flex-1 text-left">Memory</span>
             <span className="text-[10px] text-white/40">{memory.length}</span>
           </button>
-          {/* FEATURE — "a real continuous hands-free conversation loop...
-              like ChatGPT's voice mode." Opens the full-screen overlay
-              below — continuous listen/reply/speak, no manual send. */}
-          <button onClick={openVoiceMode} className="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg hover:bg-white/5 text-xs text-white/70 hover:text-white transition">
-            <div className="p-1.5 rounded bg-purple-900/30"><Mic size={11} className="text-purple-400" /></div>
-            <span className="flex-1 text-left">Voice Mode</span>
-            <span className="text-[9px] text-white/30">free, hands-free</span>
-          </button>
+          {/* BUG FIX — "I don't know why [Voice Mode] is on that sidebar,
+              it shouldn't be there." Moved to a real red mic button right
+              in the message input row (next to Send) — a whole hands-free
+              conversation belongs where you'd normally start talking to
+              Alfred, not tucked in this small utility list. */}
           {/* FEATURE — "you need a toggle for whether Alfred talks back."
               Reads Alfred's reply aloud via ElevenLabs (if a key's set in
               Settings → AI Models) or the browser's free built-in voice
@@ -5079,6 +5122,21 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
                 onTranscript={(text, autoSend) => { if (autoSend) send(text); else setInput(prev => prev + (prev ? " " : "") + text); }}
                 apiKey={settings?.openAiKey || settings?.openaiKey || ""}
               />
+              {/* BUG FIX — "I'm not seeing a section to have back-and-forth
+                  conversations... it shouldn't be [buried at the bottom of
+                  the personality sidebar]." Voice Mode is a whole
+                  hands-free conversation, not a small utility toggle — it
+                  belongs next to how you'd normally start talking to
+                  Alfred, not tucked under Memory/Voice Replies. Still
+                  reachable from the sidebar too (harmless), but this is
+                  now the real, discoverable entry point. */}
+              <button
+                onClick={openVoiceMode}
+                title="Talk to Alfred hands-free"
+                className="flex-shrink-0 p-2.5 rounded-xl bg-gradient-to-br from-red-600 to-red-800 text-white hover:scale-105 transition"
+              >
+                <Mic size={16} />
+              </button>
               <textarea
                 ref={inputRef}
                 rows={1}
@@ -5185,19 +5243,34 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           meant to be used instead of looking at the screen, same reasoning
           a phone call UI is full-screen. Orb color/motion communicates
           state (listening/thinking/speaking) since there's often nothing
-          else to look at while using this hands-free. */}
-      {voiceModeOpen && (
-        <div className="fixed inset-0 z-[400] bg-gradient-to-b from-black via-purple-950/30 to-black flex flex-col items-center justify-center px-6">
-          <div className="absolute top-6 left-1/2 -translate-x-1/2 text-center">
+          else to look at while using this hands-free.
+          BUG FIX — "the pop-up is slightly clear, so I can't see the full
+          thing." The old backdrop was a gradient with a 30%-opacity
+          middle stop (via-purple-950/30) directly AS the background —
+          that's a genuinely see-through band the CRM page behind could
+          bleed through. Backdrop is now fully opaque (bg-black); the
+          purple tint is a separate decorative glow layered ON TOP instead
+          of being part of the opacity-bearing background itself. */}
+      {voiceModeOpen && !voiceModeMinimized && (
+        <div className={"fixed inset-0 z-[400] bg-black flex flex-col items-center justify-center px-6 transition-opacity duration-300 " + (voiceModeMounted ? "opacity-100" : "opacity-0")}>
+          <div className="absolute inset-0 pointer-events-none overflow-hidden">
+            <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-[32rem] h-[32rem] rounded-full bg-red-700/10 blur-3xl" />
+          </div>
+
+          <div className={"absolute top-6 left-1/2 -translate-x-1/2 text-center transition-all duration-300 " + (voiceModeMounted ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-2")}>
+            {/* FEATURE — "a red logo for Alfred." */}
+            <div className="w-11 h-11 mx-auto mb-2 rounded-2xl bg-gradient-to-br from-red-600 to-red-800 flex items-center justify-center shadow-lg shadow-red-950/50">
+              <Bot size={22} className="text-white" />
+            </div>
             <div className="text-xs font-semibold text-white/50 uppercase tracking-widest">Alfred — Voice Mode</div>
             <div className="text-[10px] text-white/30 mt-0.5">{getPersonality(active?.personality || personality).name} · free browser voice{voiceMuted ? " · muted" : ""}</div>
           </div>
 
-          <div className="relative flex items-center justify-center mb-10">
+          <div className={"relative flex items-center justify-center mb-8 transition-all duration-500 " + (voiceModeMounted ? "opacity-100 scale-100" : "opacity-0 scale-75")}>
             <div
               className={
-                "w-40 h-40 md:w-52 md:h-52 rounded-full transition-all duration-500 " +
-                (voiceModeState === "listening" ? "bg-purple-600/30 animate-pulse-ring" :
+                "w-36 h-36 md:w-44 md:h-44 rounded-full transition-all duration-500 " +
+                (voiceModeState === "listening" ? "bg-red-600/30 animate-pulse-ring" :
                  voiceModeState === "thinking" ? "bg-amber-500/25" :
                  voiceModeState === "paused" ? "bg-orange-500/20" :
                  "bg-green-500/25 animate-pulse-ring")
@@ -5205,39 +5278,52 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             />
             <div
               className={
-                "absolute w-24 h-24 md:w-32 md:h-32 rounded-full flex items-center justify-center transition-all duration-300 " +
-                (voiceModeState === "listening" ? "bg-purple-600/60 scale-100" :
+                "absolute rounded-full flex items-center justify-center transition-all duration-300 " +
+                (voiceModeState === "listening" ? "bg-red-600/60 scale-100" :
                  voiceModeState === "thinking" ? "bg-amber-500/50 scale-90" :
                  voiceModeState === "paused" ? "bg-orange-500/50 scale-95" :
                  "bg-green-500/60 scale-105")
               }
+              style={{ width: "6.5rem", height: "6.5rem" }}
             >
               {voiceModeState === "thinking" ? (
-                <div className="w-8 h-8 border-[3px] border-white/30 border-t-white rounded-full animate-spin" />
+                <div className="w-7 h-7 border-[3px] border-white/30 border-t-white rounded-full animate-spin" />
               ) : voiceModeState === "paused" ? (
-                <Pause size={30} className="text-white" />
+                <Pause size={28} className="text-white" />
               ) : voiceModeState === "speaking" ? (
                 // FEATURE — "add an animation when Alfred is talking." A
                 // decorative staggered bar bounce, not literally synced to
                 // the speech audio's amplitude (speechSynthesis doesn't
                 // expose that) — same honest limit as most voice-assistant
                 // "talking" indicators.
-                <div className="flex items-end gap-1 h-8">
+                <div className="flex items-end gap-1 h-7">
                   {[0, 1, 2, 3, 4].map(i => (
                     <div key={i} className="w-1.5 bg-white rounded-full animate-speaking-bar" style={{ height: "100%", animationDelay: `${i * 0.12}s` }} />
                   ))}
                 </div>
               ) : (
-                <Mic size={32} className="text-white" />
+                <Mic size={28} className="text-white" />
               )}
             </div>
           </div>
 
-          <div className="text-sm font-semibold text-white/80 mb-2">
+          <div className="text-sm font-semibold text-white/80 mb-3">
             {voiceMuted ? "Muted" : voiceModeState === "listening" ? "Listening…" : voiceModeState === "thinking" ? "Thinking…" : voiceModeState === "paused" ? "Paused — say \"resume\" or a new request" : "Speaking…"}
           </div>
-          <div className="text-xs text-white/40 text-center max-w-sm min-h-[2.5rem]">
-            {(voiceModeState === "listening" || voiceModeState === "paused") ? (voiceModeTranscript || (voiceModeState === "paused" ? "Go ahead…" : "Say something — Alfred's listening.")) : ""}
+
+          {/* FEATURE — "you can see both the text you say and the text it
+              says." Reuses the SAME conversation messages send() already
+              appends every turn to (voice and text chat share one
+              history) — no separate transcript to keep in sync. */}
+          <div className="w-full max-w-md flex-1 min-h-0 max-h-[40vh] overflow-y-auto space-y-2 px-1 py-2">
+            {(active?.messages || []).slice(-8).map((m: any) => (
+              <div key={m.id} className={"text-xs rounded-xl px-3 py-2 max-w-[85%] " + (m.role === "user" ? "ml-auto bg-red-950/40 text-red-100" : "mr-auto bg-white/5 text-white/70")}>
+                {m.content}
+              </div>
+            ))}
+            {(voiceModeState === "listening" || voiceModeState === "paused") && voiceModeTranscript && (
+              <div className="ml-auto text-xs rounded-xl px-3 py-2 max-w-[85%] bg-red-950/20 text-red-100/60 italic">{voiceModeTranscript}…</div>
+            )}
           </div>
 
           {/* FEATURE — "interrupt Alfred's sentence, tell it to resume...
@@ -5245,13 +5331,30 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               controls alongside the verbal barge-in above — useful
               whenever the automatic listener doesn't catch a soft
               interruption (open speakers, background noise). */}
-          <div className="absolute bottom-10 flex items-center gap-3">
+          <div className="flex items-center gap-3 pt-4 pb-2">
             <button
               onClick={toggleVoiceMute}
               title={voiceMuted ? "Unmute microphone" : "Mute microphone"}
               className={"w-12 h-12 rounded-full flex items-center justify-center border transition " + (voiceMuted ? "bg-red-950/60 border-red-700/60 text-red-300" : "bg-white/5 border-white/15 text-white/60 hover:text-white hover:border-white/30")}
             >
               {voiceMuted ? <MicOff size={18} /> : <Mic size={18} />}
+            </button>
+            {/* FEATURE — "should be minimizable so you can keep talking to
+                it while looking through the CRM." Collapses to a small
+                bubble (see below) without ending the call — the
+                conversation loop keeps running exactly as-is underneath.
+                NOTE — deliberately scoped to this page for now: it does
+                NOT yet float across other CRM pages, isn't draggable, and
+                has no right-click-to-end gesture — those are a real,
+                bigger follow-up (would need lifting this whole feature to
+                an app-wide layer, the same kind of change Auto-Edit's
+                background job status got), flagged rather than rushed. */}
+            <button
+              onClick={() => setVoiceModeMinimized(true)}
+              title="Minimize — keep talking while you look around"
+              className="w-12 h-12 rounded-full flex items-center justify-center border border-white/15 bg-white/5 text-white/60 hover:text-white hover:border-white/30 transition"
+            >
+              <ChevronDown size={20} />
             </button>
             <button
               onClick={closeVoiceMode}
@@ -5270,6 +5373,30 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             )}
           </div>
         </div>
+      )}
+
+      {/* Minimized bubble — the conversation (listening/thinking/speaking,
+          barge-in, everything) keeps running exactly as before; this is
+          purely a visual collapse. Click to reopen the full overlay,
+          the small X ends the call directly without reopening it first. */}
+      {voiceModeOpen && voiceModeMinimized && (
+        <button
+          onClick={() => setVoiceModeMinimized(false)}
+          title="Reopen Voice Mode"
+          className="fixed bottom-6 right-6 z-[400] w-16 h-16 rounded-full bg-gradient-to-br from-red-600 to-red-800 shadow-2xl shadow-red-950/60 flex items-center justify-center animate-fade-in"
+        >
+          <div className={"absolute inset-0 rounded-full " + (voiceModeState === "listening" || voiceModeState === "speaking" ? "animate-pulse-ring" : "")} />
+          {voiceModeState === "thinking"
+            ? <div className="w-5 h-5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+            : <Bot size={24} className="text-white" />}
+          <span
+            onClick={e => { e.stopPropagation(); closeVoiceMode(); }}
+            title="End conversation"
+            className="absolute -top-1.5 -right-1.5 w-6 h-6 rounded-full bg-black border border-white/20 flex items-center justify-center text-white/60 hover:text-white"
+          >
+            <X size={12} />
+          </span>
+        </button>
       )}
     </div>
   );

@@ -46,7 +46,7 @@ import { AddressAutocomplete } from "../ui/AddressAutocomplete";
 import { BeforeAfterSlider } from "../ui/BeforeAfterSlider";
 import { VideoEditorModal } from "../ui/VideoEditorModal";
 import { AutoEditWizardModal, type AutoEditWizardResult } from "../ui/AutoEditWizardModal";
-import { useAutoEditJob } from "../../lib/autoEditJobStore";
+import { useAutoEditJob, clearAutoEditJob } from "../../lib/autoEditJobStore";
 import { CustomerModal } from "../ui/CustomerModal";
 import { CustomerDetail } from "../ui/CustomerDetail";
 import { CustomerAnalytics } from "../ui/CustomerAnalytics";
@@ -565,8 +565,14 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
           modal was closed (or this whole page was navigated away from
           and back to) partway through — the run itself keeps going
           either way, this just shows/recovers where it's at. */}
-      {(autoEditJob.running || autoEditJob.result) && (
-        <Glass className={"p-3.5 !border " + (autoEditJob.running ? "!bg-purple-950/20 !border-purple-700/30" : "!bg-green-950/20 !border-green-700/30")}>
+      {/* BUG FIX — "doesn't show when it finishes." A failed run (running:
+          false, result:null, error set) rendered NOTHING here before —
+          the only feedback was a toast that auto-dismisses in a few
+          seconds, easy to miss if the owner wasn't looking right then.
+          Now a failure gets its own persistent banner too, same as a
+          finished run does, until explicitly dismissed. */}
+      {(autoEditJob.running || autoEditJob.result || autoEditJob.error) && (
+        <Glass className={"p-3.5 !border " + (autoEditJob.running ? "!bg-purple-950/20 !border-purple-700/30" : autoEditJob.error ? "!bg-red-950/20 !border-red-700/30" : "!bg-green-950/20 !border-green-700/30")}>
           {autoEditJob.running ? (
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 rounded-full border-2 border-purple-500/30 border-t-purple-400 animate-spin flex-shrink-0" />
@@ -580,6 +586,15 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
                 {autoEditJob.pct}%
                 {autoEditJob.etaSec !== null && autoEditJob.etaSec > 0 && <div>~{formatEtaSec(autoEditJob.etaSec)} left</div>}
               </div>
+            </div>
+          ) : autoEditJob.error ? (
+            <div className="flex items-center gap-3">
+              <AlertTriangle size={22} className="text-red-400 flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="text-xs font-semibold text-red-200">Auto-edit failed</div>
+                <div className="text-[10px] text-white/40 truncate">{autoEditJob.error}</div>
+              </div>
+              <button onClick={() => clearAutoEditJob()} className="text-[10px] text-white/40 hover:text-white flex-shrink-0 px-2 py-1">Dismiss</button>
             </div>
           ) : (
             <button onClick={() => setVideoEditorOpen(true)} className="w-full flex items-center gap-3 text-left">

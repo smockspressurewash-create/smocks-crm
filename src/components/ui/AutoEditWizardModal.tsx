@@ -44,7 +44,16 @@ export function AutoEditWizardModal({ open, onClose, onComplete, toast }: {
 }) {
   const [step, setStep] = useState(0);
   const [templateId, setTemplateId] = useState<string | null>(null);
-  const [targetDurationSec, setTargetDurationSec] = useState<number | null>(30);
+  // BUG FIX — "auto edit is broken... finishes way too fast and doesn't
+  // even do it right." Root cause: this defaulted to 30s, and
+  // fitClipsToDuration (videoEditor.ts) hard-trims everything past 2x the
+  // target off the END of the timeline once speed-up alone can't fit it —
+  // for any footage over ~60s (an easy amount to upload without noticing
+  // this question), the vast majority of it was silently discarded, sped
+  // up 2x, and the rest thrown away. Defaulting to "No limit" (matches
+  // the manual editor panel's own default) means duration is never
+  // touched unless the owner deliberately picks a length.
+  const [targetDurationSec, setTargetDurationSec] = useState<number | null>(null);
   // FEATURE — "press Custom and type the number of seconds." isCustomLength
   // tracks whether the Custom button itself is the active selection
   // (separate from targetDurationSec, since typing "30" into Custom must
@@ -63,7 +72,7 @@ export function AutoEditWizardModal({ open, onClose, onComplete, toast }: {
   const musicInputRef = useRef<HTMLInputElement>(null);
 
   const reset = () => {
-    setStep(0); setTemplateId(null); setTargetDurationSec(30); setIsCustomLength(false);
+    setStep(0); setTemplateId(null); setTargetDurationSec(null); setIsCustomLength(false);
     setCustomLengthInput(""); setFiles([]); setMusicFile(null); setStylePrompt(""); setEmailOnDone(false);
   };
 
