@@ -22,8 +22,8 @@ import {
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, uploadJobMedia, makeMediaThumbnail, deleteJobMediaByUrl } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
-import { twilioSend, sendEmail, postToBuffer, fetchBufferPostAnalytics } from "../../lib/messaging";
-import { postToFacebookPage } from "../../lib/socialOAuth";
+import { twilioSend, sendEmail, fetchBufferPostAnalytics } from "../../lib/messaging";
+import { PLATFORM_META, publishOnePlatform } from "../../lib/socialPublish";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -278,11 +278,7 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
   // listing them as postable was misleading. LinkedIn is removed per
   // explicit request (its OAuth connect flow in Settings → Integrations →
   // Social is removed too).
-  const platformMeta = {
-    instagram: { color: "from-pink-600 to-purple-700", icon: "📸", limit: 2200, label: "Instagram" },
-    facebook: { color: "from-blue-600 to-blue-800", icon: "👥", limit: 63206, label: "Facebook" },
-    tiktok: { color: "from-black to-neutral-900", icon: "🎵", limit: 2200, label: "TikTok" },
-  };
+  const platformMeta = PLATFORM_META;
 
   // Personalization — mirrors the {{token}} pattern used for SMS/email merge
   // fields elsewhere (see useScheduledCampaigns.ts's `merge`), so a caption
@@ -344,55 +340,6 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
     }
   };
 
-  // Fires the actual send for one platform: Buffer first (also handles real
-  // scheduling via dueAt when scheduledAt is passed), then a direct platform
-  // token (Facebook/LinkedIn), then Instagram/TikTok app bridges, then a
-  // generic Web Share/clipboard fallback so every platform — not just
-  // Instagram/TikTok — gets a real action instead of a no-op "Published" toast.
-  const publishOnePlatform = async (platform: string, caption: string, scheduledAt?: Date, mediaUrl?: string | null, mediaType?: "image" | "video"): Promise<{ bufferPostId?: string; method: string }> => {
-    if (settings.bufferApiKey && settings.bufferChannelIds?.[platform]) {
-      const bufferPostId = await postToBuffer(settings, platform, caption, scheduledAt, mediaUrl || undefined, mediaType);
-      toast(`${scheduledAt ? "Scheduled" : "Posted"} to ${platformMeta[platform]?.label || platform} via Buffer ✓`, "green");
-      return { bufferPostId: bufferPostId || undefined, method: "buffer" };
-    }
-    if (scheduledAt) {
-      // No Buffer channel connected for this platform — nothing can actually
-      // hold a future publish time on its own, so this becomes a local
-      // reminder the owner fires manually from the Scheduled tab.
-      toast(`No Buffer channel connected for ${platformMeta[platform]?.label || platform} — saved as a reminder, publish it manually when it's time`, "yellow");
-      return { method: "local-reminder" };
-    }
-    if (platform === "facebook" && (settings as any).metaAccessToken && (settings as any).metaPageId) {
-      await postToFacebookPage((settings as any).metaAccessToken, (settings as any).metaPageId, caption);
-      toast("Posted to Facebook ✓", "green");
-      return { method: "meta" };
-    }
-    if (platform === "instagram" && settings.instaBridge) {
-      navigator.clipboard?.writeText(caption).catch(() => {});
-      window.location.href = "instagram://library?AssetPath=";
-      setTimeout(() => window.open("https://www.instagram.com/", "_blank"), 1500);
-      toast("Caption copied! Instagram opening — paste and post 📸");
-      return { method: "manual" };
-    }
-    if (platform === "tiktok") {
-      navigator.clipboard?.writeText(caption).catch(() => {});
-      window.open("tiktok://", "_blank");
-      setTimeout(() => window.open("https://www.tiktok.com/upload", "_blank"), 1500);
-      toast("Caption copied! TikTok opening — paste and upload 🎵");
-      return { method: "manual" };
-    }
-    if (navigator.share) {
-      try {
-        await navigator.share({ title: settings.companyName || "Crew Boss", text: caption, url: "https://smocks.com" });
-        toast(`Share sheet opened for ${platformMeta[platform]?.label || platform} ✓`);
-        return { method: "manual" };
-      } catch { /* cancelled — still copy below so the owner has the caption */ }
-    }
-    navigator.clipboard?.writeText(caption).catch(() => {});
-    toast(`Caption copied! Open ${platformMeta[platform]?.label || platform} and paste 📋`);
-    return { method: "manual" };
-  };
-
   // FEATURE — "once published, don't keep full videos/photos in backend
   // storage, just a small preview." Runs once a post is confirmed
   // published: swaps its mediaUrl for a small generated thumbnail, deletes
@@ -429,7 +376,7 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
     let anyFailed = false;
     for (const platform of f.platforms) {
       try {
-        const result = await publishOnePlatform(platform, fullCaption, scheduledAt, f._photoUrl, (f as any)._mediaType || "image");
+        const result = await publishOnePlatform(settings, toast, platform, fullCaption, scheduledAt, f._photoUrl, (f as any)._mediaType || "image");
         created.push({
           id: uid(), platform, type: f.type, caption: fullCaption, hashtags: f.hashtags, _imageData: f._imageData,
           mediaUrl: f._photoUrl || undefined, mediaType: (f as any)._mediaType || undefined,
@@ -468,7 +415,7 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
     const post = posts.find((p: any) => p.id === id);
     if (!post) return;
     try {
-      const result = await publishOnePlatform(post.platform, post.caption, undefined);
+      const result = await publishOnePlatform(settings, toast, post.platform, post.caption, undefined);
       setPosts((prev: any[]) => prev.map(p => p.id === id ? { ...p, status: "published", publishedAt: today(), bufferPostId: result.bufferPostId || p.bufferPostId, postMethod: result.method } : p));
       cleanupPublishedMedia(id, post.mediaUrl, post.mediaType);
     } catch (e: any) {

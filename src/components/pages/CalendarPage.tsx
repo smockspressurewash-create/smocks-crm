@@ -21,7 +21,8 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, uploadJobMedia, makeMediaThumbnail } from "../../lib/utils";
+import { PLATFORM_META, publishOnePlatform } from "../../lib/socialPublish";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, logOutboundSmsToInbox, emailShell, emailButton } from "../../lib/messaging";
 import { sendPushNotification } from "../../lib/push";
@@ -81,7 +82,9 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [], toast, settings = {} as AppSettings, setSettings, ownerId = "" }: { jobs?: any[]; setJobs?: any; customers?: any[]; employees?: any[]; toast?: any; settings?: AppSettings; setSettings?: any; ownerId?: string }) {
+const CALENDAR_SOCIAL_HASHTAGS_DEFAULT = "#pressurewashing #softwash #yorkpa #homeimprovement #curb appeal";
+
+export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [], toast, settings = {} as AppSettings, setSettings, ownerId = "", posts = [], setPosts }: { jobs?: any[]; setJobs?: any; customers?: any[]; employees?: any[]; toast?: any; settings?: AppSettings; setSettings?: any; ownerId?: string; posts?: any[]; setPosts?: any }) {
   // BUG FIX — "the calendar should open to month view by default; it
   // shouldn't open to agenda." This used to default to agenda on any
   // narrow/mobile viewport — always start on month now, on every device.
@@ -300,6 +303,74 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
 
   // Jobs without a scheduled date (for the "unscheduled" pool)
   const unscheduled = jobs.filter(j => !j.scheduledDate && j.status !== "completed" && j.status !== "cancelled");
+
+  // FEATURE — "if I go to the calendar, it should show non-scheduled or
+  // ready-to-schedule videos that have finished editing, and I should be
+  // able to drag them onto the calendar and be asked 'Are you sure you want
+  // to schedule that day?' ... it then asks a few questions, such as
+  // whether I have captions or have chosen a cover photo. It then asks me
+  // to confirm which platforms to post on, and then it posts the video."
+  // draftVideos = finished Auto/Video-Edit renders saved as a draft (see
+  // SocialPage.tsx's onVideoExported draftOnly path) that haven't been
+  // scheduled or published yet.
+  const draftVideos = posts.filter((p: any) => p.status === "draft" && p.mediaType === "video");
+  const [dragPostId, setDragPostId] = useState<string | null>(null);
+  const [postFlow, setPostFlow] = useState<{
+    postId: string; date: string; step: "confirm" | "caption" | "cover" | "platforms";
+    caption: string; platforms: string[]; useCoverThumb: boolean; busy: boolean;
+  } | null>(null);
+
+  const openPostScheduleFlow = (postId: string, date: string) => {
+    const p = posts.find((x: any) => x.id === postId);
+    if (!p) return;
+    setPostFlow({ postId, date, step: "confirm", caption: p.caption || "", platforms: [], useCoverThumb: true, busy: false });
+  };
+  const handlePostDrop = (targetKey: string) => {
+    const pid = dragPostId;
+    setDragPostId(null);
+    if (!pid) return;
+    openPostScheduleFlow(pid, targetKey);
+  };
+  const togglePostFlowPlatform = (platform: string) => {
+    setPostFlow(f => f ? { ...f, platforms: f.platforms.includes(platform) ? f.platforms.filter(p => p !== platform) : [...f.platforms, platform] } : f);
+  };
+  const finalizePostSchedule = async () => {
+    if (!postFlow || postFlow.platforms.length === 0) return;
+    const { postId, date, caption, platforms, useCoverThumb } = postFlow;
+    const draft = posts.find((p: any) => p.id === postId);
+    if (!draft) { setPostFlow(null); return; }
+    setPostFlow(f => f ? { ...f, busy: true } : f);
+    let coverPhotoUrl: string | undefined;
+    if (useCoverThumb && draft.mediaUrl) {
+      try {
+        const thumbBlob = await makeMediaThumbnail(draft.mediaUrl, "video");
+        if (thumbBlob) coverPhotoUrl = (await uploadJobMedia(thumbBlob, `social/covers/${uid()}.jpg`, "image/jpeg")) || undefined;
+      } catch { /* best-effort — post still goes out without a cover if this fails */ }
+    }
+    const fullCaption = caption + "\n\n" + CALENDAR_SOCIAL_HASHTAGS_DEFAULT;
+    const scheduledAt = new Date(`${date}T09:00:00`);
+    const created: any[] = [];
+    let anyFailed = false;
+    for (const platform of platforms) {
+      try {
+        const result = await publishOnePlatform(settings, toast, platform, fullCaption, scheduledAt, draft.mediaUrl, "video");
+        created.push({
+          id: uid(), platform, type: "video", caption: fullCaption, mediaUrl: draft.mediaUrl, mediaType: "video",
+          coverPhotoUrl, status: "scheduled", scheduledFor: date, scheduledTime: "09:00",
+          likes: 0, shares: 0, comments: 0, reach: 0,
+          bufferPostId: result.bufferPostId, postMethod: result.method,
+        });
+      } catch (e: any) {
+        anyFailed = true;
+        toast?.(`Failed to schedule for ${PLATFORM_META[platform]?.label || platform}: ${e?.message || "unknown error"}`, "red");
+      }
+    }
+    if (created.length > 0) {
+      setPosts((prev: any[]) => [...created, ...prev.filter((p: any) => p.id !== postId)]);
+      toast?.(`Video scheduled for ${date} on ${created.length} platform${created.length > 1 ? "s" : ""} ✓`, anyFailed ? "yellow" : "green");
+    }
+    setPostFlow(null);
+  };
 
   const handleDrop = async (targetKey, jobIdOverride?: string) => {
     // jobIdOverride lets the touch-drag path (below) pass the job id directly —
@@ -644,7 +715,7 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
               const cellBg = isT ? "bg-red-950/30 border-red-700/50" : hasInProgress ? "bg-orange-950/20 border-orange-700/30" : hasCompleted && dj.every(j => j.status === "completed") ? "bg-green-950/20 border-green-800/30" : hasUrgent ? "bg-red-950/20 border-red-700/40" : dj.length > 0 ? "bg-blue-950/10 border-blue-900/20" : gd.length > 0 ? "bg-blue-950/10 border-blue-900/20" : "bg-white/5 border-white/5 hover:border-red-900/30";
               const isTouchDragOver = touchDragOverKey === k;
               return (
-                <div key={d} data-daykey={k} onDragOver={e => e.preventDefault()} onDrop={() => handleDrop(k)} onClick={() => reschedulingId && pickRescheduleDay(k)} className={"min-h-[84px] p-1.5 rounded-lg border transition-all " + cellBg + (isTouchDragOver ? " !border-red-500 !bg-red-950/40 scale-[1.03]" : "") + (reschedulingId ? " cursor-pointer hover:!border-blue-500 hover:!bg-blue-950/30" : "")}>
+                <div key={d} data-daykey={k} onDragOver={e => e.preventDefault()} onDrop={() => dragPostId ? handlePostDrop(k) : handleDrop(k)} onClick={() => reschedulingId && pickRescheduleDay(k)} className={"min-h-[84px] p-1.5 rounded-lg border transition-all " + cellBg + (isTouchDragOver ? " !border-red-500 !bg-red-950/40 scale-[1.03]" : "") + (reschedulingId ? " cursor-pointer hover:!border-blue-500 hover:!bg-blue-950/30" : "")}>
                   <div className="flex items-center justify-between mb-1">
                     <div className={"text-xs font-semibold " + (isT ? "text-red-400" : "text-white/70")}>{d}</div>
                     {dt > 0 && <div className="text-[8px] text-green-400/70 font-mono">${Math.round(dt)}</div>}
@@ -707,6 +778,7 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
             {calSource !== "crm" && <span className="flex items-center gap-1"><span className="w-2 h-2 rounded bg-blue-700" />Google only</span>}
           </div>
           </Glass>
+          <div className="space-y-4">
           <Glass className="p-4 h-fit sticky top-24">
             <div className="text-xs text-white/50 uppercase tracking-wider mb-3 flex items-center gap-1.5"><Clipboard size={10} />Unscheduled ({unscheduled.length})</div>
             <div className="space-y-2 max-h-[500px] overflow-y-auto">
@@ -733,6 +805,26 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
               Drop here
             </div>
           </Glass>
+
+          {/* FEATURE — draft videos (finished Auto-Edit/Video-Edit renders,
+              not yet scheduled or posted) shown here so they can be dragged
+              straight onto a day, same gesture as an unscheduled job. */}
+          <Glass className="p-4 h-fit">
+            <div className="text-xs text-white/50 uppercase tracking-wider mb-3 flex items-center gap-1.5"><Play size={10} />Ready to Post ({draftVideos.length})</div>
+            <div className="space-y-2 max-h-[400px] overflow-y-auto">
+              {draftVideos.length === 0 && <div className="text-xs text-white/30 text-center py-6">No finished drafts yet</div>}
+              {draftVideos.map((v: any) => (
+                <div key={v.id} draggable onDragStart={() => setDragPostId(v.id)} onDragEnd={() => setDragPostId(null)}
+                  className="p-2 rounded-lg cursor-grab bg-black/40 border border-red-900/30 hover:border-red-600/50 transition">
+                  <video src={v.mediaUrl} muted className="w-full h-20 object-cover rounded-md bg-black mb-1.5 pointer-events-none" />
+                  <div className="text-[10px] text-white/60 truncate mb-1.5">{v.caption || "No caption yet"}</div>
+                  <button onClick={() => openPostScheduleFlow(v.id, today())} className="w-full py-1.5 rounded-lg bg-red-900/40 border border-red-700/40 text-[10px] text-red-200 hover:bg-red-800/50 transition">Schedule…</button>
+                </div>
+              ))}
+            </div>
+            <div className="text-[9px] text-white/30 text-center mt-3 pt-3 border-t border-red-900/20">↳ Drag onto a day, or tap Schedule</div>
+          </Glass>
+          </div>
 
           {/* FIX 15 — floating "ghost" that follows the finger during a touch
               drag, since there's no native browser drag-image on touch. */}
@@ -763,7 +855,7 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
               const dj = byDate[k] || [];
               const isT = k === tKey;
               return (
-                <div key={k} data-daykey={k} onDragOver={e => e.preventDefault()} onDrop={() => handleDrop(k)} className={"min-h-[200px] p-2 rounded-lg border transition-all " + (isT ? "bg-red-950/30 border-red-700/50" : "bg-white/5 border-white/10") + (touchDragOverKey === k ? " !border-red-500 !bg-red-950/40 scale-[1.02]" : "")}>
+                <div key={k} data-daykey={k} onDragOver={e => e.preventDefault()} onDrop={() => dragPostId ? handlePostDrop(k) : handleDrop(k)} className={"min-h-[200px] p-2 rounded-lg border transition-all " + (isT ? "bg-red-950/30 border-red-700/50" : "bg-white/5 border-white/10") + (touchDragOverKey === k ? " !border-red-500 !bg-red-950/40 scale-[1.02]" : "")}>
                   <div className={"text-[10px] uppercase " + (isT ? "text-red-400 font-bold" : "text-white/50")}>{d.toLocaleDateString("en-US", { weekday: "short" })}</div>
                   <div className="text-lg font-bold mb-2">{d.getDate()}</div>
                   <div className="space-y-1">
@@ -865,6 +957,73 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
               <button disabled={notifyBusy} onClick={() => confirmReschedule("none")} className="w-full py-2 text-xs text-white/40 hover:text-white/60 transition disabled:opacity-50">No, don't notify them</button>
             </div>
           </div>
+        </Modal>
+      )}
+
+      {/* Schedule-a-draft-video flow — dropped (or "Schedule…" tapped) from
+          the Ready to Post panel. Four steps: confirm the day, confirm/edit
+          the caption, confirm a cover thumbnail, then pick platforms and post. */}
+      {postFlow && (
+        <Modal open={!!postFlow} onClose={() => !postFlow.busy && setPostFlow(null)} title={
+          postFlow.step === "confirm" ? "Schedule this day?" :
+          postFlow.step === "caption" ? "Caption ready?" :
+          postFlow.step === "cover" ? "Cover photo" : "Confirm platforms"
+        } maxW="max-w-sm">
+          {postFlow.step === "confirm" && (
+            <div className="space-y-3">
+              <div className="text-sm text-white/60">Are you sure you want to schedule that day — <span className="text-white font-semibold">{postFlow.date}</span>?</div>
+              <div className="flex gap-2">
+                <GBtn onClick={() => setPostFlow(f => f ? { ...f, step: "caption" } : f)} className="flex-1 !justify-center">Yes</GBtn>
+                <GBtn variant="ghost" onClick={() => setPostFlow(null)} className="flex-1 !justify-center">No</GBtn>
+              </div>
+            </div>
+          )}
+          {postFlow.step === "caption" && (
+            <div className="space-y-3">
+              <div className="text-sm text-white/60">Do you have captions written? Write or paste it below.</div>
+              <GTxt rows={5} autoFocus value={postFlow.caption} onChange={e => setPostFlow(f => f ? { ...f, caption: e.target.value } : f)} placeholder="Write your caption here..." />
+              <div className="flex gap-2">
+                <GBtn disabled={!postFlow.caption.trim()} onClick={() => setPostFlow(f => f ? { ...f, step: "cover" } : f)} className="flex-1 !justify-center">Continue</GBtn>
+                <GBtn variant="ghost" onClick={() => setPostFlow(f => f ? { ...f, step: "confirm" } : f)}>Back</GBtn>
+              </div>
+            </div>
+          )}
+          {postFlow.step === "cover" && (
+            <div className="space-y-3">
+              <div className="text-sm text-white/60">Have you chosen a cover photo? We can auto-generate one from the video's first frame.</div>
+              <label className="flex items-center gap-2 p-3 rounded-xl bg-black/40 border border-red-900/30 cursor-pointer">
+                <input type="checkbox" checked={postFlow.useCoverThumb} onChange={e => setPostFlow(f => f ? { ...f, useCoverThumb: e.target.checked } : f)} className="w-4 h-4 accent-red-500" />
+                <span className="text-xs text-white/70">Use an auto-generated cover thumbnail</span>
+              </label>
+              {!postFlow.useCoverThumb && <div className="text-[10px] text-white/40">The post will go out without a cover image.</div>}
+              <div className="flex gap-2">
+                <GBtn onClick={() => setPostFlow(f => f ? { ...f, step: "platforms" } : f)} className="flex-1 !justify-center">Continue</GBtn>
+                <GBtn variant="ghost" onClick={() => setPostFlow(f => f ? { ...f, step: "caption" } : f)}>Back</GBtn>
+              </div>
+            </div>
+          )}
+          {postFlow.step === "platforms" && (
+            <div className="space-y-3">
+              <div className="text-sm text-white/60">Which platforms should this post go to?</div>
+              <div className="grid grid-cols-1 gap-2">
+                {Object.entries(PLATFORM_META).map(([k, m]: [string, any]) => {
+                  const active = postFlow.platforms.includes(k);
+                  const connected = !!(settings as any)?.bufferChannelIds?.[k];
+                  return (
+                    <button key={k} type="button" onClick={() => togglePostFlowPlatform(k)}
+                      className={"flex items-center justify-between px-3 py-2.5 rounded-xl border text-sm font-medium transition " + (active ? "bg-gradient-to-r from-red-600 to-red-800 border-red-500/50 text-white" : "bg-black/40 border-white/10 text-white/60 hover:text-white")}>
+                      <span className="flex items-center gap-2">{m.icon} {m.label}</span>
+                      {connected && <span className="text-[9px] opacity-70">via Buffer</span>}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="flex gap-2">
+                <GBtn disabled={postFlow.platforms.length === 0 || postFlow.busy} onClick={finalizePostSchedule} className="flex-1 !justify-center">{postFlow.busy ? "Scheduling…" : "Schedule & Post"}</GBtn>
+                <GBtn variant="ghost" disabled={postFlow.busy} onClick={() => setPostFlow(f => f ? { ...f, step: "cover" } : f)}>Back</GBtn>
+              </div>
+            </div>
+          )}
         </Modal>
       )}
 

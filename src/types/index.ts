@@ -849,6 +849,9 @@ export interface SocialPost {
   postMethod?: string;
   mediaUrl?: string;
   mediaType?: "image" | "video";
+  // Cover/thumbnail frame for a video post, chosen (or auto-generated) during
+  // the Calendar page's drag-a-finished-video-to-schedule flow.
+  coverPhotoUrl?: string;
   // Set once the full-size mediaUrl in Storage has been deleted and
   // replaced with a small generated thumbnail (see cleanupPublishedMedia
   // in SocialPage.tsx) — the UI renders a click-through preview instead of
