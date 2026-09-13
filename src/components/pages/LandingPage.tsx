@@ -281,16 +281,9 @@ export function LandingPage({
             BackgroundBlobs — every marketing page gets it, not just this
             hero — so there's nothing hero-specific to render here anymore. */}
         <div className="relative z-10">
-        <Reveal>
-          <div className="relative inline-flex items-center gap-2 px-3 py-1.5 rounded-full glass text-xs text-red-300 mb-6">
-            <span className="w-1.5 h-1.5 rounded-full bg-red-500 lp-pulse-dot" />
-            Built for pressure-washing crews
-          </div>
-        </Reveal>
-
         <Reveal delay={80}>
           <h1 className="text-4xl sm:text-5xl md:text-7xl font-black tracking-tight leading-[1.05] mb-6">
-            <span className="lp-text-hover">Run your entire</span><br className="hidden sm:block" /> <span className="lp-hero-gradient lp-text-gradient-hover">wash business</span><br className="hidden sm:block" /> <span className="lp-text-hover">from one screen.</span>
+            <span className="lp-text-hover">Run your pressure washing business</span><br className="hidden sm:block" /> <span className="lp-hero-gradient lp-text-gradient-hover">like a boss.</span>
           </h1>
         </Reveal>
 
@@ -303,21 +296,33 @@ export function LandingPage({
 
         <Reveal delay={240}>
           <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
-            <button
-              onClick={onGetStarted}
-              className="group w-full sm:w-auto px-7 py-3.5 rounded-xl bg-gradient-to-br from-red-600 to-red-800 hover:from-red-500 hover:to-red-700 font-bold text-base shadow-xl shadow-red-900/40 hover:shadow-red-700/50 transition-all hover:-translate-y-0.5 flex items-center justify-center gap-2"
-            >
-              Start Free Trial
-              <ArrowRight size={18} className="transition-transform group-hover:translate-x-1" />
-            </button>
-            <button
-              onClick={onGetStarted}
-              className="w-full sm:w-auto px-7 py-3.5 rounded-xl glass hover:bg-white/[0.06] font-semibold text-base transition-all"
-            >
-              Log In
-            </button>
+            {isLoggedIn ? (
+              <button
+                onClick={onGoToDashboard}
+                className="group w-full sm:w-auto px-7 py-3.5 rounded-xl bg-gradient-to-br from-red-600 to-red-800 hover:from-red-500 hover:to-red-700 font-bold text-base shadow-xl shadow-red-900/40 hover:shadow-red-700/50 transition-all hover:-translate-y-0.5 flex items-center justify-center gap-2"
+              >
+                Go to Dashboard
+                <ArrowRight size={18} className="transition-transform group-hover:translate-x-1" />
+              </button>
+            ) : (
+              <>
+                <button
+                  onClick={onGetStarted}
+                  className="group w-full sm:w-auto px-7 py-3.5 rounded-xl bg-gradient-to-br from-red-600 to-red-800 hover:from-red-500 hover:to-red-700 font-bold text-base shadow-xl shadow-red-900/40 hover:shadow-red-700/50 transition-all hover:-translate-y-0.5 flex items-center justify-center gap-2"
+                >
+                  Start Free Trial
+                  <ArrowRight size={18} className="transition-transform group-hover:translate-x-1" />
+                </button>
+                <button
+                  onClick={onGetStarted}
+                  className="w-full sm:w-auto px-7 py-3.5 rounded-xl glass hover:bg-white/[0.06] font-semibold text-base transition-all"
+                >
+                  Log In
+                </button>
+              </>
+            )}
           </div>
-          <p className="text-xs text-white/30 mt-4">No credit card required to explore. Cancel anytime.</p>
+          {!isLoggedIn && <p className="text-xs text-white/30 mt-4">No credit card required to explore. Cancel anytime.</p>}
         </Reveal>
 
         {/* FEATURE — "I want to improve the landing page... the UI should
@@ -427,32 +432,33 @@ export function LandingPage({
           </p>
         </Reveal>
 
-        <div className="space-y-10 md:space-y-14">
-          {(Object.keys(FEATURE_GROUPS) as FeatureGroup[]).map((group) => {
-            const items = FEATURES.filter(f => f.group === group);
-            return (
-              <div key={group}>
-                <Reveal variant="left">
-                  <h3 className="text-xs font-bold uppercase tracking-widest text-red-400/80 mb-4 md:mb-5">
-                    {FEATURE_GROUPS[group]}
-                  </h3>
-                </Reveal>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-5">
-                  {items.map((f, i) => (
-                    <Reveal key={f.title} variant={i % 3 === 0 ? "left" : i % 3 === 1 ? "scale" : "right"} delay={(i % 3) * 90}>
-                      <div className="lp-card-hover glass p-5 md:p-6 h-full">
-                        <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-red-600/20 to-red-900/20 border border-red-700/30 flex items-center justify-center mb-4">
-                          <f.icon size={20} className="text-red-400" />
-                        </div>
-                        <h3 className="font-bold text-white mb-1.5 text-sm md:text-base"><span className="lp-text-hover">{f.title}</span></h3>
-                        <p className="text-white/50 text-xs md:text-sm leading-relaxed">{f.desc}</p>
-                      </div>
-                    </Reveal>
-                  ))}
+        {/* BUG FIX (user report) — "Run the field currently has three lines
+            and one line by itself... reorganize it to remove the separate
+            boxes." Splitting features into three separately-boxed sections
+            (one per FEATURE_GROUPS label) left whichever group's item count
+            wasn't a multiple of 3 with a lone orphan card under its own
+            header — visually uneven, and each header competed for its own
+            "equal formatting." Flattened to one continuous grid (a single
+            orphan at most, at the very end of the whole list, not one per
+            group) with a small uniform badge per card carrying the same
+            group label instead of three separately-styled section headers. */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-5">
+          {FEATURES.map((f, i) => (
+            <Reveal key={f.title} variant={i % 3 === 0 ? "left" : i % 3 === 1 ? "scale" : "right"} delay={(i % 3) * 90}>
+              <div className="lp-card-hover glass p-5 md:p-6 h-full">
+                <div className="flex items-start justify-between gap-3 mb-4">
+                  <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-red-600/20 to-red-900/20 border border-red-700/30 flex items-center justify-center">
+                    <f.icon size={20} className="text-red-400" />
+                  </div>
+                  <span className="text-[9px] font-bold uppercase tracking-widest text-red-400/80 mt-1.5">
+                    {FEATURE_GROUPS[f.group]}
+                  </span>
                 </div>
+                <h3 className="font-bold text-white mb-1.5 text-sm md:text-base"><span className="lp-text-hover">{f.title}</span></h3>
+                <p className="text-white/50 text-xs md:text-sm leading-relaxed">{f.desc}</p>
               </div>
-            );
-          })}
+            </Reveal>
+          ))}
         </div>
 
         <Reveal className="text-center mt-10">
@@ -692,16 +698,16 @@ export function LandingPage({
       <Reveal variant="scale" className="px-4 md:px-6">
         <section className="max-w-4xl mx-auto text-center py-16 md:py-20">
           <h2 className="lp-text-hover text-2xl md:text-4xl font-extrabold tracking-tight mb-4">
-            Ready to run a tighter crew?
+            Run your business on autopilot.
           </h2>
           <p className="text-white/50 mb-8 text-sm md:text-base max-w-xl mx-auto">
             Set up your business in minutes. No spreadsheets, no sticky notes, no more "who's on that job right now."
           </p>
           <button
-            onClick={onGetStarted}
+            onClick={isLoggedIn ? onGoToDashboard : onGetStarted}
             className="group px-8 py-3.5 rounded-xl bg-gradient-to-br from-red-600 to-red-800 hover:from-red-500 hover:to-red-700 font-bold text-base shadow-xl shadow-red-900/40 hover:shadow-red-700/50 transition-all hover:-translate-y-0.5 inline-flex items-center gap-2"
           >
-            Start Free Trial
+            {isLoggedIn ? "Go to Dashboard" : "Start Free Trial"}
             <ArrowRight size={18} className="transition-transform group-hover:translate-x-1" />
           </button>
         </section>
