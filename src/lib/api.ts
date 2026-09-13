@@ -77,6 +77,7 @@ export const MODELS: Record<string, ModelDef> = {
     contextWindow: 128000,
     color: "from-purple-500 to-purple-700",
     needsKey: true,
+    free: true,
     supportsTools: true,
     keyUrl: "https://console.groq.com/keys",
     apiLabel: "Groq API Key",

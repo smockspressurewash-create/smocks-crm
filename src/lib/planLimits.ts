@@ -56,3 +56,26 @@ export const PLAN_TIER_LABEL: Record<PlanTier, string> = {
   crew: "the Crew plan",
   growth: "the Growth plan",
 };
+
+// FEATURE — audit finding (critical): the three PLANS tiers on the pricing
+// page (LandingPage.tsx) advertise Alfred as Crew+ and trash-can routes /
+// campaign blasts as Growth-only, but nothing in the app ever checked that
+// — every account got every feature regardless of which tier they paid
+// for. This is the feature-level counterpart to the customer/seat-count
+// limits above (those were already enforced; named features were not).
+// `unlimited`/`trialing` stay full-access by the same grandfathering
+// logic getPlanLimits() already applies; `free` (lapsed trial or lapsed
+// subscription) is the most restricted, same as its customer/seat caps.
+export type GatedFeature = "alfred" | "campaigns" | "trashcans";
+const FEATURE_TIERS: Record<GatedFeature, PlanTier[]> = {
+  alfred: ["unlimited", "trialing", "crew", "growth"],
+  campaigns: ["unlimited", "trialing", "growth"],
+  trashcans: ["unlimited", "trialing", "growth"],
+};
+export const hasPlanFeature = (tier: PlanTier, feature: GatedFeature): boolean =>
+  FEATURE_TIERS[feature].includes(tier);
+export const FEATURE_MIN_TIER_LABEL: Record<GatedFeature, string> = {
+  alfred: "the Crew plan",
+  campaigns: "the Growth plan",
+  trashcans: "the Growth plan",
+};

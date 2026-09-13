@@ -258,20 +258,27 @@ function PortalChecklistSection({ jobId, title, emoji, items, onUpdate, allowPho
         {items.map(item => (
           <div key={item.id} className="p-2.5 rounded-xl bg-white/5 border border-white/5">
             <div className="flex items-start gap-2">
-              <input type="checkbox" checked={item.done} onChange={() => toggle(item.id)}
+              <input type="checkbox" id={`checklist-item-${item.id}`} checked={item.done} onChange={() => toggle(item.id)}
                 disabled={disabled || !isMine(item)}
                 title={!disabled && !isMine(item) ? `Assigned to ${crewOptions.find(c => c.id === item.assignedTo)?.name || "another crew member"}` : undefined}
                 className={"mt-0.5 w-4 h-4 flex-shrink-0 " + (disabled || !isMine(item) ? "opacity-50 cursor-not-allowed" : "accent-green-500 cursor-pointer")} />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
-                  <div className={"text-sm flex-1 " + (item.done ? "line-through text-white/30" : "text-white/80")}>
+                  {/* BUG FIX (mobile audit) — only the 16x16px checkbox itself
+                      was tappable; the row's own div had no onClick. A <label
+                      htmlFor> pairs with the checkbox by id (no DOM nesting
+                      required) so tapping the item text — the natural mobile
+                      gesture, used per checklist item per job all day —
+                      toggles it too, without touching the camera icon's own
+                      click handling next to it. */}
+                  <label htmlFor={`checklist-item-${item.id}`} className={"text-sm flex-1 " + (disabled || !isMine(item) ? "" : "cursor-pointer") + " " + (item.done ? "line-through text-white/30" : "text-white/80")}>
                     {item.label}
                     {item.assignedTo && (
                       <span className={"ml-1.5 text-[9px] px-1.5 py-0.5 rounded-full border " + (isMine(item) ? "text-purple-300 bg-purple-950/40 border-purple-700/30" : "text-white/40 bg-white/5 border-white/10")}>
                         {isMine(item) ? "you" : (crewOptions.find(c => c.id === item.assignedTo)?.name || "assigned")}
                       </span>
                     )}
-                  </div>
+                  </label>
                   {allowPhotos && (
                     <label className="cursor-pointer flex-shrink-0">
                       {/* capture="environment" opens the device camera directly on mobile
@@ -1376,10 +1383,18 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
   const sigCanvasRef = useRef<HTMLCanvasElement>(null);
   const sigDrawing = useRef(false);
   const sigLastPos = useRef({ x: 0, y: 0 });
+  // BUG FIX (mobile audit) — canvas has a fixed intrinsic resolution
+  // (width={580} height={160}) but renders at CSS width "w-full", which on
+  // a phone is far narrower — e.g. ~340px. Without scaling, drawn ink
+  // diverged from the actual finger position (worse toward the right edge)
+  // on every phone, breaking signature capture. Scale client coords by the
+  // ratio between the canvas's real resolution and its displayed size.
   const sigGetPos = (canvas: HTMLCanvasElement, e: any) => {
     const r = canvas.getBoundingClientRect();
     const src = e.touches ? e.touches[0] : e;
-    return { x: src.clientX - r.left, y: src.clientY - r.top };
+    const scaleX = canvas.width / r.width;
+    const scaleY = canvas.height / r.height;
+    return { x: (src.clientX - r.left) * scaleX, y: (src.clientY - r.top) * scaleY };
   };
   const sigStartDraw = (e: any) => {
     const canvas = sigCanvasRef.current; if (!canvas) return;

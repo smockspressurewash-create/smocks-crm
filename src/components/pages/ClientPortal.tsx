@@ -329,10 +329,16 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
     ctx.lineJoin = "round";
   }, [step]);
 
+  // BUG FIX (mobile audit) — canvas renders at CSS width "w-full" but has a
+  // fixed intrinsic resolution, so raw client coords drift from the actual
+  // touch point on any phone narrower than the canvas's real pixel width —
+  // this is the customer-facing e-sign flow, worth getting right.
   const getPos = (canvas, e) => {
     const r = canvas.getBoundingClientRect();
     const src = e.touches ? e.touches[0] : e;
-    return { x: src.clientX - r.left, y: src.clientY - r.top };
+    const scaleX = canvas.width / r.width;
+    const scaleY = canvas.height / r.height;
+    return { x: (src.clientX - r.left) * scaleX, y: (src.clientY - r.top) * scaleY };
   };
 
   const startDraw = e => {

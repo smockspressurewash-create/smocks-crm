@@ -1005,7 +1005,23 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // does; if no model is configured this just returns null and nothing
     // changes from today's behavior (message stays logged for the owner to
     // answer manually).
-    if (!isStop && !isStart && !isOptInKeyword && !isConfirm && match?.alfredAutoRespond) {
+    // BUG FIX (audit finding — vacation mode marketed "set vacation mode
+    // and it can run the front desk while you're out" but this branch only
+    // ever checked the customer's own opt-in, never vacationMode at all —
+    // turning vacation mode on did nothing for customers who hadn't
+    // separately opted in, contradicting the marketing copy. Vacation mode
+    // now also opens front-desk auto-response for EVERY matched customer
+    // while the window is active, using the same active+date-range check
+    // App.tsx already uses for the owner check-in cadence — except when the
+    // owner set autonomyLevel to "hold_everything", which means don't act
+    // without them, not "act on everything."
+    const vacationFrontDeskActive = !!(
+      vacationMode?.active &&
+      vacationMode.autonomyLevel !== "hold_everything" &&
+      (!vacationMode.startDate || !vacationMode.endDate ||
+        (new Date().toISOString().slice(0, 10) >= vacationMode.startDate && new Date().toISOString().slice(0, 10) <= vacationMode.endDate))
+    );
+    if (!isStop && !isStart && !isOptInKeyword && !isConfirm && match && (match.alfredAutoRespond || vacationFrontDeskActive)) {
       const custCtx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, ownerPhone: myPhone, autoApproveReschedules: alfredAutoApproveReschedules };
       context.waitUntil(
         resolveIncomingText(params, bodyRaw, twilioSid, twilioToken, openaiKey, (context.env as any).AI, context.env.SUPABASE_SERVICE_ROLE_KEY, ownerId)

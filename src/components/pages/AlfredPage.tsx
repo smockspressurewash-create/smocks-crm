@@ -659,19 +659,38 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // FEATURE 2 (mobile round 7) — these only removed memories from local
   // state, so a deleted fact silently reappeared on the next 5s sync poll
   // (or on another device) since the row was still sitting in alfred_memory.
+  // BUG FIX (audit finding — critical) — these deletes had no owner_id
+  // filter and no .select() to check row count, so an RLS-filtered 0-row
+  // delete (the "0-row silent success" class documented in CLAUDE.md —
+  // stale/mismatched owner_id on that row, the exact drift this file's own
+  // re-key logic above exists to correct) returned success with nothing
+  // actually removed. The optimistic local removal then got silently
+  // overwritten back in by the next 5s memory poll — Alfred says "forgot
+  // it," the fact comes right back. Now scoped to owner_id, verified via
+  // .select("id"), and reverted + surfaced to the user on a real 0-row miss.
   const removeMemory = id => {
+    const prev = memory;
     setMemory(memory.filter(m => m.id !== id));
-    (supabase as any).from("alfred_memory").delete().eq("id", id)
-      .then((r: any) => { if (r?.error) console.warn("[Alfred Memory Sync] delete failed:", r.error.message); });
+    (supabase as any).from("alfred_memory").delete().eq("id", id).eq("owner_id", ownerId).select("id")
+      .then((r: any) => {
+        if (r?.error) { console.warn("[Alfred Memory Sync] delete failed:", r.error.message); setMemory(prev); toast("Couldn't delete memory — " + r.error.message, "error"); return; }
+        if (!Array.isArray(r?.data) || r.data.length === 0) { console.warn("[Alfred Memory Sync] delete matched 0 rows"); setMemory(prev); toast("Couldn't delete memory — try again", "error"); }
+      });
   };
   const clearMemory = () => {
     if (!confirm("Wipe all Alfred memory?")) return;
+    const prev = memory;
     const ids = memory.map((m: any) => m.id);
     setMemory([]);
-    toast("Memory cleared");
     if (ids.length > 0) {
-      (supabase as any).from("alfred_memory").delete().in("id", ids)
-        .then((r: any) => { if (r?.error) console.warn("[Alfred Memory Sync] bulk delete failed:", r.error.message); });
+      (supabase as any).from("alfred_memory").delete().in("id", ids).eq("owner_id", ownerId).select("id")
+        .then((r: any) => {
+          if (r?.error) { console.warn("[Alfred Memory Sync] bulk delete failed:", r.error.message); setMemory(prev); toast("Couldn't clear memory — " + r.error.message, "error"); return; }
+          if (!Array.isArray(r?.data) || r.data.length !== ids.length) console.warn("[Alfred Memory Sync] bulk delete matched", r?.data?.length ?? 0, "of", ids.length, "rows");
+          toast("Memory cleared");
+        });
+    } else {
+      toast("Memory cleared");
     }
   };
 
@@ -2685,7 +2704,14 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           const match = memory.find((m: any) => m.text.toLowerCase() === q || m.text.toLowerCase().includes(q));
           if (!match) return { error: "Couldn't find a memory matching that — try recall_facts first to see the exact wording." };
           setMemory((prev: any[]) => prev.filter((m: any) => m.id !== match.id));
-          (supabase as any).from("alfred_memory").delete().eq("id", match.id).then((r: any) => { if (r?.error) console.warn("[Alfred Memory] forget_fact delete failed:", r.error.message); });
+          // BUG FIX (audit finding — critical) — see removeMemory's comment:
+          // scoped to owner_id + verified via .select("id") so a 0-row RLS
+          // miss doesn't silently leave the fact intact while Alfred claims
+          // it forgot it.
+          (supabase as any).from("alfred_memory").delete().eq("id", match.id).eq("owner_id", ownerId).select("id").then((r: any) => {
+            if (r?.error) { console.warn("[Alfred Memory] forget_fact delete failed:", r.error.message); setMemory((prev: any[]) => prev.some(m => m.id === match.id) ? prev : [...prev, match]); return; }
+            if (!Array.isArray(r?.data) || r.data.length === 0) { console.warn("[Alfred Memory] forget_fact matched 0 rows"); setMemory((prev: any[]) => prev.some(m => m.id === match.id) ? prev : [...prev, match]); }
+          });
           toast("Alfred forgot: " + match.text.slice(0, 60));
           return { success: true, forgot: match.text };
         }

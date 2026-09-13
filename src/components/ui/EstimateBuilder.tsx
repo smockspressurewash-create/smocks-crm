@@ -342,11 +342,16 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
                 <GInput value={pkg.description} onChange={e => setPackages(p => p.map((x, i) => i === pi ? { ...x, description: e.target.value } : x))} placeholder="What's included…" className="!text-xs mb-2" />
                 <div className="space-y-1.5">
                   {pkg.lineItems.map((li: any) => (
+                    // BUG FIX (mobile audit) — this grid had no md: breakpoints
+                    // at all, unlike the near-identical non-package line-item
+                    // grid below it — Service/Qty/Price squeezed to ~20-30px
+                    // slivers on a 375px screen, effectively unusable for
+                    // estimates built on-site in front of the customer.
                     <div key={li.id} className="grid grid-cols-12 gap-1 items-center">
-                      <div className="col-span-7"><GInput placeholder="Service" value={li.description} onChange={e => setPackages(p => p.map((x, i) => i === pi ? { ...x, lineItems: x.lineItems.map((l: any) => l.id === li.id ? { ...l, description: e.target.value } : l) } : x))} className="!text-xs" /></div>
-                      <div className="col-span-2"><GInput type="number" placeholder="Qty" value={li.quantity} onChange={e => setPackages(p => p.map((x, i) => i === pi ? { ...x, lineItems: x.lineItems.map((l: any) => l.id === li.id ? { ...l, quantity: e.target.value } : l) } : x))} className="!text-xs" /></div>
-                      <div className="col-span-2"><GInput type="number" step="0.01" min="0" placeholder="$" value={li.unitPrice} onChange={e => setPackages(p => p.map((x, i) => i === pi ? { ...x, lineItems: x.lineItems.map((l: any) => l.id === li.id ? { ...l, unitPrice: e.target.value } : l) } : x))} className="!text-xs" /></div>
-                      <div className="col-span-1 text-right">{pkg.lineItems.length > 1 && <button onClick={() => setPackages(p => p.map((x, i) => i === pi ? { ...x, lineItems: x.lineItems.filter((l: any) => l.id !== li.id) } : x))} className="p-1 text-red-400/60 hover:text-red-400"><X size={10} /></button>}</div>
+                      <div className="col-span-12 md:col-span-7"><GInput placeholder="Service" value={li.description} onChange={e => setPackages(p => p.map((x, i) => i === pi ? { ...x, lineItems: x.lineItems.map((l: any) => l.id === li.id ? { ...l, description: e.target.value } : l) } : x))} className="!text-xs" /></div>
+                      <div className="col-span-4 md:col-span-2"><GInput type="number" placeholder="Qty" value={li.quantity} onChange={e => setPackages(p => p.map((x, i) => i === pi ? { ...x, lineItems: x.lineItems.map((l: any) => l.id === li.id ? { ...l, quantity: e.target.value } : l) } : x))} className="!text-xs" /></div>
+                      <div className="col-span-5 md:col-span-2"><GInput type="number" step="0.01" min="0" placeholder="$" value={li.unitPrice} onChange={e => setPackages(p => p.map((x, i) => i === pi ? { ...x, lineItems: x.lineItems.map((l: any) => l.id === li.id ? { ...l, unitPrice: e.target.value } : l) } : x))} className="!text-xs" /></div>
+                      <div className="col-span-3 md:col-span-1 text-right">{pkg.lineItems.length > 1 && <button onClick={() => setPackages(p => p.map((x, i) => i === pi ? { ...x, lineItems: x.lineItems.filter((l: any) => l.id !== li.id) } : x))} className="p-1 text-red-400/60 hover:text-red-400"><X size={10} /></button>}</div>
                     </div>
                   ))}
                 </div>
