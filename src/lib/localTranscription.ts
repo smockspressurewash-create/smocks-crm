@@ -38,29 +38,49 @@ const loadTransformersModule = async (): Promise<TransformersModule> => {
 // accuracy/speed/size balance for on-device transcription of a short
 // promo-video clip. Multilingual owners can still fall back to a paid
 // provider (Groq/OpenAI/Deepgram) from the same dropdown if they need it.
-const MODEL_ID = "Xenova/whisper-base.en";
+//
+// PERF FEATURE (audit finding) — whisper-tiny.en is ~half the parameter
+// count of base.en, commonly ~2-3x faster to transcribe the same audio on
+// CPU-bound WASM, at a real, honest cost: a meaningfully higher word-error
+// rate, worse still on noisy job-site audio (pressure washers, engines) —
+// exactly the audio this app's clips are shot in. Surfaced as an explicit
+// opt-in ("local-fast" in CAPTION_PROVIDERS, videoEditor.ts) rather than
+// silently swapped in for everyone, so an owner trades accuracy for speed
+// only when they actually want to.
+export type LocalModelSpeed = "balanced" | "fast";
+const MODEL_IDS: Record<LocalModelSpeed, string> = {
+  balanced: "Xenova/whisper-base.en",
+  fast: "Xenova/whisper-tiny.en",
+};
 
 type Transcriber = (audio: Float32Array, options?: Record<string, any>) => Promise<any>;
 
-let transcriberInstance: Transcriber | null = null;
-let loadingPromise: Promise<Transcriber> | null = null;
+// Keyed by model id (not a single singleton) — an owner can switch between
+// "balanced"/"fast" mid-session; each gets its own cached instance instead
+// of the second choice evicting the first.
+const transcriberInstances = new Map<string, Transcriber>();
+const loadingPromises = new Map<string, Promise<Transcriber>>();
 
 export const isLocalTranscriptionSupported = (): boolean =>
   typeof WebAssembly !== "undefined" && typeof AudioContext !== "undefined";
 
-// Same double-checked-locking singleton pattern as loadFfmpeg — the model
-// only ever needs to be loaded once per tab, and concurrent callers (e.g.
-// transcribing several clips back to back during Auto-Edit) should all
-// await the same in-flight load rather than each starting their own.
-export const loadLocalTranscriber = async (onProgress?: (msg: string) => void): Promise<Transcriber> => {
-  if (transcriberInstance) return transcriberInstance;
-  if (loadingPromise) return loadingPromise;
-  loadingPromise = (async () => {
+// Same double-checked-locking singleton pattern as loadFfmpeg — each
+// distinct model only ever needs to be loaded once per tab, and concurrent
+// callers (e.g. transcribing several clips back to back during Auto-Edit)
+// should all await the same in-flight load rather than each starting their
+// own.
+export const loadLocalTranscriber = async (onProgress?: (msg: string) => void, speed: LocalModelSpeed = "balanced"): Promise<Transcriber> => {
+  const modelId = MODEL_IDS[speed];
+  const cached = transcriberInstances.get(modelId);
+  if (cached) return cached;
+  const inFlight = loadingPromises.get(modelId);
+  if (inFlight) return inFlight;
+  const loadingPromise = (async () => {
     onProgress?.("Loading free speech-to-text engine (first time only)...");
     const { pipeline } = await loadTransformersModule();
-    onProgress?.("Loading free speech-to-text model (first time only, ~75MB)...");
+    onProgress?.(`Loading free speech-to-text model (first time only, ~${speed === "fast" ? "40" : "75"}MB)...`);
     const lastPctByFile: Record<string, number> = {};
-    const transcriber = await pipeline("automatic-speech-recognition", MODEL_ID, {
+    const transcriber = await pipeline("automatic-speech-recognition", modelId, {
       progress_callback: (p: any) => {
         if (p?.status === "progress" && typeof p.progress === "number") {
           const pct = Math.round(p.progress);
@@ -75,9 +95,10 @@ export const loadLocalTranscriber = async (onProgress?: (msg: string) => void): 
         }
       },
     }) as unknown as Transcriber;
-    transcriberInstance = transcriber;
+    transcriberInstances.set(modelId, transcriber);
     return transcriber;
   })();
+  loadingPromises.set(modelId, loadingPromise);
   return loadingPromise;
 };
 
@@ -125,9 +146,10 @@ const decodeToMono16k = async (blob: Blob): Promise<Float32Array> => {
 // branch on which provider it used.
 export const transcribeAudioLocally = async (
   audioBlob: Blob,
-  onProgress?: (msg: string) => void
+  onProgress?: (msg: string) => void,
+  speed: LocalModelSpeed = "balanced"
 ): Promise<{ text: string; start: number; end: number }[]> => {
-  const transcriber = await loadLocalTranscriber(onProgress);
+  const transcriber = await loadLocalTranscriber(onProgress, speed);
   onProgress?.("Transcribing audio locally (no data leaves your device)...");
   const audio = await decodeToMono16k(audioBlob);
   // FEATURE — "really good-looking, timed auto captions." WORD-level

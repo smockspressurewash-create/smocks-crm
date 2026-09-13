@@ -434,8 +434,19 @@ export const ASPECT_DIMENSIONS: Record<AspectRatio, { w: number; h: number }> = 
 export const ASPECT_RATIOS: AspectRatio[] = ["9:16", "1:1", "4:5", "16:9", "4:3"];
 
 // Detects silence in a clip's audio track (ffmpeg's silencedetect filter),
-// used for the "Auto-Cut Silence" button. Returns ranges in seconds.
-export const detectSilence = async (file: File, noiseDb = -30, minDurationSec = 0.6): Promise<{ start: number; end: number }[]> => {
+// used for the "Auto-Cut Silence" button. Returns ranges in seconds,
+// ABSOLUTE within the original file (matching every other convention in
+// this file — clip.startSec/endSec are always source-file-absolute).
+// BUG FIX (audit finding — real perf win) — this used to always analyze
+// the WHOLE uploaded file, even when the owner had already trimmed the
+// clip down to a short window: splitClipAtRanges clamps/discards any
+// detected range outside [startSec,endSec] anyway, so decoding the rest
+// was pure waste — often the single biggest win in the whole pipeline for
+// a common real workflow (upload a multi-minute raw take, trim to a
+// 20-40s highlight, THEN run Auto-Edit). Also adds -vn: silencedetect
+// only reads the audio stream, but without -vn ffmpeg was decoding the
+// FULL video stream too just to discard it into `-f null -`.
+export const detectSilence = async (file: File, noiseDb = -30, minDurationSec = 0.6, window?: { startSec: number; endSec: number }): Promise<{ start: number; end: number }[]> => {
   const ff = await loadFfmpeg();
   const inName = "silence-in-" + file.name.replace(/[^a-z0-9.]/gi, "_");
   await ff.writeFile(inName, await fetchFile(file));
@@ -451,16 +462,22 @@ export const detectSilence = async (file: File, noiseDb = -30, minDurationSec = 
   // unaffected), so the ring buffer only ever holds lines this function
   // actually cares about.
   lastLog = [];
-  await ff.exec(["-nostats", "-i", inName, "-af", `silencedetect=noise=${noiseDb}dB:d=${minDurationSec}`, "-f", "null", "-"]);
+  const windowArgs = window ? ["-ss", String(window.startSec), "-t", String(Math.max(0.1, window.endSec - window.startSec))] : [];
+  await ff.exec([...windowArgs, "-i", inName, "-vn", "-nostats", "-af", `silencedetect=noise=${noiseDb}dB:d=${minDurationSec}`, "-f", "null", "-"]);
   await ff.deleteFile(inName).catch(() => {});
+  // silencedetect's reported times are relative to whatever we fed it —
+  // when a window was given, that's the TRIMMED input (starts at 0), so
+  // offset back to source-file-absolute seconds to keep this function's
+  // return contract identical either way.
+  const offset = window?.startSec || 0;
   const ranges: { start: number; end: number }[] = [];
   let pendingStart: number | null = null;
   for (const line of lastLog) {
     const startMatch = line.match(/silence_start:\s*([\d.]+)/);
-    if (startMatch) { pendingStart = parseFloat(startMatch[1]); continue; }
+    if (startMatch) { pendingStart = parseFloat(startMatch[1]) + offset; continue; }
     const endMatch = line.match(/silence_end:\s*([\d.]+)/);
     if (endMatch && pendingStart !== null) {
-      ranges.push({ start: pendingStart, end: parseFloat(endMatch[1]) });
+      ranges.push({ start: pendingStart, end: parseFloat(endMatch[1]) + offset });
       pendingStart = null;
     }
   }
@@ -514,17 +531,48 @@ export const readImageMeta = (file: File): Promise<{ width: number; height: numb
 // transcribe-audio.ts for auto-captions. Kept separate from the main
 // export pipeline (doesn't touch normalized-clip state) so it can run any
 // time the owner presses "Auto-Captions," independent of rendering.
-export const extractAudioForTranscription = async (clip: EditorClip): Promise<Blob> => {
+// BUG FIX (audit finding — real perf win). inName used to be keyed by
+// clip.id — unique PER PIECE — so when dead-space cutting splits one
+// original upload into N pieces, this wrote the SAME source file's bytes
+// into ffmpeg's virtual FS (a real blob read + WASM-heap copy, often tens
+// of MB) N separate times during the Auto-Edit caption loop, once per
+// piece, even though every piece shares the identical clip.file. An
+// optional per-run `fsCache` (keyed by the underlying File, not the
+// piece's id) lets the caller write the source ONCE and reuse it for
+// every piece's -ss/-t extraction — a direct N-to-1 reduction in
+// redundant full-file writes for an N-piece clip. Callers that don't pass
+// one (the single-clip manual "Auto-Captions" button, where there's only
+// ever one call and no reuse to be had) get the exact previous behavior.
+export const extractAudioForTranscription = async (clip: EditorClip, fsCache?: Map<File, string>): Promise<Blob> => {
   const ff = await loadFfmpeg();
-  const inName = "transcribe-in-" + clip.id.replace(/[^a-z0-9]/gi, "");
+  let inName = fsCache?.get(clip.file);
+  if (!inName) {
+    inName = "transcribe-in-" + clip.id.replace(/[^a-z0-9]/gi, "");
+    await ff.writeFile(inName, await fetchFile(clip.file));
+    fsCache?.set(clip.file, inName);
+  }
   const outName = "transcribe-out-" + clip.id.replace(/[^a-z0-9]/gi, "") + ".mp3";
-  await ff.writeFile(inName, await fetchFile(clip.file));
   const dur = Math.max(0.1, clip.endSec - clip.startSec);
   await ff.exec(["-ss", String(clip.startSec), "-i", inName, "-t", String(dur), "-vn", "-acodec", "libmp3lame", "-ar", "16000", "-ac", "1", "-b:a", "64k", outName]);
   const data = await ff.readFile(outName);
-  await ff.deleteFile(inName).catch(() => {});
+  // Only delete the shared input when nothing else will reuse it — the
+  // caller (runAutoEdit) owns cleanup of everything in fsCache once its
+  // whole per-run loop is done, since other pieces still need it until then.
+  if (!fsCache) await ff.deleteFile(inName).catch(() => {});
   await ff.deleteFile(outName).catch(() => {});
   return new Blob([data as any], { type: "audio/mpeg" });
+};
+
+// Cleans up every shared input file a fsCache (see extractAudioForTranscription
+// above) accumulated over one Auto-Edit run — call once after the whole
+// per-piece caption loop finishes, not per-piece (other pieces still need
+// their entry until then). Keeps ffmpeg's virtual filesystem from growing
+// unbounded across multiple Auto-Edit runs in one long browser session.
+export const cleanupFsCache = async (fsCache: Map<File, string>): Promise<void> => {
+  if (fsCache.size === 0) return;
+  const ff = await loadFfmpeg();
+  for (const name of fsCache.values()) await ff.deleteFile(name).catch(() => {});
+  fsCache.clear();
 };
 
 // FEATURE — "build a video editor that works without an API key,
@@ -538,13 +586,26 @@ export const extractAudioForTranscription = async (clip: EditorClip): Promise<Bl
 // setup. openai/groq/deepgram remain available as opt-in upgrades (an owner
 // who already has one of those keys may prefer its speed/accuracy) — see
 // functions/api/transcribe-audio.ts for what actually calls each of those.
-export type CaptionProvider = "local" | "openai" | "groq" | "deepgram";
+// PERF FEATURE (audit finding) — "local-fast" is the SAME zero-key
+// on-device path as "local", just backed by whisper-tiny.en instead of
+// base.en (see localTranscription.ts's MODEL_IDS) — real ~2-3x faster
+// transcription, at a real, honest cost: a meaningfully higher word-error
+// rate, worse on the noisy job-site audio this app's clips are actually
+// shot in. An explicit opt-in the owner picks when they want, never a
+// silent default swap.
+export type CaptionProvider = "local" | "local-fast" | "openai" | "groq" | "deepgram";
 export const CAPTION_PROVIDERS: { id: CaptionProvider; label: string; keyFrom: (settings: any) => string | undefined }[] = [
   { id: "local", label: "Built-in (free, no API key)", keyFrom: () => "local-whisper" },
+  { id: "local-fast", label: "Built-in — Faster (free, lower accuracy)", keyFrom: () => "local-whisper" },
   { id: "openai", label: "OpenAI Whisper", keyFrom: (s: any) => s?.modelKeys?.openai },
   { id: "groq", label: "Groq Whisper (fast)", keyFrom: (s: any) => s?.modelKeys?.groq },
   { id: "deepgram", label: "Deepgram", keyFrom: (s: any) => s?.deepgramApiKey },
 ];
+// Both "local" providers run on-device with real word-level timestamps —
+// callers branch on this (not a literal "local" === check) so filler-word
+// cutting/karaoke-caption grouping applies to "local-fast" too, not just
+// to the exact string "local".
+export const isLocalCaptionProvider = (provider: CaptionProvider): boolean => provider === "local" || provider === "local-fast";
 
 // Thin fetcher shared by the per-clip "Auto-Captions" button and the
 // full "Auto-Edit" pipeline below. The "local" provider transcribes
@@ -559,7 +620,7 @@ export const requestTranscription = async (
   apiKey: string,
   onProgress?: (msg: string) => void
 ): Promise<{ text: string; start: number; end: number }[]> => {
-  if (provider === "local") return transcribeAudioLocally(audioBlob, onProgress);
+  if (isLocalCaptionProvider(provider)) return transcribeAudioLocally(audioBlob, onProgress, provider === "local-fast" ? "fast" : "balanced");
   const form = new FormData();
   form.append("audio", audioBlob, "audio.mp3");
   form.append("apiKey", apiKey);
@@ -714,7 +775,7 @@ export const autoCutClipDeadSpace = async (
   noiseDb = -30,
   minSilenceSec = 0.6
 ): Promise<EditorClip[]> => {
-  const ranges = await detectSilence(clip.file, noiseDb, minSilenceSec);
+  const ranges = await detectSilence(clip.file, noiseDb, minSilenceSec, clip.isImage ? undefined : { startSec: clip.startSec, endSec: clip.endSec });
   return splitClipAtRanges(clip, ranges, 0.4);
 };
 
@@ -991,6 +1052,17 @@ export const renderFinalVideo = async (
   // here. Wrapped in try/catch with a skip-on-failure fallback, same
   // defensive pattern as the ASS caption burn below — this can't be
   // visually test-rendered in this environment.
+  // PERF FIX (audit finding) — flicker and captions used to be two
+  // separate full-timeline x264 re-encodes back to back (every
+  // AUTO_EDIT_TEMPLATES preset with cameraFlicker:true also burns
+  // captions, so this combination is common, not an edge case). Both are
+  // just `-vf` filter passes over the same input — compute the flicker
+  // filter STRING here without executing it yet, then prepend it onto
+  // whichever caption filter actually runs below (ass or the drawtext
+  // fallback), merging them into ONE exec/one re-encode. Only falls back
+  // to a standalone flicker-only exec when there are no captions to merge
+  // it with.
+  let flickerFilterPrefix = "";
   if (cameraFlicker && normalizedDurations.length > 1) {
     const flashPoints: number[] = [];
     let cum = 0;
@@ -1005,23 +1077,28 @@ export const renderFinalVideo = async (
       if (!t.xfadeType && !clips[i].internalCutOnly) flashPoints.push(cum);
     }
     if (flashPoints.length > 0) {
-      onProgress?.("Adding camera flicker", 63);
-      try {
-        const brightnessExpr = flashPoints
-          .map(t => `if(between(t,${t.toFixed(3)},${(t + 0.05).toFixed(3)}),0.55,if(between(t,${(t + 0.08).toFixed(3)},${(t + 0.12).toFixed(3)}),0.28,0))`)
-          .join("+");
-        await ff.exec(["-i", joinedName, "-vf", `eq=brightness='${brightnessExpr}'`, "-c:a", "copy", "flickered.mp4"]);
-        await ff.deleteFile(joinedName).catch(() => {});
-        joinedName = "flickered.mp4";
-      } catch (e: any) {
-        console.warn("[VideoEditor] camera-flicker pass failed, exporting without it:", e?.message);
-      }
+      const brightnessExpr = flashPoints
+        .map(t => `if(between(t,${t.toFixed(3)},${(t + 0.05).toFixed(3)}),0.55,if(between(t,${(t + 0.08).toFixed(3)},${(t + 0.12).toFixed(3)}),0.28,0))`)
+        .join("+");
+      flickerFilterPrefix = `eq=brightness='${brightnessExpr}',`;
     }
+  }
+  if (flickerFilterPrefix && captions.length === 0) {
+    // Nothing to merge it with — apply standalone, same as before.
+    onProgress?.("Adding camera flicker", 63);
+    try {
+      await ff.exec(["-i", joinedName, "-vf", flickerFilterPrefix.slice(0, -1), "-c:a", "copy", "flickered.mp4"]);
+      await ff.deleteFile(joinedName).catch(() => {});
+      joinedName = "flickered.mp4";
+    } catch (e: any) {
+      console.warn("[VideoEditor] camera-flicker pass failed, exporting without it:", e?.message);
+    }
+    flickerFilterPrefix = "";
   }
 
   let finalInput = joinedName;
   if (captions.length > 0) {
-    onProgress?.("Burning captions", 70);
+    onProgress?.(flickerFilterPrefix ? "Adding camera flicker + burning captions" : "Burning captions", 70);
     // FEATURE — "improve auto captions ten times... genuinely good-looking,
     // timed auto captions with good animations." Real word-by-word karaoke
     // highlighting via a genuine ASS/SSA subtitle burn (lib/assCaptions.ts)
@@ -1039,7 +1116,7 @@ export const renderFinalVideo = async (
       for (const style of usedStyles) await ensureFontInDir(ff, style);
       const { content } = buildAssDocument(captions, targetW, targetH);
       await ff.writeFile("captions.ass", new TextEncoder().encode(content));
-      await ff.exec(["-i", finalInput, "-vf", "ass=captions.ass:fontsdir=/fonts", "-c:a", "copy", "captioned-ass.mp4"]);
+      await ff.exec(["-i", finalInput, "-vf", `${flickerFilterPrefix}ass=captions.ass:fontsdir=/fonts`, "-c:a", "copy", "captioned-ass.mp4"]);
       await ff.deleteFile("captions.ass").catch(() => {});
       assSucceeded = true;
     } catch (e: any) {
@@ -1071,7 +1148,18 @@ export const renderFinalVideo = async (
       // (unchanged) — real pixel size in the actual export, not just a
       // preview-only CSS affectation.
       const fontScale = cap.fontScale && cap.fontScale > 0 ? cap.fontScale : 1;
-      const baseFontSize = (0.055 * fontScale).toFixed(4);
+      // BUG FIX (audit finding — same root cause as the ASS path in
+      // assCaptions.ts's resolveBaseFontSize) — this drawtext fallback
+      // (only used if the ass filter itself throws) sized text from
+      // frame HEIGHT alone (h*0.055), with no reference to width — on a
+      // narrow 9:16 frame that oversizes text well past what the frame
+      // can fit. min(w*0.09,h*0.055) is the same two fractions
+      // resolveBaseFontSize uses, expressed as a live ffmpeg expression
+      // (w/h are the filtergraph's own runtime frame-size variables)
+      // instead of a JS-computed constant, since drawtext's fontsize
+      // already supports arbitrary math via ffmpeg's eval, same as the
+      // "punch" animation's overshoot expression right below.
+      const baseFontSize = `min(w*${(0.09 * fontScale).toFixed(4)},h*${(0.055 * fontScale).toFixed(4)})`;
       // FEATURE — "really good-looking, timed auto captions with good
       // animations." The "punch" animation (see captionStyles.ts's
       // hook-punch/karaoke-box presets, built for fast word-grouped auto-
@@ -1079,18 +1167,20 @@ export const renderFinalVideo = async (
       // settles back to normal over ~0.28s — a real per-frame size pop,
       // not just a fade. drawtext's fontsize accepts a live expression the
       // same way alpha/x/y already do here; single-quoted so the commas
-      // inside max()/abs() aren't mistaken for filter-chain separators
+      // inside max()/abs()/min() aren't mistaken for filter-chain separators
       // (same reasoning as alpha='${alphaExpr}' below).
       const fontSizeExpr = style.animation === "punch"
-        ? `h*${baseFontSize}*(1+0.4*max(0,1-abs(t-${cap.startSec}-0.1)/0.18))`
-        : `h*${baseFontSize}`;
+        ? `${baseFontSize}*(1+0.4*max(0,1-abs(t-${cap.startSec}-0.1)/0.18))`
+        : baseFontSize;
       drawtextFilters.push(
         `drawtext=fontfile=${fontFile}:text='${text}':fontcolor=${style.color}:fontsize='${fontSizeExpr}'` +
         `:x=${baseX}:y=${y}${strokeParts}${boxParts}` +
         `:enable='between(t,${cap.startSec},${cap.endSec})':alpha='${alphaExpr}'`
       );
     }
-    await ff.exec(["-i", finalInput, "-vf", drawtextFilters.join(","), "-c:a", "copy", "captioned.mp4"]);
+    // Flicker merged in here too (audit finding) — if the ass filter
+    // throws, this fallback still needs to apply it, not silently drop it.
+    await ff.exec(["-i", finalInput, "-vf", flickerFilterPrefix + drawtextFilters.join(","), "-c:a", "copy", "captioned.mp4"]);
     await ff.deleteFile(finalInput).catch(() => {});
     finalInput = "captioned.mp4";
     }

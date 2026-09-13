@@ -26,9 +26,13 @@ import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { GBtn } from "./GBtn";
 import { X, Plus, Trash2, Wand2, Scissors, Type, Upload, Sparkles, RotateCw, FlipHorizontal, Captions, Crop as CropIcon, Sliders, Maximize2, Minimize2, Layers, Music as MusicIcon, ImagePlus, Volume2, VolumeX, Play, Pause, Download as DownloadIcon, ChevronUp, ChevronDown } from "lucide-react";
-import { uid, uploadJobMedia } from "../../lib/utils";
+import { uid, uploadJobMedia, requestDesktopNotifPermission, notifyDesktop } from "../../lib/utils";
+import { sendOwnerGmailOnly, emailShell } from "../../lib/messaging";
+import { sendPushNotification } from "../../lib/push";
+import { startAutoEditJob, finishAutoEditJob, failAutoEditJob, createProgressEstimator, getAutoEditJobState, clearAutoEditJob } from "../../lib/autoEditJobStore";
 import { CAPTION_STYLES, CAPTION_GOOGLE_FONTS_HREF, captionStyleToCss, getCaptionStyle, TRANSITION_EFFECTS } from "../../lib/captionStyles";
-import { readVideoMeta, readImageMeta, detectSilence, renderFinalVideo, extractAudioForTranscription, autoCutClipDeadSpace, stripFillerWordsFromClip, isFillerWord, requestTranscription, groupWordsIntoCaptionLines, fitClipsToDuration, CAPTION_PROVIDERS, ASPECT_RATIOS, SOUND_EFFECTS, COLOR_LOOKS, getColorLook, AUTO_EDIT_TEMPLATES, getAutoEditTemplate, interpretStylePrompt, type AspectRatio, type CaptionProvider, type CropRect, type EditorClip, type EditorCaption, type EditorOverlay, type MusicTrack } from "../../lib/videoEditor";
+import { readVideoMeta, readImageMeta, detectSilence, renderFinalVideo, extractAudioForTranscription, cleanupFsCache, autoCutClipDeadSpace, stripFillerWordsFromClip, isFillerWord, requestTranscription, groupWordsIntoCaptionLines, fitClipsToDuration, isLocalCaptionProvider, CAPTION_PROVIDERS, ASPECT_RATIOS, ASPECT_DIMENSIONS, SOUND_EFFECTS, COLOR_LOOKS, getColorLook, AUTO_EDIT_TEMPLATES, getAutoEditTemplate, interpretStylePrompt, type AspectRatio, type CaptionProvider, type CropRect, type EditorClip, type EditorCaption, type EditorOverlay, type MusicTrack } from "../../lib/videoEditor";
+import { resolveBaseFontSize, estimateMaxCharsPerLine } from "../../lib/assCaptions";
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 
@@ -49,7 +53,7 @@ const readFileAsDataUrl = (file: File): Promise<string> =>
     reader.readAsDataURL(file);
   });
 
-export function VideoEditorModal({ open, onClose, onExported, toast, settings, setSettings, initialAutoEdit, onInitialAutoEditConsumed }: {
+export function VideoEditorModal({ open, onClose, onExported, toast, settings, setSettings, ownerId, initialAutoEdit, onInitialAutoEditConsumed }: {
   open: boolean;
   onClose: () => void;
   // Hands back the finished video as a Blob + a suggested filename — the
@@ -61,6 +65,10 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
   toast?: (msg: string, tone?: any) => void;
   settings?: any;
   setSettings?: any;
+  // Needed for the completion push notification (sendPushNotification
+  // resolves the caller's own owner_id server-side, but still needs it
+  // client-side to address the row it writes/reads).
+  ownerId?: string;
   // FEATURE — Social page's "Auto Edit" quick-wizard button: collects
   // clips/music/style/length/description up front, THEN opens this same
   // editor pre-loaded and auto-runs the exact same Auto-Edit pipeline
@@ -73,6 +81,7 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
     stylePrompt?: string;
     templateId?: string | null;
     targetDurationSec?: number | null;
+    emailOnDone?: boolean;
   } | null;
   onInitialAutoEditConsumed?: () => void;
 }) {
@@ -147,7 +156,7 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
   const [captionProvider, setCaptionProvider] = useState<CaptionProvider>("local");
   useEffect(() => {
     if (!open) return;
-    const withKey = CAPTION_PROVIDERS.find(p => !!p.keyFrom(settings) && p.id !== "local");
+    const withKey = CAPTION_PROVIDERS.find(p => !!p.keyFrom(settings) && !isLocalCaptionProvider(p.id));
     if (withKey) setCaptionProvider(withKey.id);
   }, [open]);
   const getCaptionApiKey = (provider: CaptionProvider): string | undefined => CAPTION_PROVIDERS.find(p => p.id === provider)?.keyFrom(settings);
@@ -179,6 +188,7 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
       if (initialAutoEdit.templateId) applyTemplate(initialAutoEdit.templateId);
       if (initialAutoEdit.stylePrompt) setAutoEditPrompt(initialAutoEdit.stylePrompt);
       setAutoEditTargetDurationSec(initialAutoEdit.targetDurationSec ?? null);
+      setAutoEditEmailOnDone(!!initialAutoEdit.emailOnDone);
       onInitialAutoEditConsumed?.();
       // Signals effect below to actually run, once this batch of state
       // updates has committed — NOT called inline here, since
@@ -198,6 +208,25 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
     if (clipsToRun.length > 1) { setOrderDraft(clipsToRun); setOrderConfirmOpen(true); }
     else runAutoEdit(clipsToRun);
   }, [pendingWizardClips]);
+  // FEATURE — "show the auto editing status... while you're doing other
+  // stuff." If an Auto-Edit run finished while this modal (or the whole
+  // Social page) wasn't mounted to receive it, the result is sitting in
+  // the shared job store (autoEditJobStore.ts) instead of being lost —
+  // pick it up the next time this modal opens onto an otherwise-empty
+  // session, rather than the owner having to redo the whole run.
+  useEffect(() => {
+    if (!open || initialAutoEdit) return;
+    const job = getAutoEditJobState();
+    if (job.result && clips.length === 0) {
+      setClips(job.result.clips);
+      setCaptions(job.result.captions);
+      setAspectRatio(job.result.aspectRatio);
+      setActiveClipId(job.result.clips[0]?.id || null);
+      setTab("clips");
+      toast?.("Loaded your finished Auto-Edit — " + job.result.summary, "green");
+      clearAutoEditJob();
+    }
+  }, [open]);
   // FEATURE — "make it so you can auto edit... choose caption templates,
   // review it, can manually edit it, save, etc." Style applied to every
   // caption the Auto-Edit pipeline generates — picked once up front.
@@ -234,6 +263,13 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
   // null = no target (today's behavior, unchanged). See
   // fitClipsToDuration in videoEditor.ts for what actually happens with it.
   const [autoEditTargetDurationSec, setAutoEditTargetDurationSec] = useState<number | null>(null);
+  // FEATURE — "send an email when it's done, depending on how long it
+  // is." Explicit owner opt-in (checkbox in the wizard and the manual
+  // panel) OR'd with an automatic threshold at completion time (see
+  // runAutoEdit) for a run that ends up taking a while regardless of
+  // whether this was checked — "depending on how long it is" taken
+  // literally rather than purely a manual toggle.
+  const [autoEditEmailOnDone, setAutoEditEmailOnDone] = useState(false);
   // FEATURE — "ping the owner and ask what order you want the clips in."
   // A real confirm-before-running step: Run Auto-Edit opens this instead of
   // firing immediately whenever there's more than one clip.
@@ -733,7 +769,9 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
     if (!activeClip) { toast?.("Add a clip first", "red"); return; }
     setDetectingSilence(true);
     try {
-      const ranges = await detectSilence(activeClip.file);
+      // PERF FIX (audit finding) — scope to the clip's current trim
+      // window instead of always decoding the whole uploaded file.
+      const ranges = await detectSilence(activeClip.file, undefined, undefined, activeClip.isImage ? undefined : { startSec: activeClip.startSec, endSec: activeClip.endSec });
       if (ranges.length === 0) { toast?.("No significant silence found in this clip", "yellow"); return; }
       setSilenceRanges(prev => [...prev.filter(r => r.clipId !== activeClip.id), ...ranges.map(r => ({ clipId: activeClip.id, ...r }))]);
       toast?.(`Found ${ranges.length} quiet stretch${ranges.length > 1 ? "es" : ""} — review below and trim if you want`, "green");
@@ -781,8 +819,13 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
       // assCaptions.ts) for a genuine karaoke word-highlight burn, instead
       // of one caption per single word. Paid providers already return
       // sentence/phrase-level segments with no word boundaries — used as-is.
-      const newCaptions: EditorCaption[] = captionProvider === "local"
-        ? groupWordsIntoCaptionLines(rawSegments).map(g => ({
+      // BUG FIX (audit finding — "captions didn't even fit the screen").
+      // Line length must be sized to the actual export resolution, not a
+      // flat aspect-ratio-blind constant — see estimateMaxCharsPerLine's
+      // own comment in assCaptions.ts for the full root cause.
+      const { w: capTargetW, h: capTargetH } = ASPECT_DIMENSIONS[aspectRatio];
+      const newCaptions: EditorCaption[] = isLocalCaptionProvider(captionProvider)
+        ? groupWordsIntoCaptionLines(rawSegments, { maxChars: estimateMaxCharsPerLine(capTargetW, capTargetH) }).map(g => ({
             id: uid(), text: g.text, startSec: offsetSec + g.start, endSec: offsetSec + g.end, styleId: autoEditCaptionStyle,
             words: g.words.map(w => ({ text: w.text, start: offsetSec + w.start, end: offsetSec + w.end })),
           }))
@@ -877,6 +920,32 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
   // just-reordered) draft directly — setClips() is async/batched, so
   // reading the `clips` state closure right after calling it would still
   // see the OLD order.
+  // FEATURE — "you don't have to stay inside that page while it's auto
+  // editing... notify you... send an email when it's done." Fires once,
+  // at completion, regardless of whether this component is still mounted
+  // to see it happen — the ACTUAL work (ffmpeg/Whisper) already ran via
+  // module-level singletons independent of any component (see
+  // autoEditJobStore.ts's own header comment), so this only needs to be
+  // called from the one place that knows the run is really done.
+  const notifyAutoEditDone = async (summary: string, durationMs: number) => {
+    requestDesktopNotifPermission().then(granted => {
+      if (granted) notifyDesktop("Auto-Edit ready", summary);
+    }).catch(() => {});
+    if (ownerId) {
+      sendPushNotification({ ownerId, title: "Auto-Edit ready", body: summary, url: "#/social", tag: "auto-edit-done" }).catch(() => {});
+    }
+    // "depending on how long it is" — an explicit opt-in (checkbox) OR a
+    // run that actually took a while (60s+) gets an email either way, so
+    // a long unattended run still reaches the owner even if they didn't
+    // think to check the box beforehand.
+    const ownerEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail;
+    if (ownerEmail && (autoEditEmailOnDone || durationMs > 60_000)) {
+      const minutes = Math.round(durationMs / 6000) / 10;
+      const html = emailShell(settings, "Your video is ready", `<p>Auto-Edit finished${minutes >= 1 ? ` in about ${minutes} minute${minutes === 1 ? "" : "s"}` : ""}.</p><p>${summary}</p><p>Open CrewBoss and go to Social to review it.</p>`);
+      sendOwnerGmailOnly(settings, ownerEmail, "Your video is ready", html).catch((e: any) => console.warn("[Auto-Edit] completion email failed:", e?.message));
+    }
+  };
+
   const runAutoEdit = async (clipsOverride?: EditorClip[]) => {
     const sourceClips = clipsOverride || clips;
     if (sourceClips.length === 0) { toast?.("Add at least one clip first", "red"); return; }
@@ -884,6 +953,13 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
     setAutoEditPromptMatches(autoEditPrompt.trim() ? interpretStylePrompt(autoEditPrompt).matched : []);
     if (cameraFlickerEnabled !== effective.cameraFlicker) setCameraFlickerEnabled(effective.cameraFlicker);
     setAutoEditRunning(true);
+    const runStartedMs = Date.now();
+    startAutoEditJob();
+    // Asking right as the owner starts a run they might want to walk away
+    // from is the one moment this is actually contextual, rather than a
+    // random permission popup on page load.
+    requestDesktopNotifPermission().catch(() => {});
+    const progress = createProgressEstimator(sourceClips.length, pct => `Auto-editing your video… ${pct}%`);
     try {
       setAutoEditPhase("Cutting dead space…");
       let cutClips: EditorClip[] = [];
@@ -891,6 +967,7 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
         setAutoEditPhase(`Cutting dead space (clip ${i + 1}/${sourceClips.length})…`);
         const pieces = await autoCutClipDeadSpace(sourceClips[i]);
         cutClips.push(...pieces);
+        progress.onPhase1Step();
       }
 
       // BUG FIX — speed must be finalized BEFORE the caption/filler loop
@@ -925,18 +1002,32 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
         const finalClips: EditorClip[] = [];
         let offset = 0;
         let fillerWordsCut = 0;
+        // PERF FIX (audit finding) — dead-space cutting can split one
+        // original upload into many pieces that all share the same
+        // clip.file; without this, each piece's extractAudioForTranscription
+        // call independently re-wrote the ENTIRE source file's bytes into
+        // ffmpeg's virtual FS. Keyed by File (not piece id) so the source
+        // is written once and every piece just re-reads it with its own
+        // -ss/-t window. Cleaned up once the whole loop finishes below.
+        const fsCache = new Map<File, string>();
+        progress.onPhase2Start(cutClips.length);
+        try {
         for (let i = 0; i < cutClips.length; i++) {
           const c = cutClips[i];
           const pieceSpeed = c.isImage ? 1 : Math.max(0.5, Math.min(2, c.speed || 1));
           setAutoEditPhase(`Transcribing (${i + 1}/${cutClips.length})…`);
           try {
-            const audioBlob = await extractAudioForTranscription(c);
+            const audioBlob = await extractAudioForTranscription(c, fsCache);
             const rawSegments = await requestTranscription(audioBlob, captionProvider, apiKey, msg => setAutoEditPhase(msg));
-            if (captionProvider === "local") {
+            if (isLocalCaptionProvider(captionProvider)) {
               fillerWordsCut += rawSegments.filter(w => isFillerWord(w.text)).length;
               const { clips: piecesAfterFillerStrip, words: survivorWords } = stripFillerWordsFromClip(c, rawSegments);
               finalClips.push(...piecesAfterFillerStrip);
-              const groups = groupWordsIntoCaptionLines(survivorWords);
+              // BUG FIX (audit finding — "captions didn't even fit the
+              // screen"). Same fix as the manual Auto-Captions button: size
+              // lines to the real export resolution, not a flat constant.
+              const { w: autoEditTargetW, h: autoEditTargetH } = ASPECT_DIMENSIONS[aspectRatio];
+              const groups = groupWordsIntoCaptionLines(survivorWords, { maxChars: estimateMaxCharsPerLine(autoEditTargetW, autoEditTargetH) });
               for (const g of groups) {
                 // BUG FIX — g.start/g.end/word timestamps come from the
                 // TRANSCRIPT (real source seconds within this piece,
@@ -960,6 +1051,10 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
             finalClips.push(c);
             offset += Math.max(0, c.endSec - c.startSec) / pieceSpeed;
           }
+          progress.onPhase2Step();
+        }
+        } finally {
+          await cleanupFsCache(fsCache);
         }
         const styledFinalClips = applyAutoStyling(finalClips, effective);
         setClips(styledFinalClips);
@@ -974,17 +1069,24 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
         // result in front of them immediately instead of leaving them
         // looking at the Auto-Edit panel they just clicked from.
         setTab("clips");
-        toast?.(`Auto-edit done — cut down to ${styledFinalClips.length} clip${styledFinalClips.length > 1 ? "s" : ""}${fillerNote}, added ${newCaptions.length} caption${newCaptions.length === 1 ? "" : "s"}${styleNote ? ` + ${styleNote}` : ""}${promptNote}${fitNote}. Review below, edit anything, then render ✓`, "green");
+        const doneSummary = `Auto-edit done — cut down to ${styledFinalClips.length} clip${styledFinalClips.length > 1 ? "s" : ""}${fillerNote}, added ${newCaptions.length} caption${newCaptions.length === 1 ? "" : "s"}${styleNote ? ` + ${styleNote}` : ""}${promptNote}${fitNote}. Review below, edit anything, then render ✓`;
+        toast?.(doneSummary, "green");
+        finishAutoEditJob({ clips: styledFinalClips, captions: [...captions, ...newCaptions], aspectRatio, summary: doneSummary });
+        notifyAutoEditDone(doneSummary, Date.now() - runStartedMs);
       } else {
         const styledCutClips = applyAutoStyling(cutClips, effective);
         setClips(styledCutClips);
         setActiveClipId(styledCutClips[0]?.id || null);
         setTab("clips");
         const captionCaveat = effective.skipCaptions ? "(skipped captions, per your description)" : "Add a captions API key to also auto-generate captions, or add them manually below";
-        toast?.(`Auto-edit done — cut down to ${styledCutClips.length} clip${styledCutClips.length > 1 ? "s" : ""}${styleNote ? ` + ${styleNote}` : ""}${promptNote}${fitNote}. ${captionCaveat} ✓`, "green");
+        const doneSummary = `Auto-edit done — cut down to ${styledCutClips.length} clip${styledCutClips.length > 1 ? "s" : ""}${styleNote ? ` + ${styleNote}` : ""}${promptNote}${fitNote}. ${captionCaveat} ✓`;
+        toast?.(doneSummary, "green");
+        finishAutoEditJob({ clips: styledCutClips, captions, aspectRatio, summary: doneSummary });
+        notifyAutoEditDone(doneSummary, Date.now() - runStartedMs);
       }
     } catch (e: any) {
       toast?.("Auto-edit failed — " + (e?.message || "unknown error"), "red");
+      failAutoEditJob(e?.message || "unknown error");
     } finally {
       setAutoEditRunning(false);
       setAutoEditPhase("");
@@ -1226,7 +1328,16 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
                 updateCaption(positioningCaptionId, { xPct, yPct });
               }}
               className={"relative rounded-xl overflow-hidden bg-black mx-auto max-h-full " + (positioningCaptionId ? "cursor-crosshair ring-2 ring-red-500" : "") + " " + (aspectRatio === "9:16" ? "aspect-[9/16]" : aspectRatio === "1:1" ? "aspect-square" : "aspect-video")}
-              style={{ maxWidth: aspectRatio === "9:16" ? "min(100%, 60vh)" : "100%" }}
+              // BUG FIX (audit finding — "captions didn't even fit the
+              // screen; they were completely wrong"). containerType lets
+              // the caption span below size itself in `cqw` (% of THIS
+              // box's own rendered width) instead of the old `vw` (% of
+              // the whole browser viewport) — vw had no relationship to
+              // this box's actual on-screen size (further shrunk by
+              // maxWidth for 9:16) OR to the export's real resolution, so
+              // the preview could never have shown an overflow the real
+              // export was about to have.
+              style={{ maxWidth: aspectRatio === "9:16" ? "min(100%, 60vh)" : "100%", containerType: "inline-size" }}
             >
               {isFullscreenPreview && (
                 <button
@@ -1288,6 +1399,14 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
               {activeCaption && activeCaptionStyle && (() => {
                 const isSelected = selectedCaptionId === activeCaption.id;
                 const canInteract = !positioningCaptionId && !cropEditingId;
+                // BUG FIX (audit finding) — same resolveBaseFontSize formula
+                // the real export uses (assCaptions.ts), expressed as a
+                // fraction of THIS aspect ratio's target width, then
+                // rendered in `cqw` (see containerType above) so the
+                // preview and the export agree numerically regardless of
+                // how big the preview box happens to be on screen.
+                const { w: previewTargetW, h: previewTargetH } = ASPECT_DIMENSIONS[aspectRatio];
+                const previewFontCqw = (resolveBaseFontSize(previewTargetW, previewTargetH) / previewTargetW) * 100;
                 return (
                   <div
                     className={"absolute left-0 right-0 flex justify-center px-4 text-center " + (canInteract ? "pointer-events-auto" : "pointer-events-none")}
@@ -1312,7 +1431,7 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
                       onDoubleClick={canInteract ? () => { setSelectedCaptionId(activeCaption.id); setTab("captions"); } : undefined}
                       style={{
                         ...captionStyleToCss(activeCaptionStyle),
-                        fontSize: `${5.5 * (activeCaption.fontScale || 1)}vw`, lineHeight: 1.2, display: "inline-block",
+                        fontSize: `${previewFontCqw * (activeCaption.fontScale || 1)}cqw`, lineHeight: 1.2, display: "inline-block",
                         animation: activeCaptionStyle.animation !== "none" ? `ve-anim-${activeCaptionStyle.animation} 0.4s ease-out` : undefined,
                         cursor: canInteract ? "grab" : undefined,
                         outline: isSelected ? "2px dashed #ef4444" : undefined,
@@ -2025,6 +2144,16 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
                         ))}
                       </div>
                     </div>
+                    {/* FEATURE — "you don't have to stay inside that
+                        page... notify you... send an email." Progress
+                        shows on the Social page while this runs (see
+                        autoEditJobStore.ts) whether or not this modal
+                        stays open — this just adds an email on top for a
+                        run that takes a while. */}
+                    <label className="flex items-center gap-1.5 text-[10px] text-white/60 cursor-pointer">
+                      <input type="checkbox" checked={autoEditEmailOnDone} onChange={e => setAutoEditEmailOnDone(e.target.checked)} className="accent-purple-600 w-3.5 h-3.5 flex-shrink-0" />
+                      Email me when it's ready
+                    </label>
                   </div>
                   <button onClick={startAutoEditFlow} className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-lg bg-purple-900/40 hover:bg-purple-900/60 border border-purple-600/50 text-purple-200 text-xs font-semibold transition">
                     <Sparkles size={13} />Run Auto-Edit

@@ -20,9 +20,12 @@ export type AutoEditWizardResult = {
   stylePrompt?: string;
   templateId?: string | null;
   targetDurationSec?: number | null;
+  emailOnDone?: boolean;
 };
 
 const LENGTH_OPTIONS: { v: number | null; l: string }[] = [
+  { v: 5, l: "5 sec" },
+  { v: 10, l: "10 sec" },
   { v: 15, l: "15 sec" },
   { v: 30, l: "30 sec" },
   { v: 60, l: "60 sec" },
@@ -37,13 +40,24 @@ export function AutoEditWizardModal({ open, onClose, onComplete, toast }: {
 }) {
   const [templateId, setTemplateId] = useState<string | null>(null);
   const [targetDurationSec, setTargetDurationSec] = useState<number | null>(30);
+  // FEATURE — "press Custom and type the number of seconds." isCustomLength
+  // tracks whether the Custom button itself is the active selection
+  // (separate from targetDurationSec, since typing "30" into Custom must
+  // stay visually distinct from picking the 30 sec preset button).
+  const [isCustomLength, setIsCustomLength] = useState(false);
+  const [customLengthInput, setCustomLengthInput] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [musicFile, setMusicFile] = useState<File | null>(null);
   const [stylePrompt, setStylePrompt] = useState("");
+  // FEATURE — "send an email when it's done, depending on how long it
+  // is." Explicit opt-in here; VideoEditorModal also auto-emails
+  // regardless of this if a run ends up taking 60s+, so a long run still
+  // reaches the owner even if they didn't think to check this first.
+  const [emailOnDone, setEmailOnDone] = useState(false);
   const clipsInputRef = useRef<HTMLInputElement>(null);
   const musicInputRef = useRef<HTMLInputElement>(null);
 
-  const reset = () => { setTemplateId(null); setTargetDurationSec(30); setFiles([]); setMusicFile(null); setStylePrompt(""); };
+  const reset = () => { setTemplateId(null); setTargetDurationSec(30); setIsCustomLength(false); setCustomLengthInput(""); setFiles([]); setMusicFile(null); setStylePrompt(""); setEmailOnDone(false); };
 
   const handleClipFiles = (list: FileList | null) => {
     if (!list) return;
@@ -54,7 +68,13 @@ export function AutoEditWizardModal({ open, onClose, onComplete, toast }: {
 
   const submit = () => {
     if (files.length === 0) { toast?.("Upload at least one video clip first", "red"); return; }
-    onComplete({ files, musicFile, stylePrompt: stylePrompt.trim() || undefined, templateId, targetDurationSec });
+    let finalTarget = targetDurationSec;
+    if (isCustomLength) {
+      const n = parseInt(customLengthInput, 10);
+      if (!Number.isFinite(n) || n <= 0) { toast?.("Enter a valid number of seconds for the custom length", "red"); return; }
+      finalTarget = n;
+    }
+    onComplete({ files, musicFile, stylePrompt: stylePrompt.trim() || undefined, templateId, targetDurationSec: finalTarget, emailOnDone });
     reset();
     onClose();
   };
@@ -86,11 +106,28 @@ export function AutoEditWizardModal({ open, onClose, onComplete, toast }: {
           <div className="text-xs font-semibold text-white/80 mb-2 flex items-center gap-1.5"><Clock size={12} className="text-purple-400" />2. How long?</div>
           <div className="grid grid-cols-4 gap-1.5">
             {LENGTH_OPTIONS.map(opt => (
-              <button key={opt.l} onClick={() => setTargetDurationSec(opt.v)} className={"py-2 rounded-lg text-[11px] font-semibold border transition " + (targetDurationSec === opt.v ? "bg-purple-900/50 border-purple-600/60 text-purple-200" : "bg-black/30 border-white/10 text-white/50 hover:border-white/25")}>
+              <button key={opt.l} onClick={() => { setIsCustomLength(false); setTargetDurationSec(opt.v); }} className={"py-2 rounded-lg text-[11px] font-semibold border transition " + (!isCustomLength && targetDurationSec === opt.v ? "bg-purple-900/50 border-purple-600/60 text-purple-200" : "bg-black/30 border-white/10 text-white/50 hover:border-white/25")}>
                 {opt.l}
               </button>
             ))}
+            <button onClick={() => setIsCustomLength(true)} className={"py-2 rounded-lg text-[11px] font-semibold border transition " + (isCustomLength ? "bg-purple-900/50 border-purple-600/60 text-purple-200" : "bg-black/30 border-white/10 text-white/50 hover:border-white/25")}>
+              Custom
+            </button>
           </div>
+          {isCustomLength && (
+            <div className="flex items-center gap-2 mt-2">
+              <input
+                type="number"
+                min={1}
+                value={customLengthInput}
+                onChange={e => setCustomLengthInput(e.target.value)}
+                placeholder="Seconds"
+                className="w-28 bg-black/30 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-white/25"
+                autoFocus
+              />
+              <span className="text-[11px] text-white/40">seconds</span>
+            </div>
+          )}
           <div className="text-[10px] text-white/35 mt-1.5">Auto-Edit speeds up and trims to hit this if your footage runs long — never pads a shorter result out.</div>
         </div>
 
@@ -142,6 +179,15 @@ export function AutoEditWizardModal({ open, onClose, onComplete, toast }: {
           />
           <div className="text-[10px] text-white/35 mt-1">Real keyword matching, no API key — covers pacing, captions, color grade, camera flicker, slow-mo/speed-up, and sound effects. Overrides the template above wherever it's more specific.</div>
         </div>
+
+        {/* FEATURE — "make it so you don't have to stay inside that
+            page... notify you... send an email when it's done." No need
+            to wait here — progress shows on the Social page while it
+            runs, and a long run emails you automatically either way. */}
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" checked={emailOnDone} onChange={e => setEmailOnDone(e.target.checked)} className="w-4 h-4 accent-purple-600 flex-shrink-0" />
+          <span className="text-xs text-white/60">Email me when it's ready — you can close this and do other stuff while it runs</span>
+        </label>
 
         <GBtn onClick={submit} className="w-full !py-3 !text-sm"><Sparkles size={14} className="inline mr-1.5" />Create My Video</GBtn>
       </div>

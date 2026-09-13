@@ -21,6 +21,44 @@ export type AssCaptionInput = {
   words?: AssWord[];
 };
 
+// BUG FIX (audit finding — "captions didn't even fit the screen; they were
+// completely wrong"). Root cause: font size was computed from targetH ONLY
+// (Math.round(targetH * 0.055)) with zero reference to targetW, the actual
+// horizontal room text has to fit in. On the app's own default aspect
+// ratio, 9:16 (720x1280 — the narrowest width / tallest height of all 5
+// presets), that produced a ~70px font in a 720px-wide frame — a 24-
+// character caption line at that size runs roughly 850-1000px wide,
+// wider than the frame itself, and WrapStyle:2 (below) told libass NOT to
+// auto-wrap, so it rendered as one line running off both edges.
+// Exported so BOTH the export path (below) and the live in-editor preview
+// (VideoEditorModal.tsx) compute the identical number — the previous bug
+// was invisible in the editor specifically because the preview used an
+// unrelated CSS `vw` unit that could never reproduce an overflow, so
+// "looks right in the editor" was structurally guaranteed regardless of
+// what the export actually did.
+export const resolveBaseFontSize = (targetW: number, targetH: number): number =>
+  Math.max(8, Math.round(Math.min(targetW * 0.09, targetH * 0.055)));
+
+// Average rendered glyph width for these bold/condensed caption fonts, as
+// a fraction of font size — a real measurement would need an actual font
+// metrics lookup (not available in ffmpeg.wasm's filtergraph context or
+// cheaply in a browser without rendering to a canvas per style), so this
+// is a deliberately conservative estimate (real bold sans-serif caption
+// fonts commonly run 0.5-0.6x) tuned toward UNDER-filling the line rather
+// than over-filling it — a caption a little short of the available width
+// is a minor cosmetic non-issue; one that overflows the frame is the bug
+// this whole fix exists to prevent.
+const AVG_GLYPH_WIDTH_RATIO = 0.56;
+// Exported so groupWordsIntoCaptionLines (videoEditor.ts) can size caption
+// LINES to the actual export resolution instead of a flat, aspect-ratio-
+// blind character count — the second half of the same root cause: even
+// with a correctly-sized font, a line built for a 24-character budget can
+// still overflow a narrow 9:16 frame's available width.
+export const estimateMaxCharsPerLine = (targetW: number, targetH: number, fontScale = 1): number => {
+  const fontSizePx = resolveBaseFontSize(targetW, targetH) * fontScale;
+  return Math.max(6, Math.floor((targetW * 0.92) / (fontSizePx * AVG_GLYPH_WIDTH_RATIO)));
+};
+
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
 // ASS timestamps: H:MM:SS.CC (centiseconds, always 2 digits, no leading
@@ -161,7 +199,7 @@ export const buildAssDocument = (
   const fontFamilies = Array.from(new Set(styles.map(s => s.cssFamily)));
 
   const styleLines = styles.map(style => {
-    const baseFontSize = Math.max(8, Math.round(targetH * 0.055));
+    const baseFontSize = resolveBaseFontSize(targetW, targetH);
     const { backColorAss, borderStyle } = parseBackground(style.background);
     const primary = hexToAssColor(style.color, "00");
     // Karaoke's "not yet sung" color — a bright, high-contrast accent so
@@ -177,8 +215,20 @@ export const buildAssDocument = (
 
   const events = captions.map(cap => {
     const style = getCaptionStyle(cap.styleId);
-    const baseFontSize = Math.max(8, Math.round(targetH * 0.055));
+    const baseFontSize = resolveBaseFontSize(targetW, targetH);
     const fontScale = cap.fontScale && cap.fontScale > 0 ? cap.fontScale : 1;
+    // BUG FIX (audit finding #4) — no defensive check anywhere previously
+    // measured a caption against the frame it was about to be burned
+    // into, so an overflowing line produced no trace until someone
+    // actually watched the exported video. This can't catch everything
+    // (glyph width is an estimate, not a real font metrics lookup) but
+    // catches the common case — a caption manually stretched via
+    // fontScale, or a style change that raises the per-caption budget —
+    // and gives future debugging a console trail instead of silence.
+    const maxChars = estimateMaxCharsPerLine(targetW, targetH, fontScale);
+    if (cap.text.length > maxChars * 1.15) {
+      console.warn(`[VideoEditor] caption may overflow frame: "${cap.text.slice(0, 40)}${cap.text.length > 40 ? "…" : ""}" is ${cap.text.length} chars, estimated budget ~${maxChars} at this size/resolution (${targetW}x${targetH}) — WrapStyle 0 will auto-wrap it, but check it still reads well.`);
+    }
     const { x, y } = resolveAnchor(cap, style, targetW, targetH, baseFontSize * fontScale);
     const scaleTag = fontScale !== 1 ? `\\fscx${Math.round(fontScale * 100)}\\fscy${Math.round(fontScale * 100)}` : "";
     const posTag = style.animation === "slide-up"
@@ -188,12 +238,21 @@ export const buildAssDocument = (
     return `Dialogue: 0,${formatAssTime(cap.startSec)},${formatAssTime(cap.endSec)},${style.id},,0,0,0,,${text}`;
   }).join("\n");
 
+  // BUG FIX (audit finding) — WrapStyle 2 = no automatic wrapping at all
+  // (only an explicit \N breaks a line), which is exactly why an over-
+  // length caption rendered as one line running off both edges of the
+  // frame instead of wrapping. groupWordsIntoCaptionLines now sizes lines
+  // to the real export width (see estimateMaxCharsPerLine above), so this
+  // should rarely even trigger — WrapStyle 0 (libass's normal smart
+  // wrapping, evenly split against PlayResX) is a safety net for whatever
+  // that estimate doesn't catch (a single very long word, a manually
+  // enlarged fontScale), not the primary fix.
   const content = `[Script Info]
 ScriptType: v4.00+
 PlayResX: ${targetW}
 PlayResY: ${targetH}
 ScaledBorderAndShadow: yes
-WrapStyle: 2
+WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding

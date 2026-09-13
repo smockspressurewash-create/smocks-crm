@@ -46,6 +46,7 @@ import { AddressAutocomplete } from "../ui/AddressAutocomplete";
 import { BeforeAfterSlider } from "../ui/BeforeAfterSlider";
 import { VideoEditorModal } from "../ui/VideoEditorModal";
 import { AutoEditWizardModal, type AutoEditWizardResult } from "../ui/AutoEditWizardModal";
+import { useAutoEditJob } from "../../lib/autoEditJobStore";
 import { CustomerModal } from "../ui/CustomerModal";
 import { CustomerDetail } from "../ui/CustomerDetail";
 import { CustomerAnalytics } from "../ui/CustomerAnalytics";
@@ -82,6 +83,13 @@ import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 import { AlfredScriptsPanel } from "../ui/AlfredScriptsPanel";
 
 const SOCIAL_HASHTAGS_DEFAULT = "#pressurewashing #softwash #yorkpa #homeimprovement #curb appeal";
+
+const formatEtaSec = (sec: number): string => {
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return s > 0 ? `${m}m ${s}s` : `${m}m`;
+};
 
 export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSettings, setSettings, jobs = [], ownerId = "", onNav }: { posts?: any[]; setPosts?: any; toast?: any; settings?: AppSettings; setSettings?: any; jobs?: any[]; ownerId?: string; onNav?: (page: string) => void }) {
   const [modal, setModal] = useState(false);
@@ -149,6 +157,12 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
   // into that same editor via initialAutoEdit, pre-loaded and already run.
   const [autoEditWizardOpen, setAutoEditWizardOpen] = useState(false);
   const [pendingAutoEdit, setPendingAutoEdit] = useState<AutoEditWizardResult | null>(null);
+  // FEATURE — "show the auto editing status in the social section while
+  // you're doing other stuff, and it can notify you." Reads the shared
+  // job store (autoEditJobStore.ts) directly — live while running, and
+  // still showing "ready" if a run finished while this page or the
+  // editor modal wasn't even open to see it.
+  const autoEditJob = useAutoEditJob();
   // FEATURE — CapCut-style video editor's export hands back a raw Blob
   // (ffmpeg.wasm's rendered MP4); this uploads it the exact same way the
   // plain file-upload path above does, so the rest of the posting flow
@@ -543,6 +557,42 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
           </div>
         </div>
       </Glass>
+
+      {/* FEATURE — "show the auto editing status in the social section
+          while you're doing other stuff." Live while a run is in
+          progress (percentage + adaptive ETA, see autoEditJobStore.ts);
+          switches to a "ready" banner once done, even if the editor
+          modal was closed (or this whole page was navigated away from
+          and back to) partway through — the run itself keeps going
+          either way, this just shows/recovers where it's at. */}
+      {(autoEditJob.running || autoEditJob.result) && (
+        <Glass className={"p-3.5 !border " + (autoEditJob.running ? "!bg-purple-950/20 !border-purple-700/30" : "!bg-green-950/20 !border-green-700/30")}>
+          {autoEditJob.running ? (
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-full border-2 border-purple-500/30 border-t-purple-400 animate-spin flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="text-xs font-semibold text-purple-200 truncate">{autoEditJob.phaseLabel || "Auto-editing your video…"}</div>
+                <div className="mt-1.5 h-1.5 rounded-full bg-black/40 overflow-hidden">
+                  <div className="h-full bg-purple-500 transition-all duration-500" style={{ width: `${autoEditJob.pct}%` }} />
+                </div>
+              </div>
+              <div className="text-[10px] text-purple-300/70 flex-shrink-0 text-right">
+                {autoEditJob.pct}%
+                {autoEditJob.etaSec !== null && autoEditJob.etaSec > 0 && <div>~{formatEtaSec(autoEditJob.etaSec)} left</div>}
+              </div>
+            </div>
+          ) : (
+            <button onClick={() => setVideoEditorOpen(true)} className="w-full flex items-center gap-3 text-left">
+              <CheckCircle size={22} className="text-green-400 flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="text-xs font-semibold text-green-200">Your auto-edited video is ready</div>
+                <div className="text-[10px] text-white/40 truncate">Tap to open and review it</div>
+              </div>
+              <ChevronRight size={16} className="text-white/30 flex-shrink-0" />
+            </button>
+          )}
+        </Glass>
+      )}
 
       {/* Connection status per platform — shows exactly which real method
           will actually be used to post ("it doesn't show 'post with this
@@ -1075,7 +1125,7 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
         </div>
       </Modal>
 
-      <VideoEditorModal open={videoEditorOpen} onClose={() => setVideoEditorOpen(false)} onExported={onVideoExported} toast={toast} settings={settings} setSettings={setSettings} initialAutoEdit={pendingAutoEdit} onInitialAutoEditConsumed={() => setPendingAutoEdit(null)} />
+      <VideoEditorModal open={videoEditorOpen} onClose={() => setVideoEditorOpen(false)} onExported={onVideoExported} toast={toast} settings={settings} setSettings={setSettings} ownerId={ownerId} initialAutoEdit={pendingAutoEdit} onInitialAutoEditConsumed={() => setPendingAutoEdit(null)} />
       <AutoEditWizardModal
         open={autoEditWizardOpen}
         onClose={() => setAutoEditWizardOpen(false)}
