@@ -4584,7 +4584,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         const speakingTurnId = voiceTurnIdRef.current;
         if (voiceModeOpenRef.current) {
           setVoiceModeState("speaking");
-          startInterruptListener();
+          startInterruptListener(finalText);
         }
         speakAloud(finalText, settings.elevenlabsKey).then(() => {
           if (voiceModeOpenRef.current && voiceTurnIdRef.current === speakingTurnId) ttsEndCallbackRef.current?.();
@@ -4711,41 +4711,83 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // headset makes this far more reliable than open speakers).
   const RESUME_CUE = /^(resume|continue|keep going|go on|go ahead|carry on|please continue|yes continue)\.?!?$/i;
   const HOLD_CUE = /^(hold on|hold up|wait|pause|one sec|one second|give me a sec|just a sec|hang on|stop)\.?!?$/i;
-  const startInterruptListener = () => {
+  // BUG FIX — "make sure it doesn't mistake its own response... if I have
+  // Alfred on my speakers and it's loud, my microphone might pick that up
+  // ... make sure it doesn't interrupt itself." This WAS the actual bug:
+  // onspeechstart paused Alfred the INSTANT the mic heard ANY audio onset —
+  // on open speakers that's Alfred's own voice, every single time, so a
+  // reply could get paused mid-sentence by itself, then whatever garbled
+  // fragment of Alfred's own words the recognizer half-caught got tested
+  // against RESUME_CUE/HOLD_CUE and, matching neither, got treated as "a
+  // real new instruction" — cancelling the actual reply outright. There's
+  // no way to get true hardware echo cancellation through the Web Speech
+  // API (it manages its own mic stream internally, no exposed
+  // getUserMedia constraints), so this can't be fixed perfectly without a
+  // headset — but comparing what the mic heard against what Alfred is
+  // ACTUALLY SAYING catches the common case: if most of the recognized
+  // words are just words from Alfred's own current reply, it's an echo,
+  // not an interruption.
+  const normalizeWords = (s: string): string[] => (s || "").toLowerCase().replace(/[^a-z0-9\s']/g, "").split(/\s+/).filter(w => w.length > 1);
+  const startInterruptListener = (speakingText: string) => {
     if (!VoiceRecognitionCtor || voiceMutedRef.current) return;
     const listenerTurnId = voiceTurnIdRef.current;
+    const spokenWords = new Set(normalizeWords(speakingText));
+    const looksLikeEcho = (said: string): boolean => {
+      const words = normalizeWords(said);
+      if (words.length === 0) return false;
+      const matches = words.filter(w => spokenWords.has(w)).length;
+      return matches / words.length >= 0.6;
+    };
     let heardSpeech = false;
     let heardText = "";
+    let pausedForThisTurn = false;
     const rec = new VoiceRecognitionCtor();
     rec.lang = "en-US";
     rec.continuous = true;
     rec.interimResults = true;
     rec.onspeechstart = () => {
       if (voiceTurnIdRef.current !== listenerTurnId) return; // this reply was already abandoned/finished
-      if (heardSpeech) return;
       heardSpeech = true;
-      if (typeof window !== "undefined" && window.speechSynthesis?.speaking) {
-        try { window.speechSynthesis.pause(); } catch { /* some browsers throw pausing an already-finishing utterance */ }
-      }
-      setVoiceModeState("paused");
+      // Deliberately does NOT pause here anymore — see the bug-fix note
+      // above. Pausing now waits for onresult to actually confirm the
+      // words aren't just Alfred's own voice bleeding into the mic.
     };
     rec.onresult = (e: any) => {
+      if (voiceTurnIdRef.current !== listenerTurnId) return;
       let text = "";
       for (let i = 0; i < e.results.length; i++) text += e.results[i][0].transcript + " ";
       heardText = text.trim();
       setVoiceModeTranscript(heardText);
+      // Only pause once there's enough real, non-echo content to be
+      // confident this is the owner actually talking over Alfred — a
+      // single stray word is too ambiguous to interrupt on.
+      if (!pausedForThisTurn && heardText.split(/\s+/).filter(Boolean).length >= 2 && !looksLikeEcho(heardText)) {
+        pausedForThisTurn = true;
+        if (typeof window !== "undefined" && window.speechSynthesis?.speaking) {
+          try { window.speechSynthesis.pause(); } catch { /* some browsers throw pausing an already-finishing utterance */ }
+        }
+        setVoiceModeState("paused");
+      }
     };
     rec.onend = () => {
       if (voiceTurnIdRef.current !== listenerTurnId) return; // stale — a new turn already started elsewhere
       if (!heardSpeech) return; // Alfred just finished naturally, nothing was said over it
+      if (!pausedForThisTurn) {
+        // Heard audio, but it never became confirmed real speech (silence,
+        // one stray word, or it all looked like Alfred's own echo) —
+        // Alfred was never actually paused, so there's nothing to resume
+        // or cancel. Just keep watching for a genuine interruption.
+        startInterruptListener(speakingText);
+        return;
+      }
       const said = heardText.trim();
-      if (RESUME_CUE.test(said)) {
+      if (RESUME_CUE.test(said) || (said && looksLikeEcho(said))) {
         try { window.speechSynthesis?.resume(); } catch { /* nothing to resume */ }
         setVoiceModeState("speaking");
-        startInterruptListener(); // keep watching in case they interrupt again
+        startInterruptListener(speakingText); // keep watching in case they interrupt again
       } else if (!said || HOLD_CUE.test(said)) {
         // Stay paused — listen again for either a resume cue or a real instruction.
-        startInterruptListener();
+        startInterruptListener(speakingText);
       } else {
         // A real new instruction — abandon the paused reply for good.
         if (typeof window !== "undefined" && window.speechSynthesis) window.speechSynthesis.cancel();

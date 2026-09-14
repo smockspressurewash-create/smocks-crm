@@ -5155,8 +5155,27 @@ export function App() {
   // would need per-page semantic markup across the whole app, out of scope
   // here. currentPageName is 100% reliable (it's just the router's own
   // state) and always included regardless of what's under the cursor.
+  // FEATURE — "whenever I click on a page on the CRM... it opens to the
+  // top." The scrollable ancestor here is <main> itself (below) — PageFade
+  // only remounts its CHILDREN on navigation, <main>'s own scrollTop
+  // persists across page switches, so landing on Notifications/Inbox/
+  // Customers/etc. after scrolling down elsewhere previously kept whatever
+  // scroll position that page last had (or inherited the previous page's).
+  const mainScrollRef = useRef<HTMLElement | null>(null);
+  useEffect(() => { mainScrollRef.current?.scrollTo(0, 0); }, [page]);
   const cursorPosRef = useRef({ x: -1, y: -1 });
   const [cursorContext, setCursorContext] = useState("");
+  // FEATURE — "improve screen context awareness when you're on a
+  // computer." Previously only resolved a customer/employee/job whose
+  // name happened to match the text right under the cursor, and gave up
+  // (blank context) on anything else — an estimate/invoice, a button, a
+  // filter, a whole visible list. Broadens the entity match to
+  // estimates/invoices, and adds two fallbacks so desktop cursor context
+  // is rarely just empty: a generic label for whatever interactive
+  // control (button/link/field) or plain text is under the cursor when no
+  // known entity matches, plus a rough "N items visible in this list"
+  // hint from the nearest scrollable container — useful for "do you see
+  // these customers" style questions that aren't pointing at one row.
   useEffect(() => {
     const onMove = (e: MouseEvent) => { cursorPosRef.current = { x: e.clientX, y: e.clientY }; };
     window.addEventListener("mousemove", onMove, { passive: true });
@@ -5173,35 +5192,67 @@ export function App() {
           if (text.length > 2 && text.length < 200) break;
           node = node.parentElement;
         }
-        if (!text || text.length < 2 || text.length > 300) { setCursorContext(""); return; }
-        const lower = text.toLowerCase();
-        const cust = customers.find((c: any) => {
-          const full = `${c.firstName || ""} ${c.lastName || ""}`.trim().toLowerCase();
-          return full.length > 2 && lower.includes(full);
-        });
-        if (cust) { setCursorContext(`Customer under cursor: ${cust.firstName} ${cust.lastName}${cust.phone ? " · " + cust.phone : ""}${cust.email ? " · " + cust.email : ""} (id ${cust.id})`); return; }
-        const emp = employees.find((e: any) => {
-          const full = `${e.firstName || ""} ${e.lastName || ""}`.trim().toLowerCase();
-          return full.length > 2 && lower.includes(full);
-        });
-        if (emp) { setCursorContext(`Employee under cursor: ${emp.firstName} ${emp.lastName} (id ${emp.id})`); return; }
-        // Job has no customerName field of its own — resolve via customerId,
-        // same as everywhere else in this app that needs a job's customer.
-        const job = jobs.find((j: any) => {
-          const c = customers.find((x: any) => x.id === j.customerId);
-          const full = c ? `${c.firstName || ""} ${c.lastName || ""}`.trim().toLowerCase() : "";
-          return full.length > 2 && lower.includes(full);
-        });
-        if (job) {
-          const jc = customers.find((x: any) => x.id === job.customerId);
-          setCursorContext(`Job under cursor: ${jc ? `${jc.firstName} ${jc.lastName}` : "unknown customer"} — ${job.address || ""}, status ${job.status || "unknown"} (id ${job.id})`);
-          return;
+        const parts: string[] = [];
+        if (text && text.length >= 2 && text.length <= 300) {
+          const lower = text.toLowerCase();
+          const cust = customers.find((c: any) => {
+            const full = `${c.firstName || ""} ${c.lastName || ""}`.trim().toLowerCase();
+            return full.length > 2 && lower.includes(full);
+          });
+          const emp = !cust && employees.find((e: any) => {
+            const full = `${e.firstName || ""} ${e.lastName || ""}`.trim().toLowerCase();
+            return full.length > 2 && lower.includes(full);
+          });
+          // Job has no customerName field of its own — resolve via
+          // customerId, same as everywhere else in this app that needs a
+          // job's customer.
+          const job = !cust && !emp && jobs.find((j: any) => {
+            const c = customers.find((x: any) => x.id === j.customerId);
+            const full = c ? `${c.firstName || ""} ${c.lastName || ""}`.trim().toLowerCase() : "";
+            return full.length > 2 && lower.includes(full);
+          });
+          // Estimates/invoices are the same underlying table (CLAUDE.md) —
+          // `invoiced` decides which word to use.
+          const est = !cust && !emp && !job && estimates.find((es: any) => {
+            const c = customers.find((x: any) => x.id === es.customerId);
+            const full = c ? `${c.firstName || ""} ${c.lastName || ""}`.trim().toLowerCase() : "";
+            return full.length > 2 && lower.includes(full);
+          });
+          if (cust) parts.push(`Customer under cursor: ${cust.firstName} ${cust.lastName}${cust.phone ? " · " + cust.phone : ""}${cust.email ? " · " + cust.email : ""} (id ${cust.id})`);
+          else if (emp) parts.push(`Employee under cursor: ${emp.firstName} ${emp.lastName} (id ${emp.id})`);
+          else if (job) {
+            const jc = customers.find((x: any) => x.id === job.customerId);
+            parts.push(`Job under cursor: ${jc ? `${jc.firstName} ${jc.lastName}` : "unknown customer"} — ${job.address || ""}, status ${job.status || "unknown"} (id ${job.id})`);
+          } else if (est) {
+            const ec = customers.find((x: any) => x.id === est.customerId);
+            parts.push(`${est.invoiced ? "Invoice" : "Estimate"} under cursor: ${ec ? `${ec.firstName} ${ec.lastName}` : "unknown customer"} — ${fmt(est.total || 0)}, status ${est.status || "unknown"} (id ${est.id})`);
+          }
         }
-        setCursorContext("");
+        if (parts.length === 0) {
+          // No known CRM entity matched — a generic description beats
+          // blank context for "what does this button do" / "what am I
+          // looking at" style questions.
+          const interactive = el.closest("button, a, [role='button'], input, select, textarea") as HTMLElement | null;
+          if (interactive) {
+            const tag = interactive.tagName.toLowerCase();
+            const label = (interactive.getAttribute("aria-label") || interactive.getAttribute("title") || (interactive as HTMLInputElement).placeholder || interactive.innerText || "").trim().replace(/\s+/g, " ").slice(0, 80);
+            if (label) parts.push(`Hovering a ${tag === "input" || tag === "select" || tag === "textarea" ? "form field" : "button/link"} labeled "${label}"`);
+          } else if (text && text.length >= 2 && text.length <= 200) {
+            parts.push(`Text under cursor: "${text.slice(0, 120)}"`);
+          }
+        }
+        // Rough "what's on screen" hint from the nearest scrollable list —
+        // a plain substring check on the class attribute (Tailwind's
+        // space-separated utility classes make this a safe match).
+        const listContainer = el.closest('[class*="overflow-y-auto"], [class*="overflow-auto"]') as HTMLElement | null;
+        if (listContainer && listContainer.children.length > 1 && listContainer.children.length < 500) {
+          parts.push(`(${listContainer.children.length} items visible in this list)`);
+        }
+        setCursorContext(parts.join(" — "));
       } catch { /* best-effort only — never let this break the app */ }
     }, 600);
     return () => { window.removeEventListener("mousemove", onMove); clearInterval(interval); };
-  }, [customers, employees, jobs]);
+  }, [customers, employees, jobs, estimates]);
   // FEATURE — audit finding (critical): named-feature plan gating (see
   // planLimits.ts's hasPlanFeature) — campaigns/trash-cans are advertised
   // as Growth-only on the pricing page but were never actually gated.
@@ -5552,7 +5603,7 @@ export function App() {
             of scrollable content (the tail of Upcoming/Recent Activity, on
             Dashboard) sat partly behind the nav bar on exactly those
             devices. Matches the nav bar's own safe-area padding. */}
-        <main className={"flex-1 min-h-0 pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-0 " + (page === "alfred" || page === "inbox" ? "flex flex-col overflow-hidden" : "overflow-y-auto")}>
+        <main ref={mainScrollRef} className={"flex-1 min-h-0 pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-0 " + (page === "alfred" || page === "inbox" ? "flex flex-col overflow-hidden" : "overflow-y-auto")}>
           <div className={page === "alfred" || page === "inbox" ? "flex-1 flex flex-col min-h-0 p-2 md:p-3" : "px-3 py-4 md:p-6 max-w-[1600px] mx-auto"}>
             <PageFade key={page} className={page === "alfred" || page === "inbox" ? "flex-1 min-h-0 flex flex-col" : ""}>
               <SafePage>
