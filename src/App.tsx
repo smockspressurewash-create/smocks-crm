@@ -4549,6 +4549,179 @@ export function App() {
     setPage("checkout");
   };
 
+  // BUG FIX — React error #300 ("press the logo to go to the landing page
+  // ... Something crashed"). The marketing-page early `return`s just below
+  // (`if (page === "welcome" && ...) return <LandingPage .../>`, and the
+  // several that follow for features/pricing/checkout/about) skip every
+  // hook declared AFTER them in this component on whichever render takes
+  // that branch — React requires the exact same hooks in the exact same
+  // order on EVERY render of the same component instance, so a component
+  // that calls N hooks on a normal CRM render and fewer on a marketing-
+  // page render is a textbook hook-order violation. mainScrollRef,
+  // cursorContext, and the screen-highlight state (originally added much
+  // further down this file) all had to move up here, above every early
+  // return, for exactly this reason — moved verbatim, no logic changed.
+  // FEATURE — "Alfred should have the context of the screen you're on...
+  // what customer is my cursor over." A real, honest best-effort heuristic,
+  // not deep DOM semantics: samples the cursor position on an interval (not
+  // every mousemove — that fires far too often for a DOM lookup), reads the
+  // nearest reasonably-sized element's text, and fuzzy-matches it against
+  // the SAME customers/jobs/employees arrays already loaded for the active
+  // page. Works well on any row/card that visibly shows a name (the
+  // overwhelming majority of real CRM list/table UI); won't understand a
+  // chart, a graph, or a custom widget with no plain-text name in it — that
+  // would need per-page semantic markup across the whole app, out of scope
+  // here. currentPageName is 100% reliable (it's just the router's own
+  // state) and always included regardless of what's under the cursor.
+  // FEATURE — "whenever I click on a page on the CRM... it opens to the
+  // top." The scrollable ancestor here is <main> itself (below) — PageFade
+  // only remounts its CHILDREN on navigation, <main>'s own scrollTop
+  // persists across page switches, so landing on Notifications/Inbox/
+  // Customers/etc. after scrolling down elsewhere previously kept whatever
+  // scroll position that page last had (or inherited the previous page's).
+  const mainScrollRef = useRef<HTMLElement | null>(null);
+  useEffect(() => { mainScrollRef.current?.scrollTo(0, 0); }, [page]);
+  const cursorPosRef = useRef({ x: -1, y: -1 });
+  const [cursorContext, setCursorContext] = useState("");
+  // FEATURE — "it should always clarify and be like 'you mean this?' and
+  // highlight it in a glowing red." Alfred can't see the DOM — only the
+  // text description above — so the actual element + description this
+  // poll last resolved are kept here for the confirm_screen_reference
+  // tool (below) to draw a real highlight around, sampled fresh every
+  // time that tool is called (so "no, this" — moving the mouse and
+  // asking again — naturally re-resolves to whatever's under it now).
+  const cursorTargetElRef = useRef<HTMLElement | null>(null);
+  const cursorTargetDescRef = useRef<string>("");
+  const [highlightBox, setHighlightBox] = useState<{ top: number; left: number; width: number; height: number } | null>(null);
+  const highlightTimerRef = useRef<any>(null);
+  const positionHighlightFromEl = useCallback((el: HTMLElement | null) => {
+    if (!el || !el.isConnected) { setHighlightBox(null); return; }
+    try {
+      const r = el.getBoundingClientRect();
+      setHighlightBox({ top: r.top - 4, left: r.left - 4, width: r.width + 8, height: r.height + 8 });
+    } catch { setHighlightBox(null); }
+  }, []);
+  const resolveScreenHighlight = useCallback((): { ok: boolean; description: string } => {
+    const el = cursorTargetElRef.current;
+    const desc = cursorTargetDescRef.current;
+    if (!el || !desc) { setHighlightBox(null); return { ok: false, description: "" }; }
+    positionHighlightFromEl(el);
+    clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = setTimeout(() => setHighlightBox(null), 9000);
+    return { ok: true, description: desc };
+  }, [positionHighlightFromEl]);
+  // Keep the highlight box glued to its element through scroll/resize
+  // while it's shown, rather than a stale snapshot drifting out of place.
+  useEffect(() => {
+    if (!highlightBox) return;
+    const onReposition = () => positionHighlightFromEl(cursorTargetElRef.current);
+    window.addEventListener("scroll", onReposition, { passive: true, capture: true });
+    window.addEventListener("resize", onReposition, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", onReposition, { capture: true });
+      window.removeEventListener("resize", onReposition);
+    };
+  }, [highlightBox, positionHighlightFromEl]);
+  // FEATURE — "improve screen context awareness when you're on a
+  // computer." Previously only resolved a customer/employee/job whose
+  // name happened to match the text right under the cursor, and gave up
+  // (blank context) on anything else — an estimate/invoice, a button, a
+  // filter, a whole visible list. Broadens the entity match to
+  // estimates/invoices, and adds two fallbacks so desktop cursor context
+  // is rarely just empty: a generic label for whatever interactive
+  // control (button/link/field) or plain text is under the cursor when no
+  // known entity matches, plus a rough "N items visible in this list"
+  // hint from the nearest scrollable container — useful for "do you see
+  // these customers" style questions that aren't pointing at one row.
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => { cursorPosRef.current = { x: e.clientX, y: e.clientY }; };
+    window.addEventListener("mousemove", onMove, { passive: true });
+    const interval = setInterval(() => {
+      try {
+        const { x, y } = cursorPosRef.current;
+        if (x < 0) { setCursorContext(""); cursorTargetElRef.current = null; cursorTargetDescRef.current = ""; return; }
+        const el = document.elementFromPoint(x, y) as HTMLElement | null;
+        if (!el) { setCursorContext(""); cursorTargetElRef.current = null; cursorTargetDescRef.current = ""; return; }
+        let node: HTMLElement | null = el;
+        let text = "";
+        for (let i = 0; i < 5 && node; i++) {
+          text = (node.innerText || "").trim();
+          if (text.length > 2 && text.length < 200) break;
+          node = node.parentElement;
+        }
+        const parts: string[] = [];
+        // primaryDesc/targetEl track the ONE thing "confirm_screen_reference"
+        // (AlfredPage.tsx) highlights — deliberately excludes the trailing
+        // "(N items visible)" hint below, which describes the surrounding
+        // list, not a single thing to point at.
+        let primaryDesc = "";
+        let targetEl: HTMLElement | null = null;
+        if (text && text.length >= 2 && text.length <= 300) {
+          const lower = text.toLowerCase();
+          const cust = customers.find((c: any) => {
+            const full = `${c.firstName || ""} ${c.lastName || ""}`.trim().toLowerCase();
+            return full.length > 2 && lower.includes(full);
+          });
+          const emp = !cust && employees.find((e: any) => {
+            const full = `${e.firstName || ""} ${e.lastName || ""}`.trim().toLowerCase();
+            return full.length > 2 && lower.includes(full);
+          });
+          // Job has no customerName field of its own — resolve via
+          // customerId, same as everywhere else in this app that needs a
+          // job's customer.
+          const job = !cust && !emp && jobs.find((j: any) => {
+            const c = customers.find((x: any) => x.id === j.customerId);
+            const full = c ? `${c.firstName || ""} ${c.lastName || ""}`.trim().toLowerCase() : "";
+            return full.length > 2 && lower.includes(full);
+          });
+          // Estimates/invoices are the same underlying table (CLAUDE.md) —
+          // `invoiced` decides which word to use.
+          const est = !cust && !emp && !job && estimates.find((es: any) => {
+            const c = customers.find((x: any) => x.id === es.customerId);
+            const full = c ? `${c.firstName || ""} ${c.lastName || ""}`.trim().toLowerCase() : "";
+            return full.length > 2 && lower.includes(full);
+          });
+          if (cust) primaryDesc = `Customer under cursor: ${cust.firstName} ${cust.lastName}${cust.phone ? " · " + cust.phone : ""}${cust.email ? " · " + cust.email : ""} (id ${cust.id})`;
+          else if (emp) primaryDesc = `Employee under cursor: ${emp.firstName} ${emp.lastName} (id ${emp.id})`;
+          else if (job) {
+            const jc = customers.find((x: any) => x.id === job.customerId);
+            primaryDesc = `Job under cursor: ${jc ? `${jc.firstName} ${jc.lastName}` : "unknown customer"} — ${job.address || ""}, status ${job.status || "unknown"} (id ${job.id})`;
+          } else if (est) {
+            const ec = customers.find((x: any) => x.id === est.customerId);
+            primaryDesc = `${est.invoiced ? "Invoice" : "Estimate"} under cursor: ${ec ? `${ec.firstName} ${ec.lastName}` : "unknown customer"} — ${fmt(est.total || 0)}, status ${est.status || "unknown"} (id ${est.id})`;
+          }
+          if (primaryDesc) { parts.push(primaryDesc); targetEl = node; }
+        }
+        if (!primaryDesc) {
+          // No known CRM entity matched — a generic description beats
+          // blank context for "what does this button do" / "what am I
+          // looking at" style questions.
+          const interactive = el.closest("button, a, [role='button'], input, select, textarea") as HTMLElement | null;
+          if (interactive) {
+            const tag = interactive.tagName.toLowerCase();
+            const label = (interactive.getAttribute("aria-label") || interactive.getAttribute("title") || (interactive as HTMLInputElement).placeholder || interactive.innerText || "").trim().replace(/\s+/g, " ").slice(0, 80);
+            if (label) { primaryDesc = `Hovering a ${tag === "input" || tag === "select" || tag === "textarea" ? "form field" : "button/link"} labeled "${label}"`; targetEl = interactive; }
+          } else if (text && text.length >= 2 && text.length <= 200) {
+            primaryDesc = `Text under cursor: "${text.slice(0, 120)}"`;
+            targetEl = node;
+          }
+          if (primaryDesc) parts.push(primaryDesc);
+        }
+        // Rough "what's on screen" hint from the nearest scrollable list —
+        // a plain substring check on the class attribute (Tailwind's
+        // space-separated utility classes make this a safe match).
+        const listContainer = el.closest('[class*="overflow-y-auto"], [class*="overflow-auto"]') as HTMLElement | null;
+        if (listContainer && listContainer.children.length > 1 && listContainer.children.length < 500) {
+          parts.push(`(${listContainer.children.length} items visible in this list)`);
+        }
+        setCursorContext(parts.join(" — "));
+        cursorTargetElRef.current = targetEl;
+        cursorTargetDescRef.current = primaryDesc;
+      } catch { /* best-effort only — never let this break the app */ }
+    }, 600);
+    return () => { window.removeEventListener("mousemove", onMove); clearInterval(interval); };
+  }, [customers, employees, jobs, estimates]);
+
   // BUG FIX — "not showing I'm logged in when I go to the landing page" —
   // passed into every marketing page's MarketingNav (isLoggedIn prop) so
   // its CTA reflects reality instead of always saying "Log In."
@@ -5198,166 +5371,6 @@ export function App() {
       <div className="text-sm max-w-xs">Your manager account doesn't have access to {label}. Ask the owner to grant it in Employees → Manager CRM Access.</div>
     </div>
   );
-  // FEATURE — "Alfred should have the context of the screen you're on...
-  // what customer is my cursor over." A real, honest best-effort heuristic,
-  // not deep DOM semantics: samples the cursor position on an interval (not
-  // every mousemove — that fires far too often for a DOM lookup), reads the
-  // nearest reasonably-sized element's text, and fuzzy-matches it against
-  // the SAME customers/jobs/employees arrays already loaded for the active
-  // page. Works well on any row/card that visibly shows a name (the
-  // overwhelming majority of real CRM list/table UI); won't understand a
-  // chart, a graph, or a custom widget with no plain-text name in it — that
-  // would need per-page semantic markup across the whole app, out of scope
-  // here. currentPageName is 100% reliable (it's just the router's own
-  // state) and always included regardless of what's under the cursor.
-  // FEATURE — "whenever I click on a page on the CRM... it opens to the
-  // top." The scrollable ancestor here is <main> itself (below) — PageFade
-  // only remounts its CHILDREN on navigation, <main>'s own scrollTop
-  // persists across page switches, so landing on Notifications/Inbox/
-  // Customers/etc. after scrolling down elsewhere previously kept whatever
-  // scroll position that page last had (or inherited the previous page's).
-  const mainScrollRef = useRef<HTMLElement | null>(null);
-  useEffect(() => { mainScrollRef.current?.scrollTo(0, 0); }, [page]);
-  const cursorPosRef = useRef({ x: -1, y: -1 });
-  const [cursorContext, setCursorContext] = useState("");
-  // FEATURE — "it should always clarify and be like 'you mean this?' and
-  // highlight it in a glowing red." Alfred can't see the DOM — only the
-  // text description above — so the actual element + description this
-  // poll last resolved are kept here for the confirm_screen_reference
-  // tool (below) to draw a real highlight around, sampled fresh every
-  // time that tool is called (so "no, this" — moving the mouse and
-  // asking again — naturally re-resolves to whatever's under it now).
-  const cursorTargetElRef = useRef<HTMLElement | null>(null);
-  const cursorTargetDescRef = useRef<string>("");
-  const [highlightBox, setHighlightBox] = useState<{ top: number; left: number; width: number; height: number } | null>(null);
-  const highlightTimerRef = useRef<any>(null);
-  const positionHighlightFromEl = useCallback((el: HTMLElement | null) => {
-    if (!el || !el.isConnected) { setHighlightBox(null); return; }
-    try {
-      const r = el.getBoundingClientRect();
-      setHighlightBox({ top: r.top - 4, left: r.left - 4, width: r.width + 8, height: r.height + 8 });
-    } catch { setHighlightBox(null); }
-  }, []);
-  const resolveScreenHighlight = useCallback((): { ok: boolean; description: string } => {
-    const el = cursorTargetElRef.current;
-    const desc = cursorTargetDescRef.current;
-    if (!el || !desc) { setHighlightBox(null); return { ok: false, description: "" }; }
-    positionHighlightFromEl(el);
-    clearTimeout(highlightTimerRef.current);
-    highlightTimerRef.current = setTimeout(() => setHighlightBox(null), 9000);
-    return { ok: true, description: desc };
-  }, [positionHighlightFromEl]);
-  // Keep the highlight box glued to its element through scroll/resize
-  // while it's shown, rather than a stale snapshot drifting out of place.
-  useEffect(() => {
-    if (!highlightBox) return;
-    const onReposition = () => positionHighlightFromEl(cursorTargetElRef.current);
-    window.addEventListener("scroll", onReposition, { passive: true, capture: true });
-    window.addEventListener("resize", onReposition, { passive: true });
-    return () => {
-      window.removeEventListener("scroll", onReposition, { capture: true });
-      window.removeEventListener("resize", onReposition);
-    };
-  }, [highlightBox, positionHighlightFromEl]);
-  // FEATURE — "improve screen context awareness when you're on a
-  // computer." Previously only resolved a customer/employee/job whose
-  // name happened to match the text right under the cursor, and gave up
-  // (blank context) on anything else — an estimate/invoice, a button, a
-  // filter, a whole visible list. Broadens the entity match to
-  // estimates/invoices, and adds two fallbacks so desktop cursor context
-  // is rarely just empty: a generic label for whatever interactive
-  // control (button/link/field) or plain text is under the cursor when no
-  // known entity matches, plus a rough "N items visible in this list"
-  // hint from the nearest scrollable container — useful for "do you see
-  // these customers" style questions that aren't pointing at one row.
-  useEffect(() => {
-    const onMove = (e: MouseEvent) => { cursorPosRef.current = { x: e.clientX, y: e.clientY }; };
-    window.addEventListener("mousemove", onMove, { passive: true });
-    const interval = setInterval(() => {
-      try {
-        const { x, y } = cursorPosRef.current;
-        if (x < 0) { setCursorContext(""); cursorTargetElRef.current = null; cursorTargetDescRef.current = ""; return; }
-        const el = document.elementFromPoint(x, y) as HTMLElement | null;
-        if (!el) { setCursorContext(""); cursorTargetElRef.current = null; cursorTargetDescRef.current = ""; return; }
-        let node: HTMLElement | null = el;
-        let text = "";
-        for (let i = 0; i < 5 && node; i++) {
-          text = (node.innerText || "").trim();
-          if (text.length > 2 && text.length < 200) break;
-          node = node.parentElement;
-        }
-        const parts: string[] = [];
-        // primaryDesc/targetEl track the ONE thing "confirm_screen_reference"
-        // (AlfredPage.tsx) highlights — deliberately excludes the trailing
-        // "(N items visible)" hint below, which describes the surrounding
-        // list, not a single thing to point at.
-        let primaryDesc = "";
-        let targetEl: HTMLElement | null = null;
-        if (text && text.length >= 2 && text.length <= 300) {
-          const lower = text.toLowerCase();
-          const cust = customers.find((c: any) => {
-            const full = `${c.firstName || ""} ${c.lastName || ""}`.trim().toLowerCase();
-            return full.length > 2 && lower.includes(full);
-          });
-          const emp = !cust && employees.find((e: any) => {
-            const full = `${e.firstName || ""} ${e.lastName || ""}`.trim().toLowerCase();
-            return full.length > 2 && lower.includes(full);
-          });
-          // Job has no customerName field of its own — resolve via
-          // customerId, same as everywhere else in this app that needs a
-          // job's customer.
-          const job = !cust && !emp && jobs.find((j: any) => {
-            const c = customers.find((x: any) => x.id === j.customerId);
-            const full = c ? `${c.firstName || ""} ${c.lastName || ""}`.trim().toLowerCase() : "";
-            return full.length > 2 && lower.includes(full);
-          });
-          // Estimates/invoices are the same underlying table (CLAUDE.md) —
-          // `invoiced` decides which word to use.
-          const est = !cust && !emp && !job && estimates.find((es: any) => {
-            const c = customers.find((x: any) => x.id === es.customerId);
-            const full = c ? `${c.firstName || ""} ${c.lastName || ""}`.trim().toLowerCase() : "";
-            return full.length > 2 && lower.includes(full);
-          });
-          if (cust) primaryDesc = `Customer under cursor: ${cust.firstName} ${cust.lastName}${cust.phone ? " · " + cust.phone : ""}${cust.email ? " · " + cust.email : ""} (id ${cust.id})`;
-          else if (emp) primaryDesc = `Employee under cursor: ${emp.firstName} ${emp.lastName} (id ${emp.id})`;
-          else if (job) {
-            const jc = customers.find((x: any) => x.id === job.customerId);
-            primaryDesc = `Job under cursor: ${jc ? `${jc.firstName} ${jc.lastName}` : "unknown customer"} — ${job.address || ""}, status ${job.status || "unknown"} (id ${job.id})`;
-          } else if (est) {
-            const ec = customers.find((x: any) => x.id === est.customerId);
-            primaryDesc = `${est.invoiced ? "Invoice" : "Estimate"} under cursor: ${ec ? `${ec.firstName} ${ec.lastName}` : "unknown customer"} — ${fmt(est.total || 0)}, status ${est.status || "unknown"} (id ${est.id})`;
-          }
-          if (primaryDesc) { parts.push(primaryDesc); targetEl = node; }
-        }
-        if (!primaryDesc) {
-          // No known CRM entity matched — a generic description beats
-          // blank context for "what does this button do" / "what am I
-          // looking at" style questions.
-          const interactive = el.closest("button, a, [role='button'], input, select, textarea") as HTMLElement | null;
-          if (interactive) {
-            const tag = interactive.tagName.toLowerCase();
-            const label = (interactive.getAttribute("aria-label") || interactive.getAttribute("title") || (interactive as HTMLInputElement).placeholder || interactive.innerText || "").trim().replace(/\s+/g, " ").slice(0, 80);
-            if (label) { primaryDesc = `Hovering a ${tag === "input" || tag === "select" || tag === "textarea" ? "form field" : "button/link"} labeled "${label}"`; targetEl = interactive; }
-          } else if (text && text.length >= 2 && text.length <= 200) {
-            primaryDesc = `Text under cursor: "${text.slice(0, 120)}"`;
-            targetEl = node;
-          }
-          if (primaryDesc) parts.push(primaryDesc);
-        }
-        // Rough "what's on screen" hint from the nearest scrollable list —
-        // a plain substring check on the class attribute (Tailwind's
-        // space-separated utility classes make this a safe match).
-        const listContainer = el.closest('[class*="overflow-y-auto"], [class*="overflow-auto"]') as HTMLElement | null;
-        if (listContainer && listContainer.children.length > 1 && listContainer.children.length < 500) {
-          parts.push(`(${listContainer.children.length} items visible in this list)`);
-        }
-        setCursorContext(parts.join(" — "));
-        cursorTargetElRef.current = targetEl;
-        cursorTargetDescRef.current = primaryDesc;
-      } catch { /* best-effort only — never let this break the app */ }
-    }, 600);
-    return () => { window.removeEventListener("mousemove", onMove); clearInterval(interval); };
-  }, [customers, employees, jobs, estimates]);
   // FEATURE — audit finding (critical): named-feature plan gating (see
   // planLimits.ts's hasPlanFeature) — campaigns/trash-cans are advertised
   // as Growth-only on the pricing page but were never actually gated.
