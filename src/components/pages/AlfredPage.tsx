@@ -311,6 +311,26 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   const voiceModeKeepGoingRef = useRef(false);
   const voiceModeRecognitionRef = useRef<any>(null);
   const ttsEndCallbackRef = useRef<(() => void) | null>(null);
+  // BUG FIX — "said 'can you hear me' and it never responded" + "the
+  // conversation ended up in Notifications, not the voice chat." Root
+  // cause: processVoiceTurn (below) calls send(text) directly, but send is
+  // a plain closure recreated every render, closing over THAT render's
+  // activeId/appendMessage/active. The listening turn's SpeechRecognition
+  // handlers are attached inside startVoiceListeningTurn — itself captured
+  // by whichever render was active the moment it was called (openVoiceMode
+  // calls it synchronously, in the SAME tick as setActiveConvId(sandboxId)
+  // — before that state update has actually committed). So the very FIRST
+  // utterance of a call invoked a STALE send() still bound to whatever
+  // conversation was active before Voice Mode opened (here, the
+  // "Alfred Notifications" system thread) — the reply really was
+  // generated, just appended to the wrong, invisible conversation, and
+  // something about acting on that unexpected thread's shape kept it from
+  // ever reaching the TTS block, hence the ~45s hang. sendRef always holds
+  // the send from the MOST RECENT render (synced every render, no deps) —
+  // processVoiceTurn calls through it instead of the closed-over send, so
+  // it's never more than one render stale regardless of when the actual
+  // callback fires.
+  const sendRef = useRef<(overrideText?: string) => void>(() => {});
   // FEATURE — "interrupt Alfred's sentence, tell it to resume what it was
   // saying, hold up, or have a mute button." voiceTurnIdRef is a
   // cancellation token: every genuinely NEW turn (a normal reply, or a
@@ -4605,6 +4625,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       setLoading(false);
     }
   };
+  useEffect(() => { sendRef.current = send; }); // no deps — always the latest send, see sendRef's comment
 
   // FEATURE — "a real continuous hands-free conversation loop." Each turn
   // is its own SpeechRecognition instance with continuous:false — the
@@ -4627,7 +4648,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     const thisTurnCallback = () => { if (voiceModeKeepGoingRef.current && voiceTurnIdRef.current === turnId) startVoiceListeningTurn(); };
     ttsEndCallbackRef.current = thisTurnCallback;
     setVoiceModeState("thinking");
-    send(text);
+    sendRef.current(text);
     // Safety net — if send() ever returns without reaching its TTS block
     // (a thrown/caught error, a recognized slash command's early return,
     // any future code path that skips it) ttsEndCallbackRef would never
