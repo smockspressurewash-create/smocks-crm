@@ -103,6 +103,26 @@ body {
 }
 .animate-speaking-bar { animation: speaking-bar 0.9s ease-in-out infinite; transform-origin: center; }
 
+/* Voice Mode — ambient background drift, orb breathing glow, and a slow
+   spinning ring accent, used to make the full-screen call overlay feel
+   alive/premium instead of a static flat panel. */
+@keyframes voice-float-a {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50%      { transform: translate(3%, 4%) scale(1.08); }
+}
+@keyframes voice-float-b {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50%      { transform: translate(-4%, -3%) scale(1.1); }
+}
+@keyframes voice-orb-glow {
+  0%, 100% { box-shadow: 0 0 40px 4px var(--orb-glow, rgba(220,38,38,0.35)); }
+  50%      { box-shadow: 0 0 64px 14px var(--orb-glow, rgba(220,38,38,0.5)); }
+}
+.animate-voice-float-a { animation: voice-float-a 9s ease-in-out infinite; }
+.animate-voice-float-b { animation: voice-float-b 11s ease-in-out infinite; }
+.animate-voice-orb-glow { animation: voice-orb-glow 2.6s ease-in-out infinite; }
+.animate-spin-slow { animation: spin 6s linear infinite; }
+
 /* Gradient text */
 .gradient-text {
   background: linear-gradient(135deg, #dc2626, #f87171);

@@ -5471,150 +5471,166 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           bleed through. Backdrop is now fully opaque (bg-black); the
           purple tint is a separate decorative glow layered ON TOP instead
           of being part of the opacity-bearing background itself. */}
-      {voiceModeOpen && !voiceModeMinimized && (
-        <div className={"fixed inset-0 z-[400] flex flex-col items-center justify-center px-6 transition-opacity duration-300 bg-gradient-to-b from-neutral-950 via-black to-neutral-950 " + (voiceModeMounted ? "opacity-100" : "opacity-0")}>
-          {/* Ambient glass backdrop — two soft, deliberately off-center
-              blobs instead of one large dead-center blur (which read as
-              "a weird black circle" against the flat black background it
-              replaced). */}
+      {voiceModeOpen && !voiceModeMinimized && (() => {
+        const stateColor: Record<string, string> = {
+          listening: "rgba(239,68,68,0.55)", thinking: "rgba(245,158,11,0.5)",
+          paused: "rgba(249,115,22,0.5)", speaking: "rgba(52,211,153,0.55)",
+        };
+        return (
+        <div
+          className={"fixed inset-0 z-[400] flex flex-col items-center justify-center px-6 py-8 overflow-y-auto transition-opacity duration-500 bg-[#050507] " + (voiceModeMounted ? "opacity-100" : "opacity-0")}
+          style={{ "--orb-glow": stateColor[voiceModeState] } as React.CSSProperties}
+        >
+          {/* Ambient mesh backdrop — slow-drifting blurred color fields
+              instead of a static blob, so the call feels alive even before
+              anyone speaks. */}
           <div className="absolute inset-0 pointer-events-none overflow-hidden">
-            <div className="absolute -top-24 -right-24 w-[26rem] h-[26rem] rounded-full bg-red-600/20 blur-[100px]" />
-            <div className="absolute -bottom-32 -left-24 w-[24rem] h-[24rem] rounded-full bg-orange-500/10 blur-[100px]" />
+            <div className="absolute -top-32 -right-16 w-[30rem] h-[30rem] rounded-full bg-red-600/20 blur-[110px] animate-voice-float-a" />
+            <div className="absolute -bottom-40 -left-20 w-[26rem] h-[26rem] rounded-full bg-orange-500/10 blur-[110px] animate-voice-float-b" />
+            <div className="absolute top-1/3 left-1/2 -translate-x-1/2 w-[22rem] h-[22rem] rounded-full bg-red-900/10 blur-[100px]" />
           </div>
 
-          {/* Glass panel — everything sits inside one frosted card instead
-              of floating loose on the black backdrop. */}
-          <div className={"relative w-full max-w-md rounded-[2rem] bg-white/[0.04] backdrop-blur-2xl border border-white/10 shadow-2xl shadow-black/60 px-6 pt-6 pb-5 flex flex-col items-center transition-all duration-500 " + (voiceModeMounted ? "opacity-100 translate-y-0" : "opacity-0 translate-y-3")}>
-            <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/25 to-transparent rounded-t-[2rem]" />
+          {/* Glass panel */}
+          <div className={"relative w-full max-w-md rounded-[2rem] bg-white/[0.045] backdrop-blur-2xl border border-white/10 shadow-[0_8px_60px_-10px_rgba(0,0,0,0.7)] px-6 pt-7 pb-5 flex flex-col items-center transition-all duration-700 ease-out my-auto " + (voiceModeMounted ? "opacity-100 translate-y-0 scale-100" : "opacity-0 translate-y-4 scale-[0.97]")}>
+            <div className="absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-white/30 to-transparent" />
+            <div className="absolute inset-0 rounded-[2rem] ring-1 ring-inset ring-white/5 pointer-events-none" />
 
-            <div className="text-center mb-5">
-              {/* FEATURE — "a red logo for Alfred" + "the logo... looks
-                  basic and bad." Glass ring + inner sheen instead of a flat
-                  gradient square. */}
-              <div className="relative w-14 h-14 mx-auto mb-2.5">
-                <div className="absolute inset-0 rounded-2xl bg-gradient-to-br from-red-500 to-red-800 shadow-lg shadow-red-950/60" />
-                <div className="absolute inset-0 rounded-2xl bg-gradient-to-b from-white/25 to-transparent" />
-                <div className="absolute inset-0 rounded-2xl border border-white/20" />
+            <div className="text-center mb-6">
+              {/* FEATURE — "the logo... looks basic and bad." Slow spinning
+                  conic-gradient ring behind the glass badge, like a living
+                  status indicator rather than a static icon. */}
+              <div className="relative w-16 h-16 mx-auto mb-3">
+                <div className="absolute inset-0 rounded-full animate-spin-slow" style={{ background: "conic-gradient(from 0deg, transparent, rgba(239,68,68,0.7), transparent 40%)" }} />
+                <div className="absolute inset-[3px] rounded-full bg-[#0a0a0c]" />
+                <div className="absolute inset-[5px] rounded-2xl bg-gradient-to-br from-red-500 to-red-800 shadow-lg shadow-red-950/60" />
+                <div className="absolute inset-[5px] rounded-2xl bg-gradient-to-b from-white/25 to-transparent" />
+                <div className="absolute inset-[5px] rounded-2xl border border-white/20" />
                 <div className="relative w-full h-full flex items-center justify-center">
                   <Bot size={26} className="text-white drop-shadow" />
                 </div>
               </div>
               <div className="text-xs font-semibold text-white/60 uppercase tracking-widest">Alfred — Voice Mode</div>
-              <div className="text-[10px] text-white/35 mt-0.5">{getPersonality(active?.personality || personality).name} · free browser voice{voiceMuted ? " · muted" : ""}</div>
+              <div className="text-[10px] text-white/35 mt-1">{getPersonality(active?.personality || personality).name} · free browser voice{voiceMuted ? " · muted" : ""}</div>
             </div>
 
-            {/* Mic orb — layered glass rings around a solid inner core
-                instead of two flat overlapping circles. */}
+            {/* Mic orb — breathing glow keyed off the live state color, a
+                thin rotating accent ring while active, and a crossfading
+                icon instead of a hard swap. */}
             <div className={"relative flex items-center justify-center mb-6 transition-all duration-500 " + (voiceModeMounted ? "opacity-100 scale-100" : "opacity-0 scale-75")}>
+              {(voiceModeState === "listening" || voiceModeState === "speaking") && (
+                <div className="absolute w-40 h-40 md:w-44 md:h-44 rounded-full animate-spin-slow" style={{ background: `conic-gradient(from 0deg, transparent, ${stateColor[voiceModeState]}, transparent 30%)`, WebkitMaskImage: "radial-gradient(circle, transparent 68%, black 70%)", maskImage: "radial-gradient(circle, transparent 68%, black 70%)" }} />
+              )}
               <div
                 className={
                   "w-36 h-36 md:w-40 md:h-40 rounded-full border transition-all duration-500 " +
-                  (voiceModeState === "listening" ? "border-red-500/30 bg-red-600/10 animate-pulse-ring" :
-                   voiceModeState === "thinking" ? "border-amber-500/25 bg-amber-500/10" :
-                   voiceModeState === "paused" ? "border-orange-500/25 bg-orange-500/10" :
-                   "border-emerald-500/25 bg-emerald-500/10 animate-pulse-ring")
+                  (voiceModeState === "listening" ? "border-red-500/25 bg-red-600/10" :
+                   voiceModeState === "thinking" ? "border-amber-500/20 bg-amber-500/10" :
+                   voiceModeState === "paused" ? "border-orange-500/20 bg-orange-500/10" :
+                   "border-emerald-500/20 bg-emerald-500/10")
                 }
               />
               <div className="absolute w-28 h-28 md:w-32 md:h-32 rounded-full backdrop-blur-md bg-white/[0.06] border border-white/15" />
               <div
-                className={
-                  "absolute rounded-full flex items-center justify-center transition-all duration-300 shadow-xl " +
-                  (voiceModeState === "listening" ? "bg-gradient-to-br from-red-500 to-red-700 shadow-red-950/50 scale-100" :
-                   voiceModeState === "thinking" ? "bg-gradient-to-br from-amber-400 to-amber-600 shadow-amber-950/50 scale-90" :
-                   voiceModeState === "paused" ? "bg-gradient-to-br from-orange-400 to-orange-600 shadow-orange-950/50 scale-95" :
-                   "bg-gradient-to-br from-emerald-400 to-emerald-600 shadow-emerald-950/50 scale-105")
-                }
+                className="absolute rounded-full flex items-center justify-center transition-all duration-500 animate-voice-orb-glow"
                 style={{ width: "6rem", height: "6rem" }}
               >
+                <div
+                  className={
+                    "absolute inset-0 rounded-full transition-all duration-500 " +
+                    (voiceModeState === "listening" ? "bg-gradient-to-br from-red-500 to-red-700 scale-100" :
+                     voiceModeState === "thinking" ? "bg-gradient-to-br from-amber-400 to-amber-600 scale-90" :
+                     voiceModeState === "paused" ? "bg-gradient-to-br from-orange-400 to-orange-600 scale-95" :
+                     "bg-gradient-to-br from-emerald-400 to-emerald-600 scale-105")
+                  }
+                />
                 <div className="absolute inset-0 rounded-full bg-gradient-to-b from-white/25 to-transparent" />
-                {voiceModeState === "thinking" ? (
-                  <div className="w-7 h-7 border-[3px] border-white/30 border-t-white rounded-full animate-spin" />
-                ) : voiceModeState === "paused" ? (
-                  <Pause size={26} className="text-white relative" />
-                ) : voiceModeState === "speaking" ? (
-                  // FEATURE — "add an animation when Alfred is talking." A
-                  // decorative staggered bar bounce, not literally synced to
-                  // the speech audio's amplitude (speechSynthesis doesn't
-                  // expose that) — same honest limit as most voice-assistant
-                  // "talking" indicators.
-                  <div className="flex items-end gap-1 h-7 relative">
-                    {[0, 1, 2, 3, 4].map(i => (
-                      <div key={i} className="w-1.5 bg-white rounded-full animate-speaking-bar" style={{ height: "100%", animationDelay: `${i * 0.12}s` }} />
-                    ))}
-                  </div>
-                ) : (
-                  <Mic size={26} className="text-white relative" />
-                )}
+                <div key={voiceModeState} className="relative animate-fade-in">
+                  {voiceModeState === "thinking" ? (
+                    <div className="w-7 h-7 border-[3px] border-white/30 border-t-white rounded-full animate-spin" />
+                  ) : voiceModeState === "paused" ? (
+                    <Pause size={26} className="text-white" />
+                  ) : voiceModeState === "speaking" ? (
+                    // FEATURE — "add an animation when Alfred is talking." A
+                    // decorative staggered bar bounce, not literally synced
+                    // to the speech audio's amplitude (speechSynthesis
+                    // doesn't expose that) — same honest limit as most
+                    // voice-assistant "talking" indicators.
+                    <div className="flex items-end gap-1 h-7">
+                      {[0, 1, 2, 3, 4].map(i => (
+                        <div key={i} className="w-1.5 bg-white rounded-full animate-speaking-bar" style={{ height: "100%", animationDelay: `${i * 0.12}s` }} />
+                      ))}
+                    </div>
+                  ) : (
+                    <Mic size={26} className="text-white" />
+                  )}
+                </div>
               </div>
             </div>
 
-            <div className="text-sm font-semibold text-white/80 mb-3">
+            <div key={voiceMuted ? "muted" : voiceModeState} className="text-sm font-semibold text-white/80 mb-4 animate-fade-in text-center">
               {voiceMuted ? "Muted" : voiceModeState === "listening" ? "Listening…" : voiceModeState === "thinking" ? "Thinking…" : voiceModeState === "paused" ? "Paused — say \"resume\" or a new request" : "Speaking…"}
             </div>
 
             {/* FEATURE — "you can see both the text you say and the text it
-                says." This voice call is its own conversation (see
-                openVoiceMode) so only THIS call's turns ever show here —
-                no more landing in the middle of an old text chat. */}
-            <div className="w-full flex-1 min-h-0 max-h-[36vh] overflow-y-auto space-y-2 px-1 py-2">
+                says." This is the persistent "Alfred Voice" sandbox
+                conversation (see openVoiceMode) — it keeps growing across
+                calls rather than resetting each time. */}
+            <div className="w-full flex-1 min-h-0 max-h-[32vh] overflow-y-auto space-y-2 px-1 py-2">
               {(active?.messages || []).length === 0 && voiceModeState === "listening" && !voiceModeTranscript && (
                 <div className="text-center text-[11px] text-white/30 py-4">Say something to get started…</div>
               )}
               {(active?.messages || []).slice(-8).map((m: any) => (
-                <div key={m.id} className={"text-xs rounded-xl px-3 py-2 max-w-[85%] backdrop-blur-sm " + (m.role === "user" ? "ml-auto bg-red-600/20 border border-red-500/20 text-red-100" : "mr-auto bg-white/[0.06] border border-white/10 text-white/70")}>
+                <div key={m.id} className={"text-xs rounded-2xl px-3.5 py-2.5 max-w-[85%] backdrop-blur-sm animate-fade-in leading-relaxed " + (m.role === "user" ? "ml-auto bg-red-600/20 border border-red-500/20 text-red-100" : "mr-auto bg-white/[0.06] border border-white/10 text-white/70")}>
                   {m.content}
                 </div>
               ))}
               {(voiceModeState === "listening" || voiceModeState === "paused") && voiceModeTranscript && (
-                <div className="ml-auto text-xs rounded-xl px-3 py-2 max-w-[85%] bg-red-600/10 border border-red-500/10 text-red-100/60 italic">{voiceModeTranscript}…</div>
+                <div className="ml-auto text-xs rounded-2xl px-3.5 py-2.5 max-w-[85%] bg-red-600/10 border border-red-500/10 text-red-100/60 italic">{voiceModeTranscript}…</div>
               )}
             </div>
-          </div>
 
-          {/* FEATURE — "interrupt Alfred's sentence, tell it to resume...
-              hold up, or have a mute button." Manual, 100%-reliable
-              controls alongside the verbal barge-in above — useful
-              whenever the automatic listener doesn't catch a soft
-              interruption (open speakers, background noise). */}
-          <div className="flex items-center gap-3 pt-4 pb-2">
-            <button
-              onClick={toggleVoiceMute}
-              title={voiceMuted ? "Unmute microphone" : "Mute microphone"}
-              className={"w-12 h-12 rounded-full flex items-center justify-center border backdrop-blur-md transition " + (voiceMuted ? "bg-red-600/20 border-red-500/40 text-red-300" : "bg-white/[0.06] border-white/15 text-white/60 hover:text-white hover:border-white/30")}
-            >
-              {voiceMuted ? <MicOff size={18} /> : <Mic size={18} />}
-            </button>
-            {/* FEATURE — "should be minimizable so you can keep talking to
-                it while looking through the CRM." Collapses to a small
-                bubble (see below) without ending the call — the
-                conversation loop keeps running exactly as-is underneath,
-                floats across every CRM page, and supports drag-to-end /
-                right-click quick actions (see the bubble itself). */}
-            <button
-              onClick={() => setVoiceModeMinimized(true)}
-              title="Minimize — keep talking while you look around"
-              className="w-12 h-12 rounded-full flex items-center justify-center border border-white/15 bg-white/[0.06] backdrop-blur-md text-white/60 hover:text-white hover:border-white/30 transition"
-            >
-              <ChevronDown size={20} />
-            </button>
-            <button
-              onClick={closeVoiceMode}
-              className="flex items-center gap-2 px-6 py-3.5 rounded-full bg-gradient-to-br from-red-500 to-red-700 hover:from-red-400 hover:to-red-600 text-white font-semibold text-sm shadow-xl shadow-red-950/50 transition"
-            >
-              <PhoneOff size={16} />End Conversation
-            </button>
-            {(voiceModeState === "speaking" || voiceModeState === "paused") && (
+            {/* Controls — one unified glass dock instead of loose floating
+                buttons, End Call as the visually distinct centerpiece. */}
+            <div className="flex items-center gap-1.5 mt-5 p-1.5 rounded-full bg-black/30 border border-white/10 backdrop-blur-md">
               <button
-                onClick={toggleVoicePause}
-                title={voiceModeState === "paused" ? "Resume" : "Pause (hold up)"}
-                className="w-12 h-12 rounded-full flex items-center justify-center border border-white/15 bg-white/[0.06] backdrop-blur-md text-white/60 hover:text-white hover:border-white/30 transition"
+                onClick={toggleVoiceMute}
+                title={voiceMuted ? "Unmute microphone" : "Mute microphone"}
+                className={"w-11 h-11 rounded-full flex items-center justify-center transition " + (voiceMuted ? "bg-red-600/25 text-red-300" : "text-white/60 hover:text-white hover:bg-white/10")}
               >
-                {voiceModeState === "paused" ? <Play size={18} /> : <Pause size={18} />}
+                {voiceMuted ? <MicOff size={17} /> : <Mic size={17} />}
               </button>
-            )}
+              {(voiceModeState === "speaking" || voiceModeState === "paused") && (
+                <button
+                  onClick={toggleVoicePause}
+                  title={voiceModeState === "paused" ? "Resume" : "Pause (hold up)"}
+                  className="w-11 h-11 rounded-full flex items-center justify-center text-white/60 hover:text-white hover:bg-white/10 transition"
+                >
+                  {voiceModeState === "paused" ? <Play size={17} /> : <Pause size={17} />}
+                </button>
+              )}
+              <button
+                onClick={closeVoiceMode}
+                className="flex items-center gap-2 px-6 py-3 rounded-full bg-gradient-to-br from-red-500 to-red-700 hover:from-red-400 hover:to-red-600 text-white font-semibold text-sm shadow-lg shadow-red-950/50 transition mx-1"
+              >
+                <PhoneOff size={15} />End
+              </button>
+              {/* FEATURE — "should be minimizable so you can keep talking to
+                  it while looking through the CRM." Collapses to a small
+                  bubble (see below) without ending the call — floats across
+                  every CRM page, supports drag-to-end / right-click quick
+                  actions. */}
+              <button
+                onClick={() => setVoiceModeMinimized(true)}
+                title="Minimize — keep talking while you look around"
+                className="w-11 h-11 rounded-full flex items-center justify-center text-white/60 hover:text-white hover:bg-white/10 transition"
+              >
+                <ChevronDown size={19} />
+              </button>
+            </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* Minimized bubble — the conversation (listening/thinking/speaking,
           barge-in, everything) keeps running exactly as before; this is
