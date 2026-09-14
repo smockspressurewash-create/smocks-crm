@@ -180,15 +180,13 @@ const speakAloud = (text: string, elevenlabsKey?: string): Promise<void> => new 
   const utterance = new SpeechSynthesisUtterance(ttsText);
   const britishVoice = await selectBritishVoice();
   if (britishVoice) utterance.voice = britishVoice;
-  // BUG FIX — "make sure Alfred speaks faster." A previous pass slowed
-  // this down (0.94) chasing a less-robotic, more "butler" cadence — the
-  // owner now wants speed prioritized over that. 1.15 is still slightly
-  // more deliberate than the 1.0 default engines use for a rushed
-  // announcement, but reads noticeably faster in practice. pitch stays
-  // slightly lowered for the personality. Real, honest limit: this is
-  // still the browser's built-in engine, not a neural TTS model — these
-  // are the actual knobs it exposes.
-  utterance.rate = 1.15;
+  // Rate history: 0.94 (slower, "butler" cadence) -> 1.15 (owner wanted
+  // faster) -> 1.08 (owner said 1.15 was a little too fast — split the
+  // difference, still noticeably quicker than the original 0.94). pitch
+  // stays slightly lowered for the personality. Real, honest limit: this
+  // is still the browser's built-in engine, not a neural TTS model —
+  // these are the actual knobs it exposes.
+  utterance.rate = 1.08;
   utterance.pitch = 0.92;
   utterance.onend = () => resolve();
   utterance.onerror = () => resolve();
@@ -819,6 +817,13 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   const updateActive = patch => setConversations(prev => prev.map(c => c.id === activeId ? { ...c, ...patch, updatedAt: Date.now() } : c));
   const appendMessage = msg => setConversations(prev => prev.map(c => c.id === activeId ? { ...c, messages: [...c.messages, msg], updatedAt: Date.now() } : c));
   const replaceMessages = msgs => setConversations(prev => prev.map(c => c.id === activeId ? { ...c, messages: msgs, updatedAt: Date.now() } : c));
+  // FEATURE — "start showing text while it's talking, as if it's actually
+  // responding, not like it just copy-pasted the response." Patches ONE
+  // already-appended message's content in place — used by the voice-mode
+  // progressive reveal below to grow a reply sentence-by-sentence in sync
+  // with speech, instead of the whole thing appearing the instant the
+  // (still non-streaming) model call returns.
+  const updateMessageContent = (msgId: string, content: string) => setConversations(prev => prev.map(c => c.id === activeId ? { ...c, messages: c.messages.map((m: any) => m.id === msgId ? { ...m, content } : m) } : c));
 
   // BUG FIX — "duplicate conversations" turned out to be reproducible: a
   // fast double-click/double-tap on "New Chat" (no touch feedback delay to
@@ -4609,7 +4614,8 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         failoverNoticeShownRef.current.add(activeId);
         displayText += "\n\n*⚡ Failed over to " + (MODELS_MAP[modelUsed]?.name || modelUsed) + "*";
       }
-      appendMessage({ id: uid(), role: "alfred", content: displayText, timestamp: Date.now(), toolTraces, modelUsed, failoverChain });
+      const alfredMsgId = uid();
+      appendMessage({ id: alfredMsgId, role: "alfred", content: displayText, timestamp: Date.now(), toolTraces, modelUsed, failoverChain });
 
       // TTS — read Alfred's response aloud when enabled, or always in Voice
       // Mode (a hands-free conversation with no toggle to check). Refactored
@@ -4627,10 +4633,19 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         if (voiceModeOpenRef.current) {
           setVoiceModeState("speaking");
           startInterruptListener(finalText);
+          // Progressive reveal — see speakProgressively's own comment.
+          // Starts the transcript bubble empty and grows it sentence by
+          // sentence exactly as each one starts playing; guarantees the
+          // FULL text is what's actually stored once done (or abandoned),
+          // regardless of how far the reveal got.
+          updateMessageContent(alfredMsgId, "");
+          speakProgressively(finalText, alfredMsgId, speakingTurnId, settings.elevenlabsKey).then(() => {
+            updateMessageContent(alfredMsgId, displayText);
+            if (voiceModeOpenRef.current && voiceTurnIdRef.current === speakingTurnId) ttsEndCallbackRef.current?.();
+          });
+        } else {
+          speakAloud(finalText, settings.elevenlabsKey);
         }
-        speakAloud(finalText, settings.elevenlabsKey).then(() => {
-          if (voiceModeOpenRef.current && voiceTurnIdRef.current === speakingTurnId) ttsEndCallbackRef.current?.();
-        });
       }
 
       // Explicit, user-signaled memory shortcut — the ONLY text-pattern
@@ -4770,6 +4785,29 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // words are just words from Alfred's own current reply, it's an echo,
   // not an interruption.
   const normalizeWords = (s: string): string[] => (s || "").toLowerCase().replace(/[^a-z0-9\s']/g, "").split(/\s+/).filter(w => w.length > 1);
+  // FEATURE — "start showing text while it's talking, not like it copy-
+  // pasted the response." The model call itself still isn't streamed
+  // (that would need every provider's proxy in functions/api/call-model.ts
+  // rebuilt around SSE, a much larger change) — but once the full reply
+  // text comes back, it's split into sentences and played/revealed ONE AT
+  // A TIME instead of as one long monotone utterance with the whole
+  // paragraph dumped into the transcript instantly. Reads far closer to
+  // an actual live response.
+  const splitIntoSentences = (text: string): string[] => {
+    const parts = text.split(/(?<=[.!?])\s+(?=[A-Z0-9"'])/).map(s => s.trim()).filter(Boolean);
+    return parts.length > 0 ? parts : [text];
+  };
+  const speakProgressively = async (fullText: string, messageId: string, turnId: number, elevenKey?: string) => {
+    const sentences = splitIntoSentences(fullText);
+    let shown = "";
+    for (const sentence of sentences) {
+      if (voiceTurnIdRef.current !== turnId) return; // abandoned mid-reply (barge-in, call ended) — stop talking
+      shown = shown ? shown + " " + sentence : sentence;
+      updateMessageContent(messageId, shown);
+      await speakAloud(sentence, elevenKey);
+      if (voiceTurnIdRef.current !== turnId) return;
+    }
+  };
   const startInterruptListener = (speakingText: string) => {
     if (!VoiceRecognitionCtor || voiceMutedRef.current) return;
     const listenerTurnId = voiceTurnIdRef.current;
