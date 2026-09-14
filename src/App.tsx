@@ -716,29 +716,55 @@ export function App() {
   // behind it.
   interface AlfredSpotlightStep { page: string; type?: string; id?: string; label?: string }
   const [alfredSpotlightQueue, setAlfredSpotlightQueue] = useState<AlfredSpotlightStep[]>([]);
+  // BUG FIX — "it would show what it was doing and highlight it... it
+  // never does that [anymore]." Two real bugs, both silent: (1) the
+  // running sequence had no try/finally — one failure anywhere inside it
+  // (a bad page name, a component throwing on mount) left
+  // alfredSpotlightRunning stuck true forever, quietly disabling every
+  // future spotlight for the rest of the session. (2) Alfred routinely
+  // performs several actions across SEPARATE model round-trips in one
+  // reply (the system prompt's own example: "create a customer, schedule
+  // them a job, and assign Mike" — each is its own tool call, seconds
+  // apart) — a step queued while an earlier one's sequence was still
+  // mid-flight got silently stranded: the running effect had already
+  // captured and cleared the OLD queue, so a state-only queue never got
+  // re-drained once the flag cleared. alfredSpotlightQueueRef is updated
+  // SYNCHRONOUSLY on every queue call (not on React's render schedule),
+  // so the running loop below can always see — and drain — anything
+  // added mid-sequence instead of losing it.
+  const alfredSpotlightQueueRef = useRef<AlfredSpotlightStep[]>([]);
   const [alfredHighlight, setAlfredHighlight] = useState<{ type: string; id: string } | null>(null);
   const alfredSpotlightRunning = useRef(false);
   const queueAlfredSpotlight = useCallback((step: AlfredSpotlightStep) => {
-    setAlfredSpotlightQueue(q => [...q, step]);
+    alfredSpotlightQueueRef.current = [...alfredSpotlightQueueRef.current, step];
+    setAlfredSpotlightQueue(alfredSpotlightQueueRef.current);
   }, []);
   useEffect(() => {
-    if (alfredSpotlightRunning.current || alfredSpotlightQueue.length === 0) return;
+    if (alfredSpotlightRunning.current || alfredSpotlightQueueRef.current.length === 0) return;
     alfredSpotlightRunning.current = true;
     (async () => {
-      const steps = alfredSpotlightQueue;
-      setAlfredSpotlightQueue([]);
-      for (const step of steps) {
-        setPage(step.page);
-        // Give the page a beat to mount before the glow kicks in, and to
-        // let the previous step's glow visibly settle first.
-        await new Promise(r => setTimeout(r, 500));
-        if (step.type && step.id) setAlfredHighlight({ type: step.type, id: step.id });
-        await new Promise(r => setTimeout(r, 1800));
-        setAlfredHighlight(null);
+      try {
+        while (alfredSpotlightQueueRef.current.length > 0) {
+          const steps = alfredSpotlightQueueRef.current;
+          alfredSpotlightQueueRef.current = [];
+          setAlfredSpotlightQueue([]);
+          for (const step of steps) {
+            setPage(step.page);
+            // Give the page a beat to mount before the glow kicks in, and to
+            // let the previous step's glow visibly settle first.
+            await new Promise(r => setTimeout(r, 500));
+            if (step.type && step.id) setAlfredHighlight({ type: step.type, id: step.id });
+            await new Promise(r => setTimeout(r, 1800));
+            setAlfredHighlight(null);
+          }
+        }
+        await new Promise(r => setTimeout(r, 200));
+        setPage("alfred");
+      } catch (e: any) {
+        console.warn("[Alfred Spotlight] sequence failed, resetting:", e?.message || e);
+      } finally {
+        alfredSpotlightRunning.current = false;
       }
-      await new Promise(r => setTimeout(r, 200));
-      setPage("alfred");
-      alfredSpotlightRunning.current = false;
     })();
   }, [alfredSpotlightQueue]);
   // "View" buttons in automated owner emails (invoice paid, new lead, etc.)

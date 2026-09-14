@@ -2285,6 +2285,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (prioErr) return { error: "Could not update priority — " + (prioErr.message || String(prioErr)) };
           setJobs(prev => prev.map(x => x.id === inputs.jobId ? { ...x, priority: inputs.priority } : x));
           toast("Alfred set priority to " + inputs.priority);
+          if (onSpotlight) onSpotlight({ page: "jobs", type: "job", id: inputs.jobId });
           return { success: true, jobId: inputs.jobId, newPriority: inputs.priority };
         }
         case "reschedule_job": {
@@ -2445,6 +2446,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (ckErr) return { error: "Could not save checklist item — " + (ckErr.message || String(ckErr)) };
           setJobs(prev => prev.map(x => x.id === j.id ? { ...x, [phase]: updatedList } : x));
           toast("Alfred added \"" + inputs.item + "\" to the checklist");
+          if (onSpotlight) onSpotlight({ page: "jobs", type: "job", id: j.id });
           return { success: true, jobId: j.id, phase, item: inputs.item, checklistLength: updatedList.length };
         }
         // NEW (Alfred functionality audit) — "Send an invoice to [customer]
@@ -2562,6 +2564,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             }
           }
           toast(`Alfred applied a discount — new total ${fmt(nextTotal)}`);
+          if (onSpotlight) onSpotlight({ page: "estimates", type: "estimate", id: est.id });
           return { success: true, estimateId: est.id, newTotal: nextTotal, discountTotal };
         }
         // FEATURE — same price-modification ability, for a scheduled JOB's
@@ -2575,6 +2578,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (result?.error || !Array.isArray(result?.data) || result.data.length === 0) return { error: "Failed to update the job's price — " + (result?.error?.message || "it may belong to a different account") };
           setJobs((prev: any[]) => prev.map((x: any) => x.id === j.id ? { ...x, amount: newAmount } : x));
           toast(`Alfred updated the job's price to ${fmt(newAmount)}`);
+          if (onSpotlight) onSpotlight({ page: "jobs", type: "job", id: j.id });
           return { success: true, jobId: j.id, newAmount };
         }
         case "mark_invoice_paid": {
@@ -2608,6 +2612,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               .catch((e: any) => console.warn("[AlfredTool mark_invoice_paid] jobs.paymentStatus write threw:", e?.message));
           }
           toast("Alfred marked invoice paid ✓ · " + fmt(inv.total));
+          if (onSpotlight) onSpotlight({ page: "invoices", type: "invoice", id: inv.id });
           return { success: true, invoiceId: inv.id, amount: inv.total, paidAt };
         }
         // FEATURE — Alfred capability gap fill: editing an existing
@@ -2624,6 +2629,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (error) return { error: "Failed to update — " + error.message };
           if (!Array.isArray(data) || data.length === 0) return { error: "Couldn't update that customer (permissions or it no longer exists)." };
           toast("Alfred updated " + c.firstName + " " + c.lastName);
+          if (onSpotlight) onSpotlight({ page: "customers", type: "customer", id: c.id });
           return { success: true, customer: `${c.firstName} ${c.lastName}`.trim(), updated: Object.keys(patch) };
         }
         // FEATURE — Alfred capability gap fill: replying to a customer
@@ -2878,6 +2884,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             sendEmail(settings, { to: emp.email, subject: `You've Been Assigned — ${j.scheduledDate}`, body: html }).catch(() => {});
           }
           toast("Alfred assigned " + emp.firstName + " to the " + j.scheduledDate + " job");
+          if (onSpotlight) onSpotlight({ page: "jobs", type: "job", id: j.id });
           return { success: true, jobId: j.id, employeeId: emp.id, employee: emp.firstName + " " + emp.lastName };
         }
         case "request_employee": {
@@ -2906,6 +2913,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               withTimeout(sendEmail(settings, { to: emp.email, subject: `Job Request — ${j.scheduledDate}`, body: html }), 8000, "Email send").catch((e: any) => console.warn("Alfred job request email failed — request still saved:", e?.message));
             }
             toast("Alfred sent a job request to " + emp.firstName);
+            if (onSpotlight) onSpotlight({ page: "jobs", type: "job", id: j.id });
             return { success: true, jobId: j.id, employeeId: emp.id, requestId: data.id, employee: emp.firstName + " " + emp.lastName };
           } catch (e: any) {
             return { error: "Request failed: " + (e?.message || String(e)) };
