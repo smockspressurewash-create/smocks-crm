@@ -180,13 +180,15 @@ const speakAloud = (text: string, elevenlabsKey?: string): Promise<void> => new 
   const utterance = new SpeechSynthesisUtterance(ttsText);
   const britishVoice = await selectBritishVoice();
   if (britishVoice) utterance.voice = britishVoice;
-  // BUG FIX — "make it sound less robotic." A flat rate=1/pitch=1 default
-  // is part of what reads as robotic on a synthetic voice — a touch
-  // slower and a hair lower reads noticeably more natural/measured (and
-  // suits an "old butler" register besides). Real, honest limit: this is
+  // BUG FIX — "make sure Alfred speaks faster." A previous pass slowed
+  // this down (0.94) chasing a less-robotic, more "butler" cadence — the
+  // owner now wants speed prioritized over that. 1.15 is still slightly
+  // more deliberate than the 1.0 default engines use for a rushed
+  // announcement, but reads noticeably faster in practice. pitch stays
+  // slightly lowered for the personality. Real, honest limit: this is
   // still the browser's built-in engine, not a neural TTS model — these
-  // are the actual knobs it exposes, not a full fix for synthetic speech.
-  utterance.rate = 0.94;
+  // are the actual knobs it exposes.
+  utterance.rate = 1.15;
   utterance.pitch = 0.92;
   utterance.onend = () => resolve();
   utterance.onerror = () => resolve();
@@ -376,6 +378,8 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // CRM pages).
   const [voiceModeMounted, setVoiceModeMounted] = useState(false);
   const [voiceModeMinimized, setVoiceModeMinimized] = useState(false);
+  const voiceModeMinimizedRef = useRef(false);
+  useEffect(() => { voiceModeMinimizedRef.current = voiceModeMinimized; }, [voiceModeMinimized]);
   // FEATURE — "drag it, hold it in, almost like a FAB button, and move it
   // to the bottom middle of the screen and let go, which ends the voice
   // conversation... right-click to end it." Pointer events (not separate
@@ -427,7 +431,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     setBubbleDragging(false);
     setOverDropZone(false);
     if (!ds) return;
-    if (!ds.moved) { setVoiceModeMinimized(false); return; } // a real click, not a drag — reopen
+    if (!ds.moved) { setVoiceModeMinimized(false); autoMinimizedForSpotlightRef.current = false; clearTimeout(spotlightRestoreTimerRef.current); return; } // a real click, not a drag — reopen
     if (isInBubbleDropZone(e.clientX, e.clientY)) closeVoiceMode();
     // else: leave it wherever it was dropped (bubblePos already holds that).
   };
@@ -1834,7 +1838,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           // (navigate to Customers, glow the new row, then return to this
           // chat) instead of just navigating away and staying there with no
           // visible confirmation of which row Alfred actually touched.
-          if (onSpotlight) onSpotlight({ page: "customers", type: "customer", id: saved.id }); else setTimeout(() => onNav("customers"), 1200);
+          if (onSpotlight) triggerSpotlight({ page: "customers", type: "customer", id: saved.id }); else setTimeout(() => onNav("customers"), 1200);
           return { success: true, customer: saved };
         }
         case "create_estimate": {
@@ -1867,7 +1871,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           }
           // No local setEstimates call — see create_customer above.
           toast("Alfred created estimate #" + savedE.id.toUpperCase() + " · " + fmt(total));
-          if (onSpotlight) onSpotlight({ page: "estimates", type: "estimate", id: savedE.id }); else setTimeout(() => onNav("estimates"), 1200);
+          if (onSpotlight) triggerSpotlight({ page: "estimates", type: "estimate", id: savedE.id }); else setTimeout(() => onNav("estimates"), 1200);
           return { success: true, estimateId: savedE.id, total, customer: c.firstName + " " + c.lastName };
         }
         case "send_estimate": {
@@ -2117,7 +2121,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           }
           setJobs(prev => [...prev, newJ as any]);
           toast("Alfred scheduled job for " + c.firstName + " on " + newJ.scheduledDate);
-          if (onSpotlight) onSpotlight({ page: "jobs", type: "job", id: (newJ as any).id }); else setTimeout(() => onNav("jobs"), 1200);
+          if (onSpotlight) triggerSpotlight({ page: "jobs", type: "job", id: (newJ as any).id }); else setTimeout(() => onNav("jobs"), 1200);
 
           // Optional same-call crew assignment — the job itself is already
           // saved at this point, so a failure here must never be reported as
@@ -2285,7 +2289,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (prioErr) return { error: "Could not update priority — " + (prioErr.message || String(prioErr)) };
           setJobs(prev => prev.map(x => x.id === inputs.jobId ? { ...x, priority: inputs.priority } : x));
           toast("Alfred set priority to " + inputs.priority);
-          if (onSpotlight) onSpotlight({ page: "jobs", type: "job", id: inputs.jobId });
+          if (onSpotlight) triggerSpotlight({ page: "jobs", type: "job", id: inputs.jobId });
           return { success: true, jobId: inputs.jobId, newPriority: inputs.priority };
         }
         case "reschedule_job": {
@@ -2309,7 +2313,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (reschedErr) return { error: "Could not reschedule — " + (reschedErr.message || String(reschedErr)) };
           setJobs(prev => prev.map(x => x.id === inputs.jobId ? { ...x, ...patch } : x));
           toast("Alfred rescheduled job to " + inputs.date + (inputs.time ? " at " + inputs.time : ""));
-          if (onSpotlight) onSpotlight({ page: "jobs", type: "job", id: inputs.jobId }); else setTimeout(() => onNav("jobs"), 1200);
+          if (onSpotlight) triggerSpotlight({ page: "jobs", type: "job", id: inputs.jobId }); else setTimeout(() => onNav("jobs"), 1200);
           // FEATURE — keep an already-synced Google Calendar event in sync
           // when the job moves, same as schedule_job now creates one.
           if ((j as any).googleEventId && settings?.googleConnected) {
@@ -2364,7 +2368,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (cancelErr) return { error: "Could not cancel job — " + (cancelErr.message || String(cancelErr)) };
           setJobs(prev => prev.map(x => x.id === inputs.jobId ? { ...x, ...patch } : x));
           toast("Alfred cancelled the " + (j.scheduledDate || "") + " job");
-          if (onSpotlight) onSpotlight({ page: "jobs", type: "job", id: inputs.jobId }); else setTimeout(() => onNav("jobs"), 1200);
+          if (onSpotlight) triggerSpotlight({ page: "jobs", type: "job", id: inputs.jobId }); else setTimeout(() => onNav("jobs"), 1200);
           // FEATURE — remove the Google Calendar event when the job is
           // cancelled, same as schedule_job now creates one.
           if ((j as any).googleEventId && settings?.googleConnected) {
@@ -2446,7 +2450,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (ckErr) return { error: "Could not save checklist item — " + (ckErr.message || String(ckErr)) };
           setJobs(prev => prev.map(x => x.id === j.id ? { ...x, [phase]: updatedList } : x));
           toast("Alfred added \"" + inputs.item + "\" to the checklist");
-          if (onSpotlight) onSpotlight({ page: "jobs", type: "job", id: j.id });
+          if (onSpotlight) triggerSpotlight({ page: "jobs", type: "job", id: j.id });
           return { success: true, jobId: j.id, phase, item: inputs.item, checklistLength: updatedList.length };
         }
         // NEW (Alfred functionality audit) — "Send an invoice to [customer]
@@ -2483,7 +2487,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           console.log("[AlfredTool create_invoice] Supabase response — data:", savedInv, "error:", invErr);
           if (invErr || !savedInv) return { error: "Failed to create invoice — " + (invErr?.message || "Supabase write did not return a row") };
           toast("Alfred created invoice for " + c.firstName + " · " + fmt(total));
-          if (onSpotlight) onSpotlight({ page: "invoices", type: "invoice", id: savedInv.id }); else setTimeout(() => onNav("invoices"), 1200);
+          if (onSpotlight) triggerSpotlight({ page: "invoices", type: "invoice", id: savedInv.id }); else setTimeout(() => onNav("invoices"), 1200);
           return { success: true, invoiceId: savedInv.id, total, customer: c.firstName + " " + c.lastName };
         }
         // FEATURE — "mark the Jones invoice as paid, they paid me cash."
@@ -2564,7 +2568,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             }
           }
           toast(`Alfred applied a discount — new total ${fmt(nextTotal)}`);
-          if (onSpotlight) onSpotlight({ page: "estimates", type: "estimate", id: est.id });
+          if (onSpotlight) triggerSpotlight({ page: "estimates", type: "estimate", id: est.id });
           return { success: true, estimateId: est.id, newTotal: nextTotal, discountTotal };
         }
         // FEATURE — same price-modification ability, for a scheduled JOB's
@@ -2578,7 +2582,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (result?.error || !Array.isArray(result?.data) || result.data.length === 0) return { error: "Failed to update the job's price — " + (result?.error?.message || "it may belong to a different account") };
           setJobs((prev: any[]) => prev.map((x: any) => x.id === j.id ? { ...x, amount: newAmount } : x));
           toast(`Alfred updated the job's price to ${fmt(newAmount)}`);
-          if (onSpotlight) onSpotlight({ page: "jobs", type: "job", id: j.id });
+          if (onSpotlight) triggerSpotlight({ page: "jobs", type: "job", id: j.id });
           return { success: true, jobId: j.id, newAmount };
         }
         case "mark_invoice_paid": {
@@ -2612,7 +2616,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               .catch((e: any) => console.warn("[AlfredTool mark_invoice_paid] jobs.paymentStatus write threw:", e?.message));
           }
           toast("Alfred marked invoice paid ✓ · " + fmt(inv.total));
-          if (onSpotlight) onSpotlight({ page: "invoices", type: "invoice", id: inv.id });
+          if (onSpotlight) triggerSpotlight({ page: "invoices", type: "invoice", id: inv.id });
           return { success: true, invoiceId: inv.id, amount: inv.total, paidAt };
         }
         // FEATURE — Alfred capability gap fill: editing an existing
@@ -2629,7 +2633,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (error) return { error: "Failed to update — " + error.message };
           if (!Array.isArray(data) || data.length === 0) return { error: "Couldn't update that customer (permissions or it no longer exists)." };
           toast("Alfred updated " + c.firstName + " " + c.lastName);
-          if (onSpotlight) onSpotlight({ page: "customers", type: "customer", id: c.id });
+          if (onSpotlight) triggerSpotlight({ page: "customers", type: "customer", id: c.id });
           return { success: true, customer: `${c.firstName} ${c.lastName}`.trim(), updated: Object.keys(patch) };
         }
         // FEATURE — Alfred capability gap fill: replying to a customer
@@ -2884,7 +2888,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             sendEmail(settings, { to: emp.email, subject: `You've Been Assigned — ${j.scheduledDate}`, body: html }).catch(() => {});
           }
           toast("Alfred assigned " + emp.firstName + " to the " + j.scheduledDate + " job");
-          if (onSpotlight) onSpotlight({ page: "jobs", type: "job", id: j.id });
+          if (onSpotlight) triggerSpotlight({ page: "jobs", type: "job", id: j.id });
           return { success: true, jobId: j.id, employeeId: emp.id, employee: emp.firstName + " " + emp.lastName };
         }
         case "request_employee": {
@@ -2913,7 +2917,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               withTimeout(sendEmail(settings, { to: emp.email, subject: `Job Request — ${j.scheduledDate}`, body: html }), 8000, "Email send").catch((e: any) => console.warn("Alfred job request email failed — request still saved:", e?.message));
             }
             toast("Alfred sent a job request to " + emp.firstName);
-            if (onSpotlight) onSpotlight({ page: "jobs", type: "job", id: j.id });
+            if (onSpotlight) triggerSpotlight({ page: "jobs", type: "job", id: j.id });
             return { success: true, jobId: j.id, employeeId: emp.id, requestId: data.id, employee: emp.firstName + " " + emp.lastName };
           } catch (e: any) {
             return { error: "Request failed: " + (e?.message || String(e)) };
@@ -4204,15 +4208,27 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       // conversation itself: a short digest of the most recently active
       // text thread (if touched in the last 48h), so this web chat isn't
       // blind to what was just discussed over text a few minutes ago.
+      // BUG FIX — "respond quicker if possible." This was a blocking
+      // network round-trip on EVERY single message before the model call
+      // even started — the one clearly avoidable latency source in this
+      // whole pipeline (everything else between here and the model call
+      // is synchronous). Voice Mode already gets cross-channel awareness
+      // from crossConversationContext/voiceSandboxContext below (no
+      // network round-trip, just reading already-loaded conversations) —
+      // skip this SMS fetch specifically during a live voice call, where
+      // shaving a network round trip off every turn's latency matters
+      // most. Text chat keeps it (latency isn't felt the same way there).
       let crossChannelContext = "";
-      try {
-        const smsRes: any = await (supabase as any).from("alfred_sms_threads").select("phone,messages,updated_at").eq("owner_id", ownerId).order("updated_at", { ascending: false }).limit(1);
-        const thread = smsRes?.data?.[0];
-        if (thread?.updated_at && Date.now() - new Date(thread.updated_at).getTime() < 48 * 3600000 && Array.isArray(thread.messages) && thread.messages.length > 0) {
-          const tail = thread.messages.slice(-6).map((m: any) => `${m.role === "assistant" ? "Alfred" : "Owner"}: ${String(m.content || "").slice(0, 200)}`).join("\n");
-          crossChannelContext = `\n\nRECENT ACTIVITY OVER TEXT (SMS, not this web chat — phone ${thread.phone}, updated ${new Date(thread.updated_at).toLocaleString()}):\n${tail}\nThis is a DIFFERENT conversation channel than this web chat — treat it as background context on what the owner's been doing/asking about recently, not as literal history of THIS conversation.`;
-        }
-      } catch { /* non-fatal — proceed without cross-channel context */ }
+      if (!voiceModeOpenRef.current) {
+        try {
+          const smsRes: any = await (supabase as any).from("alfred_sms_threads").select("phone,messages,updated_at").eq("owner_id", ownerId).order("updated_at", { ascending: false }).limit(1);
+          const thread = smsRes?.data?.[0];
+          if (thread?.updated_at && Date.now() - new Date(thread.updated_at).getTime() < 48 * 3600000 && Array.isArray(thread.messages) && thread.messages.length > 0) {
+            const tail = thread.messages.slice(-6).map((m: any) => `${m.role === "assistant" ? "Alfred" : "Owner"}: ${String(m.content || "").slice(0, 200)}`).join("\n");
+            crossChannelContext = `\n\nRECENT ACTIVITY OVER TEXT (SMS, not this web chat — phone ${thread.phone}, updated ${new Date(thread.updated_at).toLocaleString()}):\n${tail}\nThis is a DIFFERENT conversation channel than this web chat — treat it as background context on what the owner's been doing/asking about recently, not as literal history of THIS conversation.`;
+          }
+        } catch { /* non-fatal — proceed without cross-channel context */ }
+      }
       const ownerName = (settings as any)?.ownerName || (settings as any)?.companyName;
       const businessContext = (ownerName ? `\n\nThe owner's name is ${ownerName} — use it naturally when greeting them or in casual conversation, not on every single reply.` : "") + "\n\nCurrent business snapshot:\n- Active jobs: " + stats.activeJobs + "\n- Pending quotes: " + stats.pendingEst + "\n- Revenue MTD: " + fmt(stats.totalRev) + "\n- Close rate: " + stats.closeRate + "%\n- Jobs completed this month: " + stats.doneMonth + "\n- Total customers: " + customers.length;
       // FEATURE — "a real continuous hands-free conversation... like
@@ -4762,7 +4778,14 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       const words = normalizeWords(said);
       if (words.length === 0) return false;
       const matches = words.filter(w => spokenWords.has(w)).length;
-      return matches / words.length >= 0.6;
+      // BUG FIX — "it doesn't let me interrupt." 0.6 was catching genuine
+      // short interruptions that happened to share a couple of common
+      // words with whatever Alfred was mid-sentence saying — biased
+      // toward NOT missing a real interruption (a little self-echo
+      // slipping through and getting (mis)treated as a real interruption
+      // is a far smaller annoyance than Alfred routinely refusing to stop
+      // talking).
+      return matches / words.length >= 0.8;
     };
     let heardSpeech = false;
     let heardText = "";
@@ -4784,10 +4807,17 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       for (let i = 0; i < e.results.length; i++) text += e.results[i][0].transcript + " ";
       heardText = text.trim();
       setVoiceModeTranscript(heardText);
-      // Only pause once there's enough real, non-echo content to be
-      // confident this is the owner actually talking over Alfred — a
-      // single stray word is too ambiguous to interrupt on.
-      if (!pausedForThisTurn && heardText.split(/\s+/).filter(Boolean).length >= 2 && !looksLikeEcho(heardText)) {
+      // BUG FIX — "it doesn't let me interrupt." The >=2-word requirement
+      // was meant to stop a single stray echoed word from pausing Alfred,
+      // but it also silently blocked every ONE-WORD hold cue ("wait",
+      // "stop", "pause", "hold on" all match HOLD_CUE at 1-2 words) from
+      // ever registering at all — those never even got a chance to pause
+      // and be evaluated at onend. A recognized cue always pauses
+      // immediately regardless of length; only genuinely free-form speech
+      // still needs the 2-word/non-echo bar.
+      const trimmedSoFar = heardText.trim();
+      const isKnownCue = RESUME_CUE.test(trimmedSoFar) || HOLD_CUE.test(trimmedSoFar);
+      if (!pausedForThisTurn && (isKnownCue || (trimmedSoFar.split(/\s+/).filter(Boolean).length >= 2 && !looksLikeEcho(trimmedSoFar)))) {
         pausedForThisTurn = true;
         if (typeof window !== "undefined" && window.speechSynthesis?.speaking) {
           try { window.speechSynthesis.pause(); } catch { /* some browsers throw pausing an already-finishing utterance */ }
@@ -4849,6 +4879,34 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       try { window.speechSynthesis.resume(); } catch { /* nothing paused */ }
       setVoiceModeState("speaking");
     }
+  };
+  // FEATURE — "I say 'hey can you do this,' it shows me it's doing it,
+  // moves into... minimized... shows me what it's doing. Once it
+  // finishes, it goes back into full-screen mode." The fullscreen voice
+  // overlay is z-[400] — it covers the ENTIRE screen, so App.tsx's
+  // navigate+highlight spotlight (queueAlfredSpotlight/onSpotlight) had
+  // nothing to actually show during a voice call; the row it glows lives
+  // underneath a solid overlay the owner can't see through. Auto-minimize
+  // to the bubble for the highlight's duration so it's actually visible,
+  // then restore fullscreen — but only when WE minimized it for this;
+  // never override a minimize the owner chose themselves.
+  const spotlightRestoreTimerRef = useRef<any>(null);
+  const autoMinimizedForSpotlightRef = useRef(false);
+  const triggerSpotlight = (step: { page: string; type?: string; id?: string; label?: string }) => {
+    if (voiceModeOpenRef.current) {
+      if (!voiceModeMinimizedRef.current) {
+        autoMinimizedForSpotlightRef.current = true;
+        setVoiceModeMinimized(true);
+      }
+      if (autoMinimizedForSpotlightRef.current) {
+        clearTimeout(spotlightRestoreTimerRef.current);
+        spotlightRestoreTimerRef.current = setTimeout(() => {
+          setVoiceModeMinimized(false);
+          autoMinimizedForSpotlightRef.current = false;
+        }, 2600); // matches App.tsx's per-step highlight duration (500ms settle + 1800ms glow + buffer)
+      }
+    }
+    onSpotlight?.(step);
   };
   const openVoiceMode = () => {
     if (!VoiceRecognitionCtor) { toast("Voice input isn't supported in this browser — try Chrome or Edge.", "red"); return; }
