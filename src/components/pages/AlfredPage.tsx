@@ -4941,7 +4941,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         spotlightRestoreTimerRef.current = setTimeout(() => {
           setVoiceModeMinimized(false);
           autoMinimizedForSpotlightRef.current = false;
-        }, 2600); // matches App.tsx's per-step highlight duration (500ms settle + 1800ms glow + buffer)
+        }, 3000); // matches App.tsx's per-step highlight duration (500ms settle + 400ms scroll-settle + 1800ms glow + buffer)
       }
     }
     onSpotlight?.(step);

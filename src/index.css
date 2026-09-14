@@ -121,6 +121,23 @@ body {
 .animate-voice-float-a { animation: voice-float-a 9s ease-in-out infinite; }
 .animate-voice-float-b { animation: voice-float-b 11s ease-in-out infinite; }
 .animate-voice-orb-glow { animation: voice-orb-glow 2.6s ease-in-out infinite; }
+
+/* BUG FIX — the highlightBox portal overlay (App.tsx — both the voice
+   screen-reference highlight and Alfred's action spotlight) used to pair
+   an inline box-shadow with the existing .animate-pulse-ring class —
+   but a running CSS animation overrides ANY value (inline or not) on the
+   property it's animating for its whole duration, so pulse-ring's own
+   keyframes (which fade to fully transparent, 0 opacity, at both ends —
+   correct for a small notification "ping," never meant for a sustained
+   glow) were all that ever actually rendered; the inline glow was
+   invisible the entire time. This alternates between two ALWAYS-VISIBLE
+   neon-red intensities — never drops to zero — so there's a real
+   persistent glow, not an intermittent flash. */
+@keyframes neon-red-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(255,23,68,0.75), 0 0 22px 6px rgba(255,23,68,0.7), 0 0 44px 16px rgba(255,23,68,0.4); }
+  50%      { box-shadow: 0 0 0 4px rgba(255,23,68,0.95), 0 0 32px 10px rgba(255,23,68,0.9), 0 0 60px 22px rgba(255,23,68,0.55); }
+}
+.animate-neon-red-pulse { animation: neon-red-pulse 1s ease-in-out infinite; }
 .animate-spin-slow { animation: spin 6s linear infinite; }
 
 /* Gradient text */

@@ -714,6 +714,18 @@ export function App() {
   // old behavior of navigating away after each action and just staying
   // wherever the last one happened to land, with the chat reply left unseen
   // behind it.
+  // BUG FIX — "it takes me there but doesn't actually highlight it." Every
+  // page (JobsPage/CustomersPage/EstimatesPage/InvoicesPage) DOES apply a
+  // real `ring-2 ring-red-500` glow class keyed off `highlightId` — that
+  // wiring looks correct end to end. Rather than keep chasing a possible
+  // per-page CSS/specificity issue blind, this drives the SAME robust
+  // portal-overlay highlight box already proven for the voice screen-
+  // reference feature (positionHighlightFromEl/highlightBox below) as a
+  // second, independent highlight layer — a real getBoundingClientRect()
+  // measurement rendered fixed on top of everything, immune to whatever a
+  // specific page's own CSS is doing. Maps each spotlight type to the
+  // data-*-id attribute each page already stamps on its rows.
+  const SPOTLIGHT_DATA_ATTR: Record<string, string> = { job: "data-job-id", customer: "data-customer-id", estimate: "data-estimate-id", invoice: "data-invoice-id", employee: "data-employee-id" };
   interface AlfredSpotlightStep { page: string; type?: string; id?: string; label?: string }
   const [alfredSpotlightQueue, setAlfredSpotlightQueue] = useState<AlfredSpotlightStep[]>([]);
   // BUG FIX — "it would show what it was doing and highlight it... it
@@ -753,9 +765,25 @@ export function App() {
             // Give the page a beat to mount before the glow kicks in, and to
             // let the previous step's glow visibly settle first.
             await new Promise(r => setTimeout(r, 500));
-            if (step.type && step.id) setAlfredHighlight({ type: step.type, id: step.id });
+            let el: HTMLElement | null = null;
+            if (step.type && step.id) {
+              const attr = SPOTLIGHT_DATA_ATTR[step.type];
+              if (attr) {
+                el = document.querySelector<HTMLElement>(`[${attr}="${CSS.escape(step.id)}"]`);
+                el?.scrollIntoView({ behavior: "smooth", block: "center" });
+              }
+            }
+            // Let the smooth scroll actually finish before measuring its
+            // final position — measuring immediately would grab a
+            // mid-scroll (wrong) bounding rect for the glow box.
+            await new Promise(r => setTimeout(r, 400));
+            if (step.type && step.id) {
+              setAlfredHighlight({ type: step.type, id: step.id });
+              if (el) positionHighlightFromEl(el);
+            }
             await new Promise(r => setTimeout(r, 1800));
             setAlfredHighlight(null);
+            setHighlightBox(null);
           }
         }
         await new Promise(r => setTimeout(r, 200));
@@ -5766,8 +5794,8 @@ export function App() {
             menu). */}
         {highlightBox && createPortal(
           <div
-            className="fixed z-[350] pointer-events-none rounded-lg border-2 border-red-500 animate-pulse-ring transition-all duration-200"
-            style={{ top: highlightBox.top, left: highlightBox.left, width: highlightBox.width, height: highlightBox.height, boxShadow: "0 0 0 3px rgba(239,68,68,0.45), 0 0 28px 8px rgba(239,68,68,0.5)" }}
+            className="fixed z-[350] pointer-events-none rounded-lg border-[3px] border-[#ff1744] animate-neon-red-pulse transition-[top,left,width,height] duration-200"
+            style={{ top: highlightBox.top, left: highlightBox.left, width: highlightBox.width, height: highlightBox.height }}
           />,
           document.body
         )}
