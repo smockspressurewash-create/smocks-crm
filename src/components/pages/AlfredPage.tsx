@@ -193,7 +193,7 @@ const speakAloud = (text: string, elevenlabsKey?: string): Promise<void> => new 
   window.speechSynthesis.speak(utterance);
 });
 
-export function AlfredPage({ conversations, setConversations, activeConvId, setActiveConvId, memory = [], setMemory, personality, setPersonality, apiKey, openSettings, toast, jobs = [], setJobs, estimates = [], setEstimates, customers = [], setCustomers, employees = [], automations = [], setAutomations = () => {}, stats, setWins, goals = [], setGoals, setSettings, settings = {} as AppSettings, modelStatus = {}, setModelStatus = () => {}, onNav, onSpotlight, expenses = [], setExpenses, entries = [], chemicals = [], ownerId = "", reviews = [], setReviews = () => {}, vehicles = [], setVehicles = () => {}, maintenance = [], setMaintenance = () => {}, trainingModules = [], services = [], isActivePage = true, currentPageName = "alfred", cursorContext = "" }: { conversations?: any; setConversations?: any; activeConvId?: any; setActiveConvId?: any; memory?: any; setMemory?: any; personality?: any; setPersonality?: any; apiKey?: any; openSettings?: any; toast?: any; jobs?: any; setJobs?: any; estimates?: any; setEstimates?: any; customers?: any; setCustomers?: any; employees?: any; automations?: any; setAutomations?: any; stats?: any; setWins?: any; goals?: any; setGoals?: any; setSettings?: any; settings?: AppSettings; modelStatus?: any; setModelStatus?: any; onNav?: any; onSpotlight?: (step: { page: string; type?: string; id?: string; label?: string }) => void; expenses?: any[]; setExpenses?: any; entries?: any[]; chemicals?: any[]; ownerId?: string; reviews?: any[]; setReviews?: any; vehicles?: any[]; setVehicles?: any; maintenance?: any[]; setMaintenance?: any; trainingModules?: any[]; services?: any[];
+export function AlfredPage({ conversations, setConversations, activeConvId, setActiveConvId, memory = [], setMemory, personality, setPersonality, apiKey, openSettings, toast, jobs = [], setJobs, estimates = [], setEstimates, customers = [], setCustomers, employees = [], automations = [], setAutomations = () => {}, stats, setWins, goals = [], setGoals, setSettings, settings = {} as AppSettings, modelStatus = {}, setModelStatus = () => {}, onNav, onSpotlight, expenses = [], setExpenses, entries = [], chemicals = [], ownerId = "", reviews = [], setReviews = () => {}, vehicles = [], setVehicles = () => {}, maintenance = [], setMaintenance = () => {}, trainingModules = [], services = [], isActivePage = true, currentPageName = "alfred", cursorContext = "", onResolveScreenHighlight }: { conversations?: any; setConversations?: any; activeConvId?: any; setActiveConvId?: any; memory?: any; setMemory?: any; personality?: any; setPersonality?: any; apiKey?: any; openSettings?: any; toast?: any; jobs?: any; setJobs?: any; estimates?: any; setEstimates?: any; customers?: any; setCustomers?: any; employees?: any; automations?: any; setAutomations?: any; stats?: any; setWins?: any; goals?: any; setGoals?: any; setSettings?: any; settings?: AppSettings; modelStatus?: any; setModelStatus?: any; onNav?: any; onSpotlight?: (step: { page: string; type?: string; id?: string; label?: string }) => void; expenses?: any[]; setExpenses?: any; entries?: any[]; chemicals?: any[]; ownerId?: string; reviews?: any[]; setReviews?: any; vehicles?: any[]; setVehicles?: any; maintenance?: any[]; setMaintenance?: any; trainingModules?: any[]; services?: any[];
   // FEATURE — "keep talking to it while looking through the CRM... Alfred
   // should have the context of the screen you're on." isActivePage drives
   // BOTH the poll-gating (see shouldPollAlfred usages below — this file's
@@ -205,6 +205,13 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   isActivePage?: boolean;
   currentPageName?: string;
   cursorContext?: string;
+  // FEATURE — "highlight it in a glowing red... 'you mean this?'" App.tsx
+  // owns the real DOM reference the cursor is currently over (see its own
+  // cursorTargetElRef) — this lets confirm_screen_reference (below) ask it
+  // to draw a highlight around whatever that is RIGHT NOW and hand back a
+  // fresh description, sampled at call time so re-asking after the owner
+  // moves the mouse ("no, this") naturally resolves to the new target.
+  onResolveScreenHighlight?: () => { ok: boolean; description: string };
 }) {
   const [input, setInput] = useState("");
   const [voiceMode, setVoiceMode] = useState<"dictate" | "note">("dictate");
@@ -1737,6 +1744,12 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             },
             note: "Ask for anything in plain English — you don't need to name a tool.",
           };
+        }
+        case "confirm_screen_reference": {
+          if (!onResolveScreenHighlight) return { error: "Screen highlighting isn't available right now." };
+          const result = onResolveScreenHighlight();
+          if (!result.ok) return { error: "Nothing recognizable is under the owner's cursor right now — ask them to point at what they mean, or ask which one." };
+          return { success: true, highlighted: true, description: result.description, instruction: "Ask the owner \"You mean this — [describe it briefly]?\" and wait for an explicit yes before acting. If they say no or redirect you, call confirm_screen_reference again — it always re-samples wherever their cursor is right now." };
         }
         case "list_jobs": {
           const filter = inputs.status || "all";
@@ -3651,6 +3664,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       input_schema: { type: "object", properties: {} }
     },
     {
+      name: "confirm_screen_reference",
+      description: "Call this BEFORE acting on anything the owner refers to ambiguously by pointing/looking rather than naming — \"this\", \"that\", \"these\", \"the one I'm on\". Highlights whatever is CURRENTLY under their mouse cursor in glowing red on their actual screen and tells you what it resolved to (a real id, not a guess). Ask them \"You mean this — <what it is>?\" and WAIT for an explicit yes before taking any action. If they say no, or point somewhere else and say \"this\" again, call this tool again — it always re-samples their live cursor position, so it naturally resolves to whatever they're pointing at now. Once they confirm yes, you have FULL access to every normal tool against that confirmed id — schedule, message, edit, cancel, reassign, delete, anything the owner would ask for by name, not just answering questions about it.",
+      input_schema: { type: "object", properties: {} }
+    },
+    {
       name: "get_customer_details",
       description: "Get full details for one customer including their job history, spending, and estimates.",
       input_schema: { type: "object", properties: { customerId: { type: "string" }, name: { type: "string", description: "Full name like 'Mike Harrison' as alternative to id" } } }
@@ -4207,7 +4225,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       // as "ask which one" rather than guessing, matching the exact "which
       // ones?" behavior asked for.
       const screenContext = voiceModeOpenRef.current
-        ? `\n\nSCREEN AWARENESS: the owner is currently on the "${currentPageName}" page of the CRM (this is real, not a guess).${cursorContext ? ` Their cursor is currently over: ${cursorContext} — a real but best-effort read of what's on screen, not guaranteed for every kind of content (charts/graphs won't resolve). If they ask about "this" customer/job/employee, "them", or reference something on screen without naming it, assume they mean this UNLESS they've clearly already named someone else — use the id given above directly in any tool call rather than searching by name.` : ` Nothing recognizable is resolved under their cursor right now — if they reference something on screen ambiguously ("do you see this", "these customers") without naming who/what, ask which one(s) instead of guessing.`}`
+        ? `\n\nSCREEN AWARENESS: the owner is currently on the "${currentPageName}" page of the CRM (this is real, not a guess).${cursorContext ? ` Their cursor is currently over: ${cursorContext} — a real but best-effort read of what's on screen, not guaranteed for every kind of content (charts/graphs won't resolve).` : ` Nothing recognizable is resolved under their cursor right now.`} If they reference something on screen ambiguously — "this", "that", "these", "the one I'm on" — without clearly naming it, do NOT just assume and act. Call confirm_screen_reference first: it highlights whatever's under their cursor in glowing red on their actual screen and tells you exactly what it is. Ask "You mean this — [briefly describe it]?" and wait for an explicit yes. If they say no, or point elsewhere and say "this" again, call confirm_screen_reference again — it re-samples their cursor live, so it naturally follows wherever they're now pointing. Only once they say yes should you act — and at that point you have FULL, normal access to every tool against that confirmed id, not a limited subset: schedule it, message about it, edit it, cancel it, reassign it, delete it, whatever they ask, exactly as if they'd named it outright.`
         : "";
       // FEATURE — "it knows conversations you had in text... if I message
       // Alfred and later ask on a voice call what I messaged earlier today,

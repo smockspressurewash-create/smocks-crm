@@ -1,4 +1,5 @@
 ﻿import { useState, useEffect, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import {
   LayoutDashboard, Users, FileText, Receipt, Briefcase, GitBranch,
   Calendar, MessageSquare, Megaphone, Star, Zap, Share2, UserPlus,
@@ -5165,6 +5166,45 @@ export function App() {
   useEffect(() => { mainScrollRef.current?.scrollTo(0, 0); }, [page]);
   const cursorPosRef = useRef({ x: -1, y: -1 });
   const [cursorContext, setCursorContext] = useState("");
+  // FEATURE — "it should always clarify and be like 'you mean this?' and
+  // highlight it in a glowing red." Alfred can't see the DOM — only the
+  // text description above — so the actual element + description this
+  // poll last resolved are kept here for the confirm_screen_reference
+  // tool (below) to draw a real highlight around, sampled fresh every
+  // time that tool is called (so "no, this" — moving the mouse and
+  // asking again — naturally re-resolves to whatever's under it now).
+  const cursorTargetElRef = useRef<HTMLElement | null>(null);
+  const cursorTargetDescRef = useRef<string>("");
+  const [highlightBox, setHighlightBox] = useState<{ top: number; left: number; width: number; height: number } | null>(null);
+  const highlightTimerRef = useRef<any>(null);
+  const positionHighlightFromEl = useCallback((el: HTMLElement | null) => {
+    if (!el || !el.isConnected) { setHighlightBox(null); return; }
+    try {
+      const r = el.getBoundingClientRect();
+      setHighlightBox({ top: r.top - 4, left: r.left - 4, width: r.width + 8, height: r.height + 8 });
+    } catch { setHighlightBox(null); }
+  }, []);
+  const resolveScreenHighlight = useCallback((): { ok: boolean; description: string } => {
+    const el = cursorTargetElRef.current;
+    const desc = cursorTargetDescRef.current;
+    if (!el || !desc) { setHighlightBox(null); return { ok: false, description: "" }; }
+    positionHighlightFromEl(el);
+    clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = setTimeout(() => setHighlightBox(null), 9000);
+    return { ok: true, description: desc };
+  }, [positionHighlightFromEl]);
+  // Keep the highlight box glued to its element through scroll/resize
+  // while it's shown, rather than a stale snapshot drifting out of place.
+  useEffect(() => {
+    if (!highlightBox) return;
+    const onReposition = () => positionHighlightFromEl(cursorTargetElRef.current);
+    window.addEventListener("scroll", onReposition, { passive: true, capture: true });
+    window.addEventListener("resize", onReposition, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", onReposition, { capture: true });
+      window.removeEventListener("resize", onReposition);
+    };
+  }, [highlightBox, positionHighlightFromEl]);
   // FEATURE — "improve screen context awareness when you're on a
   // computer." Previously only resolved a customer/employee/job whose
   // name happened to match the text right under the cursor, and gave up
@@ -5182,9 +5222,9 @@ export function App() {
     const interval = setInterval(() => {
       try {
         const { x, y } = cursorPosRef.current;
-        if (x < 0) { setCursorContext(""); return; }
+        if (x < 0) { setCursorContext(""); cursorTargetElRef.current = null; cursorTargetDescRef.current = ""; return; }
         const el = document.elementFromPoint(x, y) as HTMLElement | null;
-        if (!el) { setCursorContext(""); return; }
+        if (!el) { setCursorContext(""); cursorTargetElRef.current = null; cursorTargetDescRef.current = ""; return; }
         let node: HTMLElement | null = el;
         let text = "";
         for (let i = 0; i < 5 && node; i++) {
@@ -5193,6 +5233,12 @@ export function App() {
           node = node.parentElement;
         }
         const parts: string[] = [];
+        // primaryDesc/targetEl track the ONE thing "confirm_screen_reference"
+        // (AlfredPage.tsx) highlights — deliberately excludes the trailing
+        // "(N items visible)" hint below, which describes the surrounding
+        // list, not a single thing to point at.
+        let primaryDesc = "";
+        let targetEl: HTMLElement | null = null;
         if (text && text.length >= 2 && text.length <= 300) {
           const lower = text.toLowerCase();
           const cust = customers.find((c: any) => {
@@ -5218,17 +5264,18 @@ export function App() {
             const full = c ? `${c.firstName || ""} ${c.lastName || ""}`.trim().toLowerCase() : "";
             return full.length > 2 && lower.includes(full);
           });
-          if (cust) parts.push(`Customer under cursor: ${cust.firstName} ${cust.lastName}${cust.phone ? " · " + cust.phone : ""}${cust.email ? " · " + cust.email : ""} (id ${cust.id})`);
-          else if (emp) parts.push(`Employee under cursor: ${emp.firstName} ${emp.lastName} (id ${emp.id})`);
+          if (cust) primaryDesc = `Customer under cursor: ${cust.firstName} ${cust.lastName}${cust.phone ? " · " + cust.phone : ""}${cust.email ? " · " + cust.email : ""} (id ${cust.id})`;
+          else if (emp) primaryDesc = `Employee under cursor: ${emp.firstName} ${emp.lastName} (id ${emp.id})`;
           else if (job) {
             const jc = customers.find((x: any) => x.id === job.customerId);
-            parts.push(`Job under cursor: ${jc ? `${jc.firstName} ${jc.lastName}` : "unknown customer"} — ${job.address || ""}, status ${job.status || "unknown"} (id ${job.id})`);
+            primaryDesc = `Job under cursor: ${jc ? `${jc.firstName} ${jc.lastName}` : "unknown customer"} — ${job.address || ""}, status ${job.status || "unknown"} (id ${job.id})`;
           } else if (est) {
             const ec = customers.find((x: any) => x.id === est.customerId);
-            parts.push(`${est.invoiced ? "Invoice" : "Estimate"} under cursor: ${ec ? `${ec.firstName} ${ec.lastName}` : "unknown customer"} — ${fmt(est.total || 0)}, status ${est.status || "unknown"} (id ${est.id})`);
+            primaryDesc = `${est.invoiced ? "Invoice" : "Estimate"} under cursor: ${ec ? `${ec.firstName} ${ec.lastName}` : "unknown customer"} — ${fmt(est.total || 0)}, status ${est.status || "unknown"} (id ${est.id})`;
           }
+          if (primaryDesc) { parts.push(primaryDesc); targetEl = node; }
         }
-        if (parts.length === 0) {
+        if (!primaryDesc) {
           // No known CRM entity matched — a generic description beats
           // blank context for "what does this button do" / "what am I
           // looking at" style questions.
@@ -5236,10 +5283,12 @@ export function App() {
           if (interactive) {
             const tag = interactive.tagName.toLowerCase();
             const label = (interactive.getAttribute("aria-label") || interactive.getAttribute("title") || (interactive as HTMLInputElement).placeholder || interactive.innerText || "").trim().replace(/\s+/g, " ").slice(0, 80);
-            if (label) parts.push(`Hovering a ${tag === "input" || tag === "select" || tag === "textarea" ? "form field" : "button/link"} labeled "${label}"`);
+            if (label) { primaryDesc = `Hovering a ${tag === "input" || tag === "select" || tag === "textarea" ? "form field" : "button/link"} labeled "${label}"`; targetEl = interactive; }
           } else if (text && text.length >= 2 && text.length <= 200) {
-            parts.push(`Text under cursor: "${text.slice(0, 120)}"`);
+            primaryDesc = `Text under cursor: "${text.slice(0, 120)}"`;
+            targetEl = node;
           }
+          if (primaryDesc) parts.push(primaryDesc);
         }
         // Rough "what's on screen" hint from the nearest scrollable list —
         // a plain substring check on the class attribute (Tailwind's
@@ -5249,6 +5298,8 @@ export function App() {
           parts.push(`(${listContainer.children.length} items visible in this list)`);
         }
         setCursorContext(parts.join(" — "));
+        cursorTargetElRef.current = targetEl;
+        cursorTargetDescRef.current = primaryDesc;
       } catch { /* best-effort only — never let this break the app */ }
     }, 600);
     return () => { window.removeEventListener("mousemove", onMove); clearInterval(interval); };
@@ -5678,7 +5729,22 @@ export function App() {
             only when page==="alfred") so it still gets that exact layout
             treatment; Voice Mode's own overlay/bubble portals straight to
             document.body, so those keep working on every other page too. */}
-        {!managerBlocked("alfred") && <AlfredPage conversations={alfredConversations} setConversations={setAlfredConversations} activeConvId={activeConvId} setActiveConvId={setActiveConvId} memory={alfredMemory} setMemory={setAlfredMemory} personality={personality} setPersonality={setPersonality} apiKey={settings.anthropicKey ?? settings.geminiKey ?? ""} openSettings={() => setSettingsOpen(true)} toast={toast} jobs={jobs} setJobs={setJobs} estimates={estimates} setEstimates={setEstimates} customers={customers} setCustomers={setCustomers} employees={employees} automations={automations} setAutomations={setAutomations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} setWins={setWins} goals={goalsList} setGoals={setGoalsList} setSettings={setSettings} settings={settings} modelStatus={modelStatus} setModelStatus={setModelStatus} onNav={setPage} onSpotlight={queueAlfredSpotlight} expenses={expenses} setExpenses={setExpenses} chemicals={chemicals} ownerId={crmUserId} reviews={reviews} setReviews={setReviews} vehicles={vehicles} setVehicles={setVehicles} maintenance={maintenance} setMaintenance={setMaintenance} trainingModules={trainingModules} services={services} isActivePage={page === "alfred"} currentPageName={page} cursorContext={cursorContext} />}
+        {!managerBlocked("alfred") && <AlfredPage conversations={alfredConversations} setConversations={setAlfredConversations} activeConvId={activeConvId} setActiveConvId={setActiveConvId} memory={alfredMemory} setMemory={setAlfredMemory} personality={personality} setPersonality={setPersonality} apiKey={settings.anthropicKey ?? settings.geminiKey ?? ""} openSettings={() => setSettingsOpen(true)} toast={toast} jobs={jobs} setJobs={setJobs} estimates={estimates} setEstimates={setEstimates} customers={customers} setCustomers={setCustomers} employees={employees} automations={automations} setAutomations={setAutomations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} setWins={setWins} goals={goalsList} setGoals={setGoalsList} setSettings={setSettings} settings={settings} modelStatus={modelStatus} setModelStatus={setModelStatus} onNav={setPage} onSpotlight={queueAlfredSpotlight} expenses={expenses} setExpenses={setExpenses} chemicals={chemicals} ownerId={crmUserId} reviews={reviews} setReviews={setReviews} vehicles={vehicles} setVehicles={setVehicles} maintenance={maintenance} setMaintenance={setMaintenance} trainingModules={trainingModules} services={services} isActivePage={page === "alfred"} currentPageName={page} cursorContext={cursorContext} onResolveScreenHighlight={resolveScreenHighlight} />}
+
+        {/* FEATURE — "highlight it in a glowing red... you mean this?"
+            Rendered here (not inside AlfredPage) since it's App.tsx that
+            owns the actual DOM reference (cursorTargetElRef) — a portal
+            straight to document.body so it's never clipped/mispositioned
+            by a transformed ancestor (same reasoning as other fixed-
+            position overlays in this app, e.g. CalendarPage's context
+            menu). */}
+        {highlightBox && createPortal(
+          <div
+            className="fixed z-[350] pointer-events-none rounded-lg border-2 border-red-500 animate-pulse-ring transition-all duration-200"
+            style={{ top: highlightBox.top, left: highlightBox.left, width: highlightBox.width, height: highlightBox.height, boxShadow: "0 0 0 3px rgba(239,68,68,0.45), 0 0 28px 8px rgba(239,68,68,0.5)" }}
+          />,
+          document.body
+        )}
 
         {/* Mobile bottom nav — quick access to the 4 most-used sections,
             plus Feedback (5th slot) so "report a bug / request a feature"
