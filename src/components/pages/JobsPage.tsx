@@ -45,6 +45,7 @@ import { PBar } from "../ui/PBar";
 import { PageFade } from "../ui/PageFade";
 import { TimeframeSelector } from "../ui/TimeframeSelector";
 import { AddressAutocomplete } from "../ui/AddressAutocomplete";
+import { BulkJobImportModal } from "../ui/BulkJobImportModal";
 import { BeforeAfterSlider } from "../ui/BeforeAfterSlider";
 import { CustomerModal } from "../ui/CustomerModal";
 import { CustomerDetail } from "../ui/CustomerDetail";
@@ -188,6 +189,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
   const [bulkAction, setBulkAction] = useState(null);
   const [, forceTick] = useState(0);
   const [newJobOpen, setNewJobOpen] = useState(false);
+  const [bulkImportOpen, setBulkImportOpen] = useState(false);
   // BUG FIX — "it keeps creating/adding duplicate jobs on the Google
   // calendar." The "Schedule Job" submit button had no re-entrancy guard
   // at all — a double-tap (easy on mobile, or just a slow first click)
@@ -653,6 +655,20 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
           <GBtn onClick={() => { navigator.clipboard?.writeText(optimizedRoute.map((j, i) => { const c = customers.find(x => x.id === j.customerId); return (i + 1) + ". " + c?.firstName + " " + c?.lastName + " — " + j.address; }).join("\n")); toast("Route copied"); }} variant="ghost" className="w-full !text-xs"><Copy size={12} className="inline mr-1.5" />Copy route</GBtn>
         </div>}
       </Modal>
+
+      <BulkJobImportModal
+        open={bulkImportOpen}
+        onClose={() => setBulkImportOpen(false)}
+        customers={customers}
+        setCustomers={setCustomers}
+        jobs={jobs}
+        setJobs={setJobs}
+        employees={employees}
+        settings={settings}
+        toast={toast}
+        ownerId={ownerId}
+        defaultServiceCategory="wash"
+      />
 
       {/* New Job Modal */}
       <Modal open={newJobOpen} onClose={() => setNewJobOpen(false)} title="Schedule New Job" maxW="max-w-lg">
@@ -1424,12 +1440,20 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
           <h1 className="text-2xl font-bold">Jobs</h1>
           <div className="text-xs text-white/40 mt-0.5">{jobs.filter(j => j.status === "scheduled").length} scheduled · {jobs.filter(j => j.status === "in_progress").length} in progress</div>
         </div>
-        <button
-          onClick={() => { setNewJobForm(emptyNewJobForm()); setNewJobOpen(true); }}
-          className="w-full md:w-auto flex items-center justify-center md:justify-start gap-2 px-4 py-2.5 bg-gradient-to-r from-red-600 to-red-800 border border-red-500/50 rounded-2xl text-sm font-semibold text-white shadow-lg shadow-red-900/30 hover:shadow-red-600/40 hover:scale-[1.02] active:scale-95 transition-all"
-        >
-          <Plus size={16} />Schedule Job
-        </button>
+        <div className="flex items-center gap-2 w-full md:w-auto">
+          <button
+            onClick={() => setBulkImportOpen(true)}
+            className="flex-1 md:flex-none flex items-center justify-center gap-2 px-4 py-2.5 bg-black/40 border border-white/10 rounded-2xl text-sm font-semibold text-white/70 hover:text-white hover:border-white/20 transition-all"
+          >
+            📋 Bulk Import
+          </button>
+          <button
+            onClick={() => { setNewJobForm(emptyNewJobForm()); setNewJobOpen(true); }}
+            className="flex-1 md:flex-none flex items-center justify-center md:justify-start gap-2 px-4 py-2.5 bg-gradient-to-r from-red-600 to-red-800 border border-red-500/50 rounded-2xl text-sm font-semibold text-white shadow-lg shadow-red-900/30 hover:shadow-red-600/40 hover:scale-[1.02] active:scale-95 transition-all"
+          >
+            <Plus size={16} />Schedule Job
+          </button>
+        </div>
       </div>
 
       {/* FIX 3 — these tabs were already overflow-x-auto + whitespace-nowrap,

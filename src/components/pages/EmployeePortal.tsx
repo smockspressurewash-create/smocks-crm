@@ -1631,6 +1631,17 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
         body: emailShell(settings, "Job Completed", `<p>${empName} just completed a job.</p>${customerLine}${rows}${notesHtml}${sigHtml}${photosHtml}`),
       }).catch((e: any) => console.warn("[Complete Job] owner summary email failed:", e?.message));
     })();
+    // FEATURE — "text... once the job is finished." OTW/Running Late/
+    // Arrived already text the customer at each stage; completion was the
+    // one stage with no customer-facing text at all (only the owner-facing
+    // summary email just above). Automatic and best-effort, same treatment
+    // as that email — never blocks the completion flow itself.
+    if (!isPreview && customer?.phone && settings?.twilioSid) {
+      const doneMsg = `Hi ${customer.firstName}, your ${settings?.companyName || "Crew Boss"} service at ${job.address || "your property"} is all finished! Thanks for choosing us.`;
+      twilioSend(settings as any, customer.phone, doneMsg)
+        .then(() => logOutboundSmsToInbox({ contactName: `${customer.firstName} ${customer.lastName}`, contactPhone: customer.phone, customerId: customer.id, body: doneMsg }).catch(() => {}))
+        .catch((e: any) => console.warn("[Complete Job] customer completion text failed:", e?.message));
+    }
     setCompleteSummary({ hours: hrs, amount: Number(job.amount) || 0, paymentStatus: paymentStatus === "Paid" ? `Paid (${patch.paymentType})` : invoiceSent ? "Unpaid — Invoice Sent" : "Unpaid" });
     setCompleteStep("summary");
     try {

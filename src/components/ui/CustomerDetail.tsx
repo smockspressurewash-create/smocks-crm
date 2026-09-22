@@ -410,6 +410,23 @@ export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimat
                   )}
                 </div>
                 <div className="flex items-center gap-2 text-white/70"><MapPin size={12} />{c.address || "—"}</div>
+                {/* FEATURE — "make sure that when I click on a customer
+                    individually, it shows whether their payment
+                    information is connected." The full Payment Methods
+                    section further down already showed this, but it sat
+                    lower on the Info tab where it was easy to miss — this
+                    puts the same status right in the always-visible
+                    header, matching the SMS opt-in/out badge's style. */}
+                <div className="flex items-center gap-2 text-white/70">
+                  <CreditCard size={12} />
+                  {pmLoading ? (
+                    <span className="text-[10px] text-white/40">Checking card on file…</span>
+                  ) : (
+                    <span className={"text-[10px] px-1.5 py-0.5 rounded-full border " + (paymentMethods.length > 0 ? "border-green-800/50 bg-green-950/30 text-green-400" : "border-white/10 bg-white/5 text-white/40")}>
+                      {paymentMethods.length > 0 ? `Card on file · ${paymentMethods[0].brand || "Card"} •••• ${paymentMethods[0].last4 || "----"}` : "No card on file"}
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
             <div className="text-right">

@@ -200,6 +200,20 @@ export const uid = (): string => {
   });
 };
 
+// FEATURE — "automatically assign an employee" (bulk trash/cleaning job
+// import). No location/skill-matching data exists to do real dispatch
+// optimization, so this is a deliberately simple, honest heuristic:
+// whichever assignable active employee has the FEWEST jobs already on
+// their plate for that date gets the next one — spreads load evenly
+// instead of always picking the same person. Same "assignable crew"
+// filter used everywhere else a job gets a crew member (JobDetailModal.tsx).
+export const pickLeastLoadedEmployee = (jobs: any[], employees: any[], date: string): string | null => {
+  const assignable = (employees || []).filter((e: any) => e.status === "active" && e.role !== "owner");
+  if (assignable.length === 0) return null;
+  const loadCount = (empId: string) => (jobs || []).filter((j: any) => j.scheduledDate === date && Array.isArray(j.crew) && j.crew.includes(empId) && j.status !== "cancelled").length;
+  return assignable.reduce((best: any, e: any) => (loadCount(e.id) < loadCount(best.id) ? e : best), assignable[0]).id;
+};
+
 // ISSUE 3 (round 11) — Twilio requires E.164 (+1XXXXXXXXXX) for the To/From
 // numbers on every send; customer/employee phone fields across the app get
 // typed in every format imaginable ("(717) 555-0100", "717.555.0100",

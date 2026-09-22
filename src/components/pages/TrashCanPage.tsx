@@ -20,9 +20,10 @@ import { Badge } from "../ui/Badge";
 import { Stat } from "../ui/Stat";
 import { Modal } from "../ui/Modal";
 import { AddressAutocomplete } from "../ui/AddressAutocomplete";
+import { BulkJobImportModal } from "../ui/BulkJobImportModal";
 import { useIsMobile } from "../../hooks/useIsMobile";
 
-export function TrashCanPage({ jobs = [], customers = [], setCustomers, settings = {} as AppSettings, setSettings, setJobs, toast, ownerId }: { jobs?: Job[]; customers?: Customer[]; setCustomers?: any; settings?: AppSettings; setSettings?: any; setJobs?: any; toast?: any; ownerId?: string }) {
+export function TrashCanPage({ jobs = [], customers = [], setCustomers, employees = [], settings = {} as AppSettings, setSettings, setJobs, toast, ownerId }: { jobs?: Job[]; customers?: Customer[]; setCustomers?: any; employees?: any[]; settings?: AppSettings; setSettings?: any; setJobs?: any; toast?: any; ownerId?: string }) {
   const trashJobs = jobs.filter((j: any) => j.serviceCategory === "trash_can");
   const upcoming = trashJobs.filter(j => j.status !== "cancelled" && j.status !== "completed").sort((a, b) => (a.scheduledDate || "").localeCompare(b.scheduledDate || ""));
   const [routeDate, setRouteDate] = useState(today());
@@ -37,6 +38,7 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, settings
   // it here; manual just inserts unassigned so it lands in the existing
   // Planning board below for a drag-to-day placement.
   const [newCustOpen, setNewCustOpen] = useState(false);
+  const [bulkImportOpen, setBulkImportOpen] = useState(false);
   const emptyNewCustForm = () => ({ firstName: "", lastName: "", phone: "", email: "", address: "", lat: undefined as number | undefined, lng: undefined as number | undefined, cansCount: 1 });
   const [newCustForm, setNewCustForm] = useState(emptyNewCustForm());
   const [addingCustomer, setAddingCustomer] = useState(false);
@@ -435,7 +437,10 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, settings
       <Glass className="p-4 space-y-3">
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div className="font-semibold text-sm flex items-center gap-2"><Users size={14} className="text-red-400" />Trash Can Customers</div>
-          <GBtn onClick={() => setNewCustOpen(true)} className="!text-xs"><Plus size={12} className="inline mr-1" />New Customer</GBtn>
+          <div className="flex items-center gap-2">
+            <GBtn variant="ghost" onClick={() => setBulkImportOpen(true)} className="!text-xs">📋 Bulk Import</GBtn>
+            <GBtn onClick={() => setNewCustOpen(true)} className="!text-xs"><Plus size={12} className="inline mr-1" />New Customer</GBtn>
+          </div>
         </div>
         <div className="text-[10px] text-white/40">Only customers with a trash-can service on file — they also appear in the normal Customers page like anyone else.</div>
         {trashCanCustomers.length === 0 ? (
@@ -486,6 +491,20 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, settings
           <div className="text-[10px] text-white/30">Auto finds the least-loaded existing service day and skips holiday weeks. Manual leaves them unassigned in Planning below for you to drag onto a day yourself.</div>
         </div>
       </Modal>
+
+      <BulkJobImportModal
+        open={bulkImportOpen}
+        onClose={() => setBulkImportOpen(false)}
+        customers={customers}
+        setCustomers={setCustomers}
+        jobs={jobs}
+        setJobs={setJobs}
+        employees={employees}
+        settings={settings}
+        toast={toast}
+        ownerId={ownerId}
+        defaultServiceCategory="trash_can"
+      />
 
       <Glass className="p-4 space-y-3">
         <div className="font-semibold text-sm flex items-center gap-2"><Trash2 size={14} className="text-red-400" />Pricing & Scheduling</div>
