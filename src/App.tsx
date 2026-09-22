@@ -1852,8 +1852,20 @@ export function App() {
               ? ` — payload is only ${sizeKb}KB, so size isn't the cause; most likely a dropped connection, or another tab/device saving settings at the same moment. Will retry automatically on the next change.`
               : " — if this keeps happening, check your Supabase project isn't paused or over its usage quota (Supabase dashboard → Usage)";
             console.warn("[Settings Sync] error:", firstErr?.message + hint, `(payload ${sizeKb}KB)`);
-            toast("Settings saved to this device but not to the server — " + (firstErr?.message || "check connection") + hint, "red");
-            pushSettingsSyncNotification("Settings didn't sync to the server" + hint);
+            // BUG FIX — "I don't want people inside the CRM seeing that."
+            // This effect runs for ANY signed-in CRM session sharing the
+            // owner's settings row (crmUserId is set for managers too, not
+            // just the owner) — a manager's own tab hitting this exact
+            // save-lock-contention race (which the hint text itself
+            // describes: "another tab/device saving settings at the same
+            // moment") surfaced an internal sync-diagnostic toast/
+            // notification to them, which means nothing to a manager and
+            // reads as an alarming internal error. Owner-only now — a
+            // manager's session still retries the save silently underneath.
+            if (crmRole === "owner") {
+              toast("Settings saved to this device but not to the server — " + (firstErr?.message || "check connection") + hint, "red");
+              pushSettingsSyncNotification("Settings didn't sync to the server" + hint);
+            }
             return;
           }
           try {
@@ -1872,8 +1884,12 @@ export function App() {
             const isTimeout2 = /timed out/i.test(secondErr?.message || "");
             console.warn("[Settings Sync] error (both attempts failed):", secondErr?.message);
             const hint2 = isTimeout2 ? " — likely a slow/unstable connection, not your Supabase account. Will retry on the next change." : " — if this keeps happening, check your Supabase project isn't paused or over its usage quota (Supabase dashboard → Usage)";
-            toast("Settings saved to this device but not to the server — " + (secondErr?.message || "check connection") + hint2, "red");
-            pushSettingsSyncNotification("Settings didn't sync to the server" + hint2);
+            // Owner-only — see the matching comment on the first attempt's
+            // failure branch above.
+            if (crmRole === "owner") {
+              toast("Settings saved to this device but not to the server — " + (secondErr?.message || "check connection") + hint2, "red");
+              pushSettingsSyncNotification("Settings didn't sync to the server" + hint2);
+            }
           }
         }
       })();
