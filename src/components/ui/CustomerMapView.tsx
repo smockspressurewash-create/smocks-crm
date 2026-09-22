@@ -65,6 +65,18 @@ export function CustomerMapView({ customers = [], apiKey }: { customers?: any[];
   // explanation. Tracks the failure reason so a systemic key/API problem is
   // surfaced clearly instead of looking like "customers have no location."
   const [lastErrorStatus, setLastErrorStatus] = useState<string | null>(null);
+  // BUG FIX — "I already had geocoding set up correctly, not sure what the
+  // problem is." The JS google.maps.Geocoder callback only ever exposes a
+  // bare status string ("REQUEST_DENIED") — never Google's actual
+  // error_message explaining WHY (wrong API restricted vs. Geocoding
+  // specifically, no billing on the project, an HTTP-referrer restriction
+  // blocking this origin, etc). That detail only exists on the raw REST
+  // response. Google's Geocoding endpoint (unlike most of their APIs)
+  // allows calling it directly from the browser via CORS, so on the first
+  // denial this fetches the real reason once instead of guessing "most
+  // likely Geocoding API is disabled" — which may not even be true.
+  const [detailedError, setDetailedError] = useState<string | null>(null);
+  const detailedErrorFetchedRef = useRef(false);
   const cacheRef = useRef<Record<string, { lat: number; lng: number }>>(readCache());
 
   useEffect(() => {
@@ -126,8 +138,16 @@ export function CustomerMapView({ customers = [], apiKey }: { customers?: any[];
           // any individual address — worth surfacing once that's clearly
           // what's happening rather than staying silent.
           consecutiveFailures++;
-          setLastErrorStatus(e?.message || "UNKNOWN_ERROR");
-          if (consecutiveFailures >= 5 && (e?.message === "REQUEST_DENIED" || e?.message === "OVER_QUERY_LIMIT")) break;
+          const status = e?.message || "UNKNOWN_ERROR";
+          setLastErrorStatus(status);
+          if ((status === "REQUEST_DENIED" || status === "OVER_QUERY_LIMIT") && !detailedErrorFetchedRef.current) {
+            detailedErrorFetchedRef.current = true;
+            fetch(`https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(c.address)}&key=${encodeURIComponent(apiKey)}`)
+              .then(r => r.json())
+              .then(body => { if (body?.error_message) setDetailedError(body.error_message); })
+              .catch(() => { /* best-effort diagnostic only — the generic status message still shows */ });
+          }
+          if (consecutiveFailures >= 5 && (status === "REQUEST_DENIED" || status === "OVER_QUERY_LIMIT")) break;
         }
         done++;
         setProgress({ done, total: toGeocode.length });
@@ -166,7 +186,9 @@ export function CustomerMapView({ customers = [], apiKey }: { customers?: any[];
       )}
       {!geocoding && pins.length === 0 && (lastErrorStatus === "REQUEST_DENIED" || lastErrorStatus === "OVER_QUERY_LIMIT") && (
         <div className="text-xs text-yellow-200 bg-yellow-950/20 border border-yellow-700/40 rounded-xl p-3">
-          {lastErrorStatus === "REQUEST_DENIED"
+          {detailedError
+            ? `No pins loaded — Google's exact reason: "${detailedError}"`
+            : lastErrorStatus === "REQUEST_DENIED"
             ? "No pins loaded because Google rejected every geocode request (REQUEST_DENIED) — the Maps API key in Settings → Integrations most likely doesn't have the Geocoding API enabled. Enable it for this key in the Google Cloud Console, under APIs & Services."
             : "No pins loaded — Google's geocoding rate limit was hit immediately (OVER_QUERY_LIMIT). Check the API key's quota/billing in the Google Cloud Console."}
         </div>
