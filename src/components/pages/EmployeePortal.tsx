@@ -26,7 +26,7 @@ import { sendPushNotification } from "../../lib/push";
 import { SopModal } from "../ui/SopModal";
 import { chargeSavedPaymentMethod, sendPaymentReceipt, listCustomerPaymentMethods } from "../../lib/stripe";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
-import { fmt, uid, today, localDateStr, localDateKey, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields, reconcileCrewAfterAssign, getPollIntervalMs, getPayPeriodBounds, haversineMiles, resolveTermsForJobType, buildJobCalendarDescription, haptic, queueOfflineJobPatch, getPendingJobPatches, clearPendingJobPatch } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, localDateKey, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields, reconcileCrewAfterAssign, getPollIntervalMs, getPayPeriodBounds, haversineMiles, resolveTermsForJobType, buildJobCalendarDescription, haptic, queueOfflineJobPatch, getPendingJobPatches, clearPendingJobPatch, fetchDriveDistance } from "../../lib/utils";
 import { useOnlineStatus } from "../../hooks/useOnlineStatus";
 import { callModel, MODELS } from "../../lib/api";
 import { matchVoiceCommand } from "../../lib/voiceCommands";
@@ -4315,24 +4315,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     const origin = mileageForm.from.trim() || homeBaseAddress || dayJobs[0]?.address;
     const destination = mileageForm.to.trim() || dayJobs[dayJobs.length - 1]?.address;
     if (!origin || !destination) { toast("No jobs found on " + dateStr + " to estimate from — enter From/To manually", "yellow"); return; }
-    if (!settings.googleMapsKey) { toast("Add a Google Maps API key in Settings to use auto-estimate", "red"); return; }
+    const distanceKey = (settings as any).googleGeocodingKey || settings.googleMapsKey;
+    if (!distanceKey) { toast("Add a Google Maps API key in Settings to use auto-estimate", "red"); return; }
     setMileageEstimating(true);
     try {
-      await withTimeout(loadMapsScript(settings.googleMapsKey), 8000, "Maps script load");
-      const gm = (window as any).google?.maps;
-      if (!gm?.DistanceMatrixService) throw new Error("Distance service unavailable");
-      const svc = new gm.DistanceMatrixService();
-      const result: any = await withTimeout(new Promise((resolve, reject) => {
-        svc.getDistanceMatrix(
-          { origins: [origin], destinations: [destination], travelMode: gm.TravelMode.DRIVING },
-          (res: any, status: string) => status === "OK" ? resolve(res) : reject(new Error("Distance lookup status: " + status))
-        );
-      }), 8000, "Distance calculation");
-      const el = result?.rows?.[0]?.elements?.[0];
-      if (el?.status !== "OK" || !el?.distance) throw new Error("No route found between those addresses");
-      const miles = el.distance.value / 1609.34;
+      const { miles, durationText } = await withTimeout(fetchDriveDistance(origin, destination, distanceKey), 8000, "Distance calculation");
       setMileageForm(f => ({ ...f, from: f.from.trim() || origin, to: f.to.trim() || destination, miles: miles.toFixed(1) }));
-      toast(`Estimated ${miles.toFixed(1)} mi (${el.duration?.text || ""}) ✓ — review before saving`, "green");
+      toast(`Estimated ${miles.toFixed(1)} mi (${durationText}) ✓ — review before saving`, "green");
     } catch (e: any) {
       toast("Couldn't estimate — " + (e?.message || "enter miles manually"), "red");
     } finally {
@@ -5066,26 +5055,18 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     return () => clearInterval(t);
   }, [activeClockJob?.id]);
 
-  // Fetch drive time via Maps JS DistanceMatrixService (loaded by AddressAutocomplete)
+  // Fetch drive time via the Distance Matrix REST endpoint directly — see
+  // fetchDriveDistance's own comment (lib/utils.ts) for why not the JS
+  // DistanceMatrixService class.
   const fetchDriveTime = (jobId: string, address: string) => {
     if (fetchedDriveIds.current.has(jobId)) return;
     fetchedDriveIds.current.add(jobId);
     const loc = userLocationRef.current;
-    if (!loc || !settings.googleMapsKey) return;
-    const gm = (window as any).google?.maps;
-    if (!gm?.DistanceMatrixService) return;
-    try {
-      const svc = new gm.DistanceMatrixService();
-      svc.getDistanceMatrix(
-        { origins: [loc], destinations: [address], travelMode: gm.TravelMode.DRIVING },
-        (result: any, status: string) => {
-          if (status === "OK") {
-            const dur: string | undefined = result?.rows?.[0]?.elements?.[0]?.duration?.text;
-            if (dur) setDriveTimes(prev => ({ ...prev, [jobId]: dur }));
-          }
-        }
-      );
-    } catch { /* silently fail */ }
+    const distanceKey = (settings as any).googleGeocodingKey || settings.googleMapsKey;
+    if (!loc || !distanceKey) return;
+    fetchDriveDistance(`${loc.lat},${loc.lng}`, address, distanceKey)
+      .then(({ durationText }) => { if (durationText) setDriveTimes(prev => ({ ...prev, [jobId]: durationText })); })
+      .catch(() => { /* silently fail — this is a nice-to-have ETA, not critical */ });
   };
 
   // Route optimization for today's jobs — uses the Maps JS DirectionsService
@@ -5309,28 +5290,19 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // live drive time from their current location, vs. that job's scheduled start.
   const checkNextJobEta = (nextJob: Job) => {
     const loc = userLocationRef.current;
-    if (!loc || !settings.googleMapsKey || !nextJob.scheduledTime) { setNextJobEta(null); return; }
-    loadMapsScript(settings.googleMapsKey).then(() => {
-      const gm = (window as any).google?.maps;
-      if (!gm?.DistanceMatrixService) return;
-      const svc = new gm.DistanceMatrixService();
-      svc.getDistanceMatrix(
-        { origins: [loc], destinations: [nextJob.address], travelMode: gm.TravelMode.DRIVING },
-        (result: any, status: string) => {
-          if (status !== "OK") return;
-          const durSec: number | undefined = result?.rows?.[0]?.elements?.[0]?.duration?.value;
-          if (durSec == null) return;
-          const arrival = new Date(Date.now() + durSec * 1000);
-          const scheduled = new Date(`${nextJob.scheduledDate}T${nextJob.scheduledTime}:00`);
-          const lateMinutes = Math.round((arrival.getTime() - scheduled.getTime()) / 60000);
-          setNextJobEta({
-            jobId: nextJob.id,
-            etaTime: arrival.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }),
-            lateMinutes,
-          });
-        }
-      );
-    });
+    const distanceKey = (settings as any).googleGeocodingKey || settings.googleMapsKey;
+    if (!loc || !distanceKey || !nextJob.scheduledTime) { setNextJobEta(null); return; }
+    fetchDriveDistance(`${loc.lat},${loc.lng}`, nextJob.address, distanceKey).then(({ durationSeconds }) => {
+      if (!durationSeconds) return;
+      const arrival = new Date(Date.now() + durationSeconds * 1000);
+      const scheduled = new Date(`${nextJob.scheduledDate}T${nextJob.scheduledTime}:00`);
+      const lateMinutes = Math.round((arrival.getTime() - scheduled.getTime()) / 60000);
+      setNextJobEta({
+        jobId: nextJob.id,
+        etaTime: arrival.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }),
+        lateMinutes,
+      });
+    }).catch(() => { /* silently fail — same as the other ETA lookups */ });
   };
 
   const messageNextJobCustomer = async (job: Job, lateMinutes: number) => {

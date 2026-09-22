@@ -207,6 +207,26 @@ export const uid = (): string => {
 // their plate for that date gets the next one — spreads load evenly
 // instead of always picking the same person. Same "assignable crew"
 // filter used everywhere else a job gets a crew member (JobDetailModal.tsx).
+// BUG FIX — "API keys with referer restrictions cannot be used with this
+// API" (Google's own error). Distance Matrix API is, like Geocoding, one
+// of the Google Maps Platform "web service" APIs that flatly refuses a
+// referrer-restricted key — the JS google.maps.DistanceMatrixService class
+// is permanently bound to whatever key loaded the Maps JS <script> tag
+// (the SAME key that needs a referrer restriction for safe browser use
+// everywhere else — Places autocomplete, map rendering), so it can never
+// work with that key. Calling the REST endpoint directly (Google allows
+// CORS on it) lets this use a genuinely separate, unrestricted key —
+// settings.googleGeocodingKey, the same dedicated key CustomerMapView.tsx
+// uses for geocoding.
+export const fetchDriveDistance = async (origin: string, destination: string, apiKey: string): Promise<{ miles: number; durationText: string; durationSeconds: number }> => {
+  const res = await fetch(`https://maps.googleapis.com/maps/api/distancematrix/json?origins=${encodeURIComponent(origin)}&destinations=${encodeURIComponent(destination)}&key=${encodeURIComponent(apiKey)}`);
+  const body = await res.json();
+  if (body.status !== "OK") throw new Error(body.error_message || body.status || "Distance lookup failed");
+  const el = body.rows?.[0]?.elements?.[0];
+  if (el?.status !== "OK" || !el?.distance) throw new Error("No route found between those addresses");
+  return { miles: el.distance.value / 1609.34, durationText: el.duration?.text || "", durationSeconds: el.duration?.value ?? 0 };
+};
+
 export const pickLeastLoadedEmployee = (jobs: any[], employees: any[], date: string): string | null => {
   const assignable = (employees || []).filter((e: any) => e.status === "active" && e.role !== "owner");
   if (assignable.length === 0) return null;

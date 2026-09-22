@@ -624,6 +624,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
       // STRIPE_SECRET_KEY Cloudflare env var, this client form can't see.
       stripeConnected: !!f.stripePublishableKey?.trim(),
       googleMapsKey: (f.googleMapsKey || "").trim(),
+      googleGeocodingKey: (f.googleGeocodingKey || "").trim(),
     };
     const unchanged = skipToastIfUnchanged && JSON.stringify(next) === JSON.stringify(settings);
     setSettings(next);
@@ -764,7 +765,14 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
               <h4 className="font-semibold text-sm mb-2 flex items-center gap-2"><MapPin size={13} className="text-red-400" />Google Maps API Key</h4>
               <div className="text-[11px] text-white/50 mb-2">Powers address autocomplete and Street View thumbnails on jobs.</div>
               <GInput type="password" value={f.googleMapsKey || ""} onChange={e => setF({ ...f, googleMapsKey: e.target.value.trim() })} placeholder="AIza..." />
-              <div className="text-[10px] text-white/40 mt-1"><a href="https://console.cloud.google.com" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">console.cloud.google.com</a> → enable <b>Places API</b> (autocomplete) AND <b>Street View Static API</b> (job thumbnails) — they're billed and enabled separately, so a key that only has one will silently fail the other.</div>
+              <div className="text-[10px] text-white/40 mt-1"><a href="https://console.cloud.google.com" target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">console.cloud.google.com</a> → enable <b>Places API</b> (autocomplete) AND <b>Street View Static API</b> (job thumbnails) — they're billed and enabled separately, so a key that only has one will silently fail the other. This key should have a <b>website/HTTP referrer restriction</b> (recommended, since it's exposed in the browser).</div>
+            </div>
+            <div>
+              <h4 className="font-semibold text-sm mb-2 flex items-center gap-2"><MapPin size={13} className="text-red-400" />Geocoding Key <span className="text-[10px] font-normal text-white/40">(optional, separate key)</span></h4>
+              <div className="text-[11px] text-white/50 mb-2">
+                Powers the Customers map-pins view and employees' drive-time ETAs. Google flatly does not allow the Geocoding API or Distance Matrix API to be called with a referrer-restricted key — even the OFFICIAL error is "API keys with referer restrictions cannot be used with this API." Your regular Maps key above needs that restriction for safety, so those two features need a genuinely <b>separate</b> key that has <b>no</b> website restriction — leave "Application restrictions" set to None, and instead lock it down under <b>API restrictions</b> to only Geocoding API + Distance Matrix API, so an exposed key can't be abused for anything else. Leave this blank to keep using the key above (only safe if that key has no referrer restriction).
+              </div>
+              <GInput type="password" value={f.googleGeocodingKey || ""} onChange={e => setF({ ...f, googleGeocodingKey: e.target.value.trim() })} placeholder="AIza... (leave blank to reuse the key above)" />
             </div>
           </div>}
 

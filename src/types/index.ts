@@ -1109,6 +1109,14 @@ export interface AppSettings {
 
   // Extended/misc
   googleMapsKey?: string;
+  // Google flatly refuses to let Geocoding API / Distance Matrix API be
+  // called with a referrer-restricted key ("API keys with referer
+  // restrictions cannot be used with this API") — googleMapsKey above
+  // needs that restriction for browser safety (Maps JS/Places/Street
+  // View), so geocoding/drive-time features need a genuinely separate,
+  // unrestricted-but-API-scoped key. Falls back to googleMapsKey when
+  // unset (only actually works then if that key has no referrer lock).
+  googleGeocodingKey?: string;
   // FEATURE — customer folder management. Customer.folder (a plain string,
   // "Parent/Child" for nesting) stays the source of truth for WHICH folder a
   // customer is in; this is the separate master list of folder NAMES that

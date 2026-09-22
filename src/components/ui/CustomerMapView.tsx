@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
 import { MapPin } from "lucide-react";
-import { loadMapsScript } from "./AddressAutocomplete";
 import { LiveMap, LiveMapPin } from "./LiveMap";
 
 // FEATURE — "add a view that shows a globe/map, zoom in and out, with a
@@ -47,7 +46,7 @@ const buildInfoHtml = (c: any): string => {
   </div>`;
 };
 
-export function CustomerMapView({ customers = [], apiKey }: { customers?: any[]; apiKey: string }) {
+export function CustomerMapView({ customers = [], apiKey, geocodingKey }: { customers?: any[]; apiKey: string; geocodingKey?: string }) {
   const [pins, setPins] = useState<LiveMapPin[]>([]);
   const [geocoding, setGeocoding] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
@@ -56,42 +55,29 @@ export function CustomerMapView({ customers = [], apiKey }: { customers?: any[];
   const visibleCustomers = tagFilter ? customers.filter((c: any) => (c.tags || []).includes(tagFilter)) : customers;
   const visibleIds = new Set(visibleCustomers.map((c: any) => c.id));
   const visiblePins = tagFilter ? pins.filter(p => visibleIds.has(p.id)) : pins;
-  // BUG FIX — "the customer map view does not show pins." Every geocode
-  // failure was silently swallowed with no visible error at all — a customer
-  // list where EVERY address fails (the actual live cause: the Google Maps
-  // key has the Geocoding API disabled in Cloud Console, confirmed by the
-  // "This API key is not authorized" errors already showing for Distance
-  // Matrix on the same key) rendered a map with zero pins and zero
-  // explanation. Tracks the failure reason so a systemic key/API problem is
-  // surfaced clearly instead of looking like "customers have no location."
   const [lastErrorStatus, setLastErrorStatus] = useState<string | null>(null);
-  // BUG FIX — "I already had geocoding set up correctly, not sure what the
-  // problem is." The JS google.maps.Geocoder callback only ever exposes a
-  // bare status string ("REQUEST_DENIED") — never Google's actual
-  // error_message explaining WHY (wrong API restricted vs. Geocoding
-  // specifically, no billing on the project, an HTTP-referrer restriction
-  // blocking this origin, etc). That detail only exists on the raw REST
-  // response. Google's Geocoding endpoint (unlike most of their APIs)
-  // allows calling it directly from the browser via CORS, so on the first
-  // denial this fetches the real reason once instead of guessing "most
-  // likely Geocoding API is disabled" — which may not even be true.
+  // BUG FIX (root cause, confirmed by Google's own response) — "I already
+  // had geocoding set up correctly." Google flatly refuses ANY referrer-
+  // restricted key for the Geocoding API — "API keys with referer
+  // restrictions cannot be used with this API" — regardless of whether
+  // Geocoding is enabled in Cloud Console. The old code used the JS
+  // google.maps.Geocoder class, which is permanently bound to whatever key
+  // loaded the Maps JS <script> tag — the SAME key that needs a referrer
+  // restriction for safe browser use everywhere else in this app (Places
+  // autocomplete, map rendering), so it could never work. Calling the REST
+  // endpoint directly via fetch (Google allows CORS on it) lets this use a
+  // genuinely separate, unrestricted geocodingKey — decoupled from
+  // whatever loaded the map script — and also gets Google's real
+  // error_message on every call for free, no separate diagnostic fetch.
   const [detailedError, setDetailedError] = useState<string | null>(null);
-  const detailedErrorFetchedRef = useRef(false);
   const cacheRef = useRef<Record<string, { lat: number; lng: number }>>(readCache());
+  const geoKey = geocodingKey || apiKey;
 
   useEffect(() => {
-    if (!apiKey) return;
+    if (!geoKey) return;
     let cancelled = false;
     const withAddress = customers.filter((c: any) => c.address && c.address.trim());
     (async () => {
-      try {
-        await loadMapsScript(apiKey);
-      } catch {
-        return;
-      }
-      if (cancelled) return;
-      const g = (window as any).google;
-      const geocoder = new g.maps.Geocoder();
       const cache = cacheRef.current;
 
       // Anything already cached (by address) shows instantly.
@@ -108,25 +94,27 @@ export function CustomerMapView({ customers = [], apiKey }: { customers?: any[];
       setGeocoding(true);
       setProgress({ done: 0, total: toGeocode.length });
 
-      // Sequential with a small delay — the Geocoder has an unpublished
-      // per-second rate limit; a tight Promise.all loop over hundreds of
-      // addresses reliably starts returning OVER_QUERY_LIMIT partway
-      // through. A cap keeps a first-ever map view (every address a cache
-      // miss) from taking minutes on a large customer list.
+      // Sequential with a small delay — the Geocoding REST API has an
+      // unpublished per-second rate limit; a tight Promise.all loop over
+      // hundreds of addresses reliably starts returning OVER_QUERY_LIMIT
+      // partway through. A cap keeps a first-ever map view (every address
+      // a cache miss) from taking minutes on a large customer list.
       const CAP = 300;
       let done = 0;
       let consecutiveFailures = 0;
       for (const c of toGeocode.slice(0, CAP)) {
         if (cancelled) return;
         try {
-          const result: any = await new Promise((resolve, reject) => {
-            geocoder.geocode({ address: c.address }, (results: any, status: string) => {
-              if (status === "OK" && results?.[0]) resolve(results[0]);
-              else reject(new Error(status));
-            });
-          });
-          const loc = result.geometry.location;
-          const lat = loc.lat(), lng = loc.lng();
+          const res = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(c.address)}&key=${encodeURIComponent(geoKey)}`);
+          const body = await res.json();
+          if (body.status !== "OK" || !body.results?.[0]) {
+            const err: any = new Error(body.status || "UNKNOWN_ERROR");
+            err.status = body.status || "UNKNOWN_ERROR";
+            err.errorMessage = body.error_message;
+            throw err;
+          }
+          const loc = body.results[0].geometry.location;
+          const lat = loc.lat, lng = loc.lng;
           cache[c.address] = { lat, lng };
           setPins(prev => [...prev, { id: c.id, label: `${c.firstName} ${c.lastName}`.trim() || c.address, lat, lng, updatedAt: Date.now(), infoHtml: buildInfoHtml(c) }]);
           consecutiveFailures = 0;
@@ -138,15 +126,9 @@ export function CustomerMapView({ customers = [], apiKey }: { customers?: any[];
           // any individual address — worth surfacing once that's clearly
           // what's happening rather than staying silent.
           consecutiveFailures++;
-          const status = e?.message || "UNKNOWN_ERROR";
+          const status = e?.status || e?.message || "UNKNOWN_ERROR";
           setLastErrorStatus(status);
-          if ((status === "REQUEST_DENIED" || status === "OVER_QUERY_LIMIT") && !detailedErrorFetchedRef.current) {
-            detailedErrorFetchedRef.current = true;
-            fetch(`https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(c.address)}&key=${encodeURIComponent(apiKey)}`)
-              .then(r => r.json())
-              .then(body => { if (body?.error_message) setDetailedError(body.error_message); })
-              .catch(() => { /* best-effort diagnostic only — the generic status message still shows */ });
-          }
+          if (e?.errorMessage) setDetailedError(e.errorMessage);
           if (consecutiveFailures >= 5 && (status === "REQUEST_DENIED" || status === "OVER_QUERY_LIMIT")) break;
         }
         done++;
@@ -157,7 +139,7 @@ export function CustomerMapView({ customers = [], apiKey }: { customers?: any[];
       if (!cancelled) setGeocoding(false);
     })();
     return () => { cancelled = true; };
-  }, [apiKey, customers.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [geoKey, customers.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!apiKey) {
     return <div className="h-64 rounded-xl bg-black/30 border border-white/10 flex flex-col items-center justify-center gap-2 text-xs text-white/40 p-4 text-center"><MapPin size={20} className="opacity-40" />Add a Google Maps API key in Settings → Integrations to see customers on a map</div>;
@@ -186,10 +168,12 @@ export function CustomerMapView({ customers = [], apiKey }: { customers?: any[];
       )}
       {!geocoding && pins.length === 0 && (lastErrorStatus === "REQUEST_DENIED" || lastErrorStatus === "OVER_QUERY_LIMIT") && (
         <div className="text-xs text-yellow-200 bg-yellow-950/20 border border-yellow-700/40 rounded-xl p-3">
-          {detailedError
+          {detailedError?.includes("referer")
+            ? `No pins loaded — your Google Maps key has a website/referrer restriction, which Google does not allow for the Geocoding API ("${detailedError}"). Add a separate Geocoding Key with no referrer restriction in Settings → Integrations → Google Maps.`
+            : detailedError
             ? `No pins loaded — Google's exact reason: "${detailedError}"`
             : lastErrorStatus === "REQUEST_DENIED"
-            ? "No pins loaded because Google rejected every geocode request (REQUEST_DENIED) — the Maps API key in Settings → Integrations most likely doesn't have the Geocoding API enabled. Enable it for this key in the Google Cloud Console, under APIs & Services."
+            ? "No pins loaded because Google rejected every geocode request (REQUEST_DENIED) — the Maps API key in Settings → Integrations most likely doesn't have the Geocoding API enabled, or has a referrer restriction (Geocoding doesn't allow those — add a separate Geocoding Key). Check Settings → Integrations → Google Maps."
             : "No pins loaded — Google's geocoding rate limit was hit immediately (OVER_QUERY_LIMIT). Check the API key's quota/billing in the Google Cloud Console."}
         </div>
       )}
