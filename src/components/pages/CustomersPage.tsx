@@ -731,7 +731,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
       {/* LTV Analytics tab */}
       {pageTab === "analytics" && <CustomerAnalytics customers={customers} jobs={jobs} estimates={estimates} />}
 
-      {pageTab === "map" && <CustomerMapView customers={customers} apiKey={settings.googleMapsKey || (settings as any).mapsKey || ""} geocodingKey={(settings as any).googleGeocodingKey || ""} />}
+      {pageTab === "map" && <CustomerMapView customers={customers} apiKey={settings.googleMapsKey || (settings as any).mapsKey || ""} geocodingKey={(settings as any).googleGeocodingKey || ""} onViewCustomer={(id: string) => { const c = customers.find((x: any) => x.id === id); if (c) setDetail(c); }} />}
 
       {/* Duplicates tab */}
       {pageTab === "duplicates" && <div className="space-y-3">

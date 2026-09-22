@@ -26,9 +26,24 @@ const writeCache = (cache: Record<string, { lat: number; lng: number }>) => {
 // into a Google Maps InfoWindow's innerHTML.
 const escapeHtml = (s: string) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] as string));
 
-// FEATURE — "clicking should display a pop-up with customer information."
-// Real name/phone/email/address/tags, not just a name — shown in LiveMap's
-// click InfoWindow via LiveMapPin.infoHtml.
+// FEATURE — "the photo for the address/house is not loading in map view."
+// Nothing ever rendered one here before — Google's Street View Static API
+// 403s on this app's referrer-restricted browser key (see PropertyMapEmbed's
+// comment for the full story), so this reuses that same fix: the plain
+// maps.google.com embed URL needs no API key and no restrictions at all.
+// InfoWindow content is raw HTML (not React), so a plain <iframe> tag —
+// the same src PropertyMapEmbed renders — drops in directly.
+const buildPropertyEmbedHtml = (address: string): string => {
+  if (!address) return "";
+  return `<iframe src="https://maps.google.com/maps?q=${encodeURIComponent(address)}&output=embed" style="width:100%;height:110px;border:0;border-radius:6px;margin-top:6px;display:block;" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>`;
+};
+
+// FEATURE — "clicking a pin should let me press 'View Full Client' to open
+// the full profile." InfoWindow content is raw DOM Google owns, not React,
+// so a click handler can't be wired the normal way — a plain onclick calling
+// a window-level bridge (registered by CustomerMapView below) is the only
+// way in. c.id is a server-generated UUID, never user-typed text, so it's
+// safe to drop straight into the single-quoted onclick attribute.
 const buildInfoHtml = (c: any): string => {
   const name = `${c.firstName || ""} ${c.lastName || ""}`.trim() || "Unnamed customer";
   const rows: string[] = [];
@@ -43,10 +58,12 @@ const buildInfoHtml = (c: any): string => {
     ${escapeHtml(name)}
     <div style="font-weight:400;color:#444;font-size:11.5px;line-height:1.5;margin-top:3px;">${rows.join("<br/>")}</div>
     ${tagsHtml}
+    ${buildPropertyEmbedHtml(c.address || "")}
+    <button onclick='window.__cmvViewCustomer && window.__cmvViewCustomer(${JSON.stringify(String(c.id))})' style="margin-top:8px;width:100%;padding:6px 10px;border-radius:8px;border:none;background:#2563eb;color:#fff;font:600 11px system-ui,sans-serif;cursor:pointer;">View Full Client →</button>
   </div>`;
 };
 
-export function CustomerMapView({ customers = [], apiKey, geocodingKey }: { customers?: any[]; apiKey: string; geocodingKey?: string }) {
+export function CustomerMapView({ customers = [], apiKey, geocodingKey, onViewCustomer }: { customers?: any[]; apiKey: string; geocodingKey?: string; onViewCustomer?: (id: string) => void }) {
   const [pins, setPins] = useState<LiveMapPin[]>([]);
   const [geocoding, setGeocoding] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
@@ -72,6 +89,16 @@ export function CustomerMapView({ customers = [], apiKey, geocodingKey }: { cust
   const [detailedError, setDetailedError] = useState<string | null>(null);
   const cacheRef = useRef<Record<string, { lat: number; lng: number }>>(readCache());
   const geoKey = geocodingKey || apiKey;
+
+  // Ref-mirror so the window-level bridge (registered once) always calls the
+  // LATEST onViewCustomer, not one captured at mount — same stale-closure
+  // guard used for Alfred's send() elsewhere in this app.
+  const onViewCustomerRef = useRef(onViewCustomer);
+  useEffect(() => { onViewCustomerRef.current = onViewCustomer; });
+  useEffect(() => {
+    (window as any).__cmvViewCustomer = (id: string) => onViewCustomerRef.current?.(id);
+    return () => { delete (window as any).__cmvViewCustomer; };
+  }, []);
 
   useEffect(() => {
     if (!geoKey) return;

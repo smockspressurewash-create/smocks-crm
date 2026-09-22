@@ -2052,11 +2052,29 @@ export function App() {
   // also gets a real second attempt before this fires at all, see the plain
   // retry added above) so a bad connection doesn't nag repeatedly in one
   // sitting.
-  const lastSettingsSyncNotifAtRef = useRef(0);
+  // BUG FIX — "I still got this notification" repeating far more often than
+  // once per 30 minutes. The throttle above was a plain useRef, reset to 0
+  // on every page load/reload — an owner who reloads or re-opens the tab
+  // (normal CRM usage) got a fresh notification on the very next timeout,
+  // even seconds after the last one, because the ref forgot it ever fired.
+  // Seed it from localStorage (and from the notification list itself, in
+  // case localStorage was cleared but the notification history wasn't) so
+  // the throttle survives reloads and actually means "once per 30 minutes,"
+  // not "once per 30 minutes per page load."
+  const SETTINGS_SYNC_NOTIF_KEY = "smocks.lastSettingsSyncNotifAt";
+  const lastSettingsSyncNotifAtRef = useRef<number>((() => {
+    try {
+      const stored = Number(localStorage.getItem(SETTINGS_SYNC_NOTIF_KEY)) || 0;
+      const fromHistory = (JSON.parse(localStorage.getItem("smocks.notifications") || "[]") as AppNotification[])
+        .find(n => n.category === "system" && /didn't sync/i.test(n.text))?.at || 0;
+      return Math.max(stored, fromHistory);
+    } catch { return 0; }
+  })());
   const pushSettingsSyncNotification = (text: string) => {
     const now = Date.now();
     if (now - lastSettingsSyncNotifAtRef.current < 30 * 60 * 1000) return;
     lastSettingsSyncNotifAtRef.current = now;
+    try { localStorage.setItem(SETTINGS_SYNC_NOTIF_KEY, String(now)); } catch { /* ignore */ }
     setNotifications((prev: AppNotification[]) => [{ id: uid(), text, at: now, read: false, category: "system" as const, page: "dashboard" }, ...prev].slice(0, NOTIFICATIONS_CAP));
   };
   const deleteNotification = (id: string) => setNotifications((prev: AppNotification[]) => prev.filter(n => n.id !== id));
