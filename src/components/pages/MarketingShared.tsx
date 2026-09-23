@@ -14,6 +14,35 @@ import { Menu, X, ArrowRight } from "lucide-react";
 
 export type MarketingPage = "welcome" | "features" | "pricing" | "about";
 
+// ─── SEO/AEO — per-page <title>/meta description ──────────────────────────
+// FEATURE — "fully AEO and SEO optimize CrewBoss." This app is a hash-routed
+// SPA (#/features, #/pricing, #/about all live under the ONE real URL —
+// see App.tsx's page-resolution useState) — a search/AI crawler that
+// doesn't execute JS only ever sees index.html's static <title>/<meta
+// description> no matter which of these four marketing pages a human
+// visitor is actually on. This can't fix that (there's no server-side
+// render here), but it DOES make the tab title/meta description accurate
+// for: (1) any crawler that DOES execute JS (Googlebot generally does),
+// (2) a link shared while already on that page, (3) plain browser-tab UX.
+// Restored to index.html's own values on unmount so navigating to a page
+// that doesn't call this (or back to a non-marketing page) doesn't leave a
+// stale title/description behind.
+const DEFAULT_TITLE = "CrewBoss — AI-Powered CRM for Pressure Washing & Trash Can Cleaning Businesses";
+const DEFAULT_DESCRIPTION = "CrewBoss is the pressure washing CRM built for the job, not adapted from something else — scheduling, estimates, invoicing, Stripe payments, a mobile field portal, drag-and-drop automations, and Alfred, a built-in AI assistant that schedules jobs and texts customers for you. Free trial, no credit card required.";
+export function useDocumentMeta(title: string, description: string): void {
+  useEffect(() => {
+    const prevTitle = document.title;
+    const metaEl = document.querySelector('meta[name="description"]');
+    const prevDescription = metaEl?.getAttribute("content") || "";
+    document.title = title;
+    metaEl?.setAttribute("content", description);
+    return () => {
+      document.title = prevTitle || DEFAULT_TITLE;
+      metaEl?.setAttribute("content", prevDescription || DEFAULT_DESCRIPTION);
+    };
+  }, [title, description]);
+}
+
 // ─── Scroll-reveal wrapper ─────────────────────────────────────────────────
 // Adds "is-visible" once the element crosses into the viewport, which
 // MarketingStyles below turns into a fade+slide-up transition. Falls back to

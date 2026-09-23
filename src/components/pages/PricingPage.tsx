@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { CheckCircle, ChevronRight, Minus, ChevronDown } from "lucide-react";
 import {
   Reveal, MarketingStyles, BackgroundBlobs, MarketingNav, MarketingFooter,
-  MarketingPageHeader, MarketingFinalCta, MarketingPage,
+  MarketingPageHeader, MarketingFinalCta, MarketingPage, useDocumentMeta,
 } from "./MarketingShared";
 import { PLANS } from "./LandingPage";
 
@@ -143,6 +143,10 @@ export function PricingPage({
   onRoadmap?: () => void;
 }) {
   const [billing, setBilling] = useState<"monthly" | "annual">("annual");
+  useDocumentMeta(
+    "Pricing — Pressure Washing CRM Plans From $23/mo | CrewBoss",
+    "CrewBoss pricing for pressure washing and trash can cleaning businesses: Solo for an owner-operator, Crew for a business running a real team (includes the Alfred AI assistant and live crew tracking), and Growth for multi-crew operations. No credit card required to start."
+  );
   return (
     // BUG FIX — see the identical fix + comment in LandingPage.tsx: this
     // div must be the scrolling pane itself since html/body/#root are

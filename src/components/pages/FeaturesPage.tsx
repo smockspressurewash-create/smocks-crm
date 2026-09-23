@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import {
   Reveal, MarketingStyles, BackgroundBlobs, MarketingNav, MarketingFooter,
-  MarketingPageHeader, MarketingFinalCta, MarketingPage,
+  MarketingPageHeader, MarketingFinalCta, MarketingPage, useDocumentMeta,
 } from "./MarketingShared";
 
 // ─── #/features — dedicated, categorized feature breakdown ────────────────
@@ -210,6 +210,10 @@ export function FeaturesPage({
   onGoToDashboard?: () => void;
   onRoadmap?: () => void;
 }) {
+  useDocumentMeta(
+    "Features — Scheduling, Automation & AI for Pressure Washing | CrewBoss",
+    "Every feature in CrewBoss's pressure washing CRM: drag-and-drop scheduling, estimates & invoicing, Stripe payments, a mobile field portal with GPS and checklists, drag-and-drop automations, and Alfred — a built-in AI assistant that can schedule jobs and message customers on its own."
+  );
   return (
     // BUG FIX — see the identical fix + comment in LandingPage.tsx: this
     // div must be the scrolling pane itself since html/body/#root are

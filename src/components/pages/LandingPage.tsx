@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import {
   Reveal, MarketingStyles, BackgroundBlobs, MarketingNav, MarketingFooter,
-  MarketingPage, MarketingMarquee, SectionDivider,
+  MarketingPage, MarketingMarquee, SectionDivider, useDocumentMeta,
 } from "./MarketingShared";
 
 // ─── Public marketing / landing page for CrewBoss (this product) ──────────────
@@ -259,6 +259,10 @@ export function LandingPage({
   onRoadmap?: () => void;
 }) {
   const [billing, setBilling] = useState<"monthly" | "annual">("annual");
+  useDocumentMeta(
+    "CrewBoss — The Pressure Washing CRM with AI Automation",
+    "The pressure washing CRM built for the job, not adapted from something else. Scheduling, estimates, invoicing, Stripe payments, a mobile field portal, drag-and-drop automations, and Alfred — an AI assistant that schedules jobs and texts customers for you. Free trial, no credit card required."
+  );
   return (
     // BUG FIX — index.css locks html/body/#root to a hard 100% height with
     // overflow:hidden (this app's whole architecture is "only specific

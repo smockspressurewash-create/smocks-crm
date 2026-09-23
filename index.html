@@ -5,7 +5,86 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#dc2626" />
-    <meta name="description" content="CrewBoss — Business Management CRM for pressure-washing crews" />
+
+    <!-- ─── SEO/AEO ──────────────────────────────────────────────────────────
+         FEATURE — "fully AEO and SEO optimize CrewBoss... searching on Google
+         or ChatGPT for the best pressure washing CRM, a pressure washing CRM
+         with automation, or a pressure washer CRM with AI." This is a
+         hash-routed single-page app with no server-side rendering (see
+         MarketingShared.tsx's useDocumentMeta comment) — there is exactly
+         ONE real crawlable URL, so this file carries the entire SEO/AEO
+         payload: title/description tuned to those exact search intents,
+         Open Graph/Twitter tags for link previews, and JSON-LD (Organization
+         + SoftwareApplication + FAQPage) built from this app's own real
+         pricing/feature/FAQ data (LandingPage.tsx) — nothing fabricated,
+         no invented ratings or reviews.
+
+         Canonical domain is the live Cloudflare Pages URL — no custom
+         domain is connected yet. When one is bought, update DOMAIN below
+         (search this file for "smocks-crm.pages.dev") and the matching
+         Sitemap: line in public/robots.txt + public/sitemap.xml's <loc>. -->
+    <title>CrewBoss — AI-Powered CRM for Pressure Washing & Trash Can Cleaning Businesses</title>
+    <meta name="description" content="CrewBoss is the pressure washing CRM built for the job, not adapted from something else — scheduling, estimates, invoicing, Stripe payments, a mobile field portal, drag-and-drop automations, and Alfred, a built-in AI assistant that schedules jobs and texts customers for you. Free trial, no credit card required." />
+    <meta name="keywords" content="pressure washing CRM, pressure washing software, pressure washing CRM with AI, pressure washing CRM with automation, trash can cleaning software, trash can cleaning CRM, field service CRM, power washing business software" />
+    <meta name="robots" content="index, follow" />
+    <link rel="canonical" href="https://smocks-crm.pages.dev/" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="CrewBoss" />
+    <meta property="og:url" content="https://smocks-crm.pages.dev/" />
+    <meta property="og:title" content="CrewBoss — AI-Powered CRM for Pressure Washing & Trash Can Cleaning Businesses" />
+    <meta property="og:description" content="Scheduling, estimates, invoicing, Stripe payments, a mobile field portal, drag-and-drop automations, and Alfred — an AI assistant that schedules jobs and texts customers for you. The CRM built specifically for pressure washing, not adapted from something else." />
+    <meta property="og:image" content="https://smocks-crm.pages.dev/icon-512.png" />
+
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="CrewBoss — AI-Powered CRM for Pressure Washing & Trash Can Cleaning Businesses" />
+    <meta name="twitter:description" content="The pressure washing CRM with built-in AI and automation — scheduling, estimates, invoicing, Stripe payments, a mobile field portal, and Alfred, an AI assistant that acts on your CRM." />
+    <meta name="twitter:image" content="https://smocks-crm.pages.dev/icon-512.png" />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "Organization",
+        "name": "CrewBoss",
+        "url": "https://smocks-crm.pages.dev/",
+        "logo": "https://smocks-crm.pages.dev/icon-512.png",
+        "description": "CrewBoss is a CRM built specifically for pressure washing and trash can cleaning businesses, covering scheduling, estimates, invoicing, payments, crew management, and an AI assistant."
+      }
+    </script>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "CrewBoss",
+        "applicationCategory": "BusinessApplication",
+        "applicationSubCategory": "CRM software for pressure washing and trash can cleaning businesses",
+        "operatingSystem": "Web, iOS, Android",
+        "url": "https://smocks-crm.pages.dev/",
+        "description": "CrewBoss is the CRM built specifically for pressure washing and trash can cleaning businesses — scheduling, estimates, invoicing, Stripe payments, a mobile field portal, drag-and-drop automations, and Alfred, a built-in AI assistant.",
+        "offers": [
+          { "@type": "Offer", "name": "Solo", "price": "29", "priceCurrency": "USD", "description": "For an owner-operator running the show alone.", "url": "https://smocks-crm.pages.dev/#/pricing" },
+          { "@type": "Offer", "name": "Crew", "price": "59", "priceCurrency": "USD", "description": "For a business running an actual crew in the field, includes the Alfred AI assistant.", "url": "https://smocks-crm.pages.dev/#/pricing" },
+          { "@type": "Offer", "name": "Growth", "price": "119", "priceCurrency": "USD", "description": "For multi-crew operations that want it all automated.", "url": "https://smocks-crm.pages.dev/#/pricing" }
+        ]
+      }
+    </script>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+          { "@type": "Question", "name": "What is the best CRM for a pressure washing business?", "acceptedAnswer": { "@type": "Answer", "text": "CrewBoss is a CRM built specifically for pressure washing businesses rather than adapted from a generic CRM. It includes scheduling, estimates and invoicing, Stripe payments, a mobile field portal for crews, drag-and-drop automations, and Alfred, a built-in AI assistant." } },
+          { "@type": "Question", "name": "Is there a pressure washing CRM with built-in AI?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. CrewBoss includes Alfred, an AI assistant that acts directly on the CRM — it can schedule jobs, send estimates, check stock, and pull business numbers, from inside the app or by text message." } },
+          { "@type": "Question", "name": "Is there a pressure washing CRM with automation?", "acceptedAnswer": { "@type": "Answer", "text": "Yes. CrewBoss has a drag-and-drop automation builder with ready-made templates for new-lead auto-replies, review requests after a job is complete, overdue-invoice reminders, 90-day re-service nudges, and referral asks." } },
+          { "@type": "Question", "name": "Do I need a separate payment processor?", "acceptedAnswer": { "@type": "Answer", "text": "No — CrewBoss connects directly to Stripe or Square, whichever you already use. Take deposits, full payments, and in-person card charges without a third-party app in between." } },
+          { "@type": "Question", "name": "Can my crew use CrewBoss in the field, not just the office?", "acceptedAnswer": { "@type": "Answer", "text": "Yes — every technician gets the mobile field portal: their job list, on-the-way and running-late texts, checklists, photos, clock in/out, and on-site payment collection, all from their own phone." } },
+          { "@type": "Question", "name": "Is my data separated from other businesses using CrewBoss?", "acceptedAnswer": { "@type": "Answer", "text": "Yes — every business's jobs, customers, and invoices are isolated at the database level. No other CrewBoss account can see your data, and you can't see theirs." } },
+          { "@type": "Question", "name": "Can customers pay and sign estimates online?", "acceptedAnswer": { "@type": "Answer", "text": "Yes — every customer gets a secure portal to view job history, e-sign estimates, and pay invoices, with no account or app download required on their end." } },
+          { "@type": "Question", "name": "What can CrewBoss's automations actually do?", "acceptedAnswer": { "@type": "Answer", "text": "Build follow-up sequences by dragging a trigger, a wait/condition, and an action onto a canvas, or start from a template: new-lead auto-reply, review requests after job completion, overdue-invoice reminders, 90-day re-service nudges, referral asks, birthday and seasonal promos, and day-of job reminders." } }
+        ]
+      }
+    </script>
+
     <!-- PWA — installable from Chrome (Android/desktop) as a standalone app.
          iOS Safari doesn't read manifest.json for its own "Add to Home
          Screen," hence the separate apple-touch-icon/apple-mobile-web-app
@@ -16,10 +95,120 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="CrewBoss" />
-    <title>CrewBoss</title>
   </head>
   <body>
-    <div id="root"></div>
+    <!-- ─── Static SEO/AEO fallback content ───────────────────────────────────
+         FEATURE — same "fully AEO/SEO optimize" request. Real browsers never
+         see this for more than an instant: React's createRoot(...).render()
+         (main.tsx) replaces everything inside #root the moment the JS bundle
+         executes. Its purpose is for whatever DOESN'T execute JS — several
+         AEO/AI crawlers (ChatGPT-User, PerplexityBot, and others) fetch raw
+         HTML only, and an empty <div id="root"></div> is literally invisible
+         to them. This content is drawn verbatim from LandingPage.tsx's real
+         hero copy, FEATURES list, PLANS pricing, and FAQ array — not
+         separate/invented marketing copy — so a crawler that DOES run JS
+         (Googlebot generally does) sees materially the same page either way,
+         which matters: content that differs between what a crawler sees and
+         what a real visitor sees reads as cloaking, not just bad practice.
+         Tailwind's compiled stylesheet is a plain <link> Vite injects at
+         build time (unrelated to the JS bundle loading), so this renders
+         already-styled — a genuine prerendered-looking first paint, not an
+         unstyled flash, and a real (if small) Core Web Vitals/LCP win since
+         it paints before the ~1MB JS bundle finishes executing. -->
+    <div id="root">
+      <main class="min-h-screen bg-black text-white px-4 py-12 md:py-20">
+        <div class="max-w-3xl mx-auto text-center">
+          <h1 class="text-3xl md:text-5xl font-black tracking-tight leading-tight mb-5">
+            Run your pressure washing business like a boss.
+          </h1>
+          <p class="text-white/60 text-base md:text-lg leading-relaxed mb-8">
+            CrewBoss is the pressure washing CRM built specifically for the job — scheduling, estimates, invoicing,
+            Stripe payments, crew tracking, and Alfred, a built-in AI assistant that can schedule jobs and text your
+            customers for you. Not adapted from generic CRM software, and not just for pressure washing —
+            CrewBoss also runs recurring trash can cleaning routes with their own signup flow and schedule.
+          </p>
+        </div>
+
+        <section class="max-w-4xl mx-auto mb-14">
+          <h2 class="text-xl md:text-2xl font-bold text-center mb-6">A pressure washing CRM with AI and automation built in</h2>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
+            <div class="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+              <h3 class="font-semibold mb-1">Scheduling & Crew Assignment</h3>
+              <p class="text-white/50">Drag jobs onto the calendar, assign crew, and track every job from Unscheduled to Done — synced live to the field.</p>
+            </div>
+            <div class="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+              <h3 class="font-semibold mb-1">Estimates, Invoices & Stripe Payments</h3>
+              <p class="text-white/50">Send branded estimates customers e-sign online, convert to invoices, and get paid — including in-person card charges.</p>
+            </div>
+            <div class="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+              <h3 class="font-semibold mb-1">Alfred, a Built-In AI Assistant</h3>
+              <p class="text-white/50">Alfred acts directly on the CRM — schedules jobs, sends estimates, checks stock — from inside the app or by text message.</p>
+            </div>
+            <div class="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+              <h3 class="font-semibold mb-1">Drag-and-Drop Automations</h3>
+              <p class="text-white/50">Ready-made templates for new-lead auto-reply, review requests, overdue-invoice reminders, and re-service nudges — build once, it runs itself.</p>
+            </div>
+            <div class="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+              <h3 class="font-semibold mb-1">Mobile Field Portal</h3>
+              <p class="text-white/50">Crew members clock in/out, follow checklists, snap job photos, and share GPS location, all from their phone.</p>
+            </div>
+            <div class="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+              <h3 class="font-semibold mb-1">Client Portal</h3>
+              <p class="text-white/50">Every customer gets a secure portal to view job history, sign estimates, and pay invoices.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="max-w-4xl mx-auto mb-14">
+          <h2 class="text-xl md:text-2xl font-bold text-center mb-6">Pricing</h2>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm text-center">
+            <div class="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+              <div class="font-semibold">Solo — $29/mo</div>
+              <p class="text-white/50 mt-1">For an owner-operator running the show alone.</p>
+            </div>
+            <div class="rounded-xl border border-red-600/40 bg-red-950/20 p-4">
+              <div class="font-semibold">Crew — $59/mo</div>
+              <p class="text-white/50 mt-1">For a business running an actual crew, includes Alfred AI.</p>
+            </div>
+            <div class="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+              <div class="font-semibold">Growth — $119/mo</div>
+              <p class="text-white/50 mt-1">For multi-crew operations that want it all automated.</p>
+            </div>
+          </div>
+          <p class="text-center text-white/40 text-xs mt-4">Free trial available, no credit card required. ~20% cheaper billed annually.</p>
+        </section>
+
+        <section class="max-w-3xl mx-auto mb-14">
+          <h2 class="text-xl md:text-2xl font-bold text-center mb-6">Questions, answered</h2>
+          <div class="space-y-2">
+            <details class="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+              <summary class="font-semibold text-sm cursor-pointer">What is the best CRM for a pressure washing business?</summary>
+              <p class="text-white/50 text-sm mt-2">CrewBoss is a CRM built specifically for pressure washing businesses rather than adapted from a generic CRM — scheduling, estimates and invoicing, Stripe payments, a mobile field portal, drag-and-drop automations, and Alfred, a built-in AI assistant.</p>
+            </details>
+            <details class="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+              <summary class="font-semibold text-sm cursor-pointer">Is there a pressure washing CRM with built-in AI?</summary>
+              <p class="text-white/50 text-sm mt-2">Yes. Alfred acts directly on the CRM — it can schedule jobs, send estimates, check stock, and pull business numbers, from inside the app or by text message.</p>
+            </details>
+            <details class="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+              <summary class="font-semibold text-sm cursor-pointer">Is there a pressure washing CRM with automation?</summary>
+              <p class="text-white/50 text-sm mt-2">Yes. CrewBoss has a drag-and-drop automation builder with templates for new-lead auto-replies, review requests, overdue-invoice reminders, and re-service nudges.</p>
+            </details>
+            <details class="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+              <summary class="font-semibold text-sm cursor-pointer">Do I need a separate payment processor?</summary>
+              <p class="text-white/50 text-sm mt-2">No — CrewBoss connects directly to Stripe or Square. Take deposits, full payments, and in-person card charges without a third-party app in between.</p>
+            </details>
+            <details class="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+              <summary class="font-semibold text-sm cursor-pointer">Can my crew use it in the field, not just the office?</summary>
+              <p class="text-white/50 text-sm mt-2">Yes — every technician gets the mobile field portal: job list, on-the-way and running-late texts, checklists, photos, clock in/out, and on-site payment collection.</p>
+            </details>
+          </div>
+        </section>
+
+        <div class="text-center">
+          <a href="#/welcome" class="inline-block px-7 py-3.5 rounded-xl bg-red-700 font-bold text-base">Start Free Trial</a>
+        </div>
+      </main>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

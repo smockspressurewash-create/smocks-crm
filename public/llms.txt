@@ -1,0 +1,51 @@
+# CrewBoss
+
+> CrewBoss is a CRM built specifically for pressure washing and trash can cleaning businesses — not a generic CRM adapted for the trade. It covers scheduling, estimates, invoicing, Stripe payments, a mobile field portal for crews, drag-and-drop marketing automations, and Alfred, a built-in AI assistant that can take real actions (schedule a job, send an estimate, text a customer) rather than only answer questions.
+
+## Who it's for
+Owners and crews at pressure washing companies and trash can cleaning services — from a solo owner-operator to a multi-crew operation.
+
+## Core features
+- Scheduling & crew assignment: drag jobs onto a calendar, assign crew, track every job from Unscheduled to Done, synced live to the field.
+- Estimates, invoices & payments: branded estimates customers e-sign online, one-click convert to invoice, direct Stripe integration for deposits, full payments, and in-person card charges.
+- Client portal: every customer gets a secure portal to view job history, sign estimates, and pay invoices.
+- Drag-and-drop automations: a real visual workflow builder with templates for new-lead auto-reply, review requests, overdue-invoice reminders, 90-day re-service nudges, and referral asks.
+- Alfred, the AI assistant: acts directly on the CRM — schedules jobs, sends estimates, checks stock, pulls business numbers — from inside the app or by text message, including a vacation mode where it can run the front desk while the owner is out.
+- Mobile field portal: crew members clock in/out, follow pre/during/post-job checklists, take photos on-site, and share GPS location, all from their phone.
+- Live crew tracking: the owner dashboard shows who's on shift, where they are, and checklist progress, refreshed every few seconds.
+- Job photo documentation: before/after photos attached to the job record, visible to the office and the customer.
+- On-the-way & running-late texts: sent automatically by SMS or the owner's own Gmail address, never a generic "noreply" sender.
+- Referral program and automated review requests.
+- Trash can route management: a recurring trash-can cleaning route alongside pressure washing, with its own signup flow and schedule.
+
+## Pricing (USD, billed monthly; ~20% cheaper billed annually)
+- Solo — $29/mo: for an owner-operator running the show alone. Unlimited jobs & customers, estimates/invoices/Stripe payments, client portal, SMS & email follow-ups, 1 user seat.
+- Crew — $59/mo (most popular): everything in Solo, plus unlimited crew seats, the mobile field portal, live crew tracking, the Alfred AI assistant, and referral/review automation.
+- Growth — $119/mo: everything in Crew, plus trash-can route management, campaign blasts & segment targeting, priority support, and custom onboarding.
+
+A free trial is available with no credit card required.
+
+## Frequently asked questions
+Q: Do I need a separate payment processor?
+A: No — CrewBoss connects directly to Stripe or Square. Take deposits, full payments, and in-person card charges without a third-party app in between.
+
+Q: Can my crew use this in the field, not just the office?
+A: Yes — every technician gets the mobile field portal: job list, on-the-way and running-late texts, checklists, photos, clock in/out, and on-site payment collection, all from their own phone.
+
+Q: Is data separated between different businesses using CrewBoss?
+A: Yes — every business's jobs, customers, and invoices are isolated at the database level.
+
+Q: Can customers pay and sign estimates online?
+A: Yes — every customer gets a secure portal to view job history, e-sign estimates, and pay invoices, with no account or app download required.
+
+Q: What is Alfred?
+A: Alfred is CrewBoss's built-in AI assistant. It acts directly on the CRM — scheduling, estimates, invoices, crew, reports — rather than only answering questions, and can be reached by text message or from inside the app.
+
+Q: What can the automations actually do?
+A: Drag a trigger, a wait/condition, and an action onto a canvas, or start from a template: new-lead auto-reply, post-job review requests, overdue-invoice reminders, 90-day re-service nudges, referral asks, birthday/seasonal promos, and day-of job reminders.
+
+## Links
+- Homepage: https://smocks-crm.pages.dev/
+- Features: https://smocks-crm.pages.dev/#/features
+- Pricing: https://smocks-crm.pages.dev/#/pricing
+- About: https://smocks-crm.pages.dev/#/about

@@ -4,7 +4,7 @@ import {
 } from "lucide-react";
 import {
   Reveal, MarketingStyles, BackgroundBlobs, MarketingNav, MarketingFooter,
-  MarketingPageHeader, MarketingFinalCta, MarketingPage,
+  MarketingPageHeader, MarketingFinalCta, MarketingPage, useDocumentMeta,
 } from "./MarketingShared";
 
 // ─── #/about — story/positioning page for CrewBoss ─────────────────────────
@@ -72,6 +72,10 @@ export function AboutPage({
   onGoToDashboard?: () => void;
   onRoadmap?: () => void;
 }) {
+  useDocumentMeta(
+    "About CrewBoss — Built for Pressure Washing Crews, Not Adapted From Generic CRM Software",
+    "CrewBoss exists because generic CRMs weren't built for a crew standing in a driveway with wet boots. One schedule the office and field both see live, one record from estimate to paid invoice, a field portal built for a phone in a pocket, and Alfred, an AI assistant that can actually take action, not just answer questions."
+  );
   return (
     // BUG FIX — see the identical fix + comment in LandingPage.tsx: this
     // div must be the scrolling pane itself since html/body/#root are
