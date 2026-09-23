@@ -287,6 +287,21 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // URL — attach_file_to_customer below just reads this directly.
   const lastAttachedFileRef = useRef<{ url: string; fileName: string } | null>(null);
 
+  // FEATURE — "upload a PDF, tell Alfred to summarize it, then schedule it
+  // and assign employees" / "improve tool reasoning with PDF files, photos,
+  // etc." The single-file analyzer below extracts a file's full content
+  // once, right when it's attached — but the owner's actual instruction for
+  // what to DO with it (summarize / schedule / just save) usually comes in
+  // a SEPARATE follow-up message, after the intent-guessing auto-analysis
+  // already ran. This holds that extracted content in memory (never in
+  // `conversations` state, so it never syncs to Supabase — see the backend-
+  // storage comment on upsertConversation) so send()'s system prompt can
+  // hand it to the model for a few turns after attach, then it expires —
+  // same "don't let it pile up in the backend or even in memory" principle
+  // as the screenshot preview purge below, just for extracted text instead
+  // of image bytes.
+  const recentFileContextRef = useRef<{ fileName: string; extractedText: string; attachedAt: number; turnsUsed: number } | null>(null);
+
   // FIX 2 — Alfred conversations sync with Supabase. Previously lived in
   // App.tsx keyed off the owner's session resolving, which meant it ran (or
   // didn't) regardless of whether this page was ever opened, and was hard to
@@ -675,10 +690,25 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     }
     return new Date().toISOString();
   };
+  // BUG FIX — "find a way so it doesn't take too much storage in our
+  // backend." imagePreview/imagePreviews hold raw base64 image bytes (up to
+  // 10 screenshots per bulk-import message) purely so THIS browser tab can
+  // show thumbnails — they were being upserted verbatim into this table's
+  // JSONB `messages` column on every save, permanently, growing unbounded
+  // with every photo/screenshot ever sent. Strip them before every write —
+  // the backend only ever stores the text description ("📎 5 screenshots"),
+  // never the image bytes themselves, regardless of how long the
+  // conversation history gets.
+  const stripImageBytes = (messages: any[]): any[] =>
+    (messages || []).map((m: any) => {
+      if (!m.imagePreview && !m.imagePreviews) return m;
+      const { imagePreview, imagePreviews, ...rest } = m;
+      return rest;
+    });
   const upsertConversation = (c: any) => {
     const fingerprint = convFingerprint(c);
     (supabase as any).from("alfred_conversations").upsert({
-      id: c.id, owner_id: ownerId, title: c.title, messages: c.messages,
+      id: c.id, owner_id: ownerId, title: c.title, messages: stripImageBytes(c.messages),
       created_at: toIsoTimestamp(c.createdAt), updated_at: toIsoTimestamp(c.updatedAt),
     }, { onConflict: "id" })
       .then((r: any) => {
@@ -722,6 +752,33 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
 
   const active = conversations.find(c => c.id === activeConvId) || conversations[0];
   const chats = active?.messages || [];
+
+  // BUG FIX — "after a couple of messages the screenshots get deleted from
+  // our backend, or they just get stored in the user's local storage."
+  // upsertConversation (above) already keeps image bytes out of Supabase
+  // permanently; this bounds how long they even sit in THIS tab's memory —
+  // once 3 newer messages have come in after an image-carrying one, its
+  // imagePreview/imagePreviews are dropped (the text stays, so the chat
+  // transcript itself is untouched). Screenshots were only ever meant to be
+  // glanced at right after sending, not held onto indefinitely.
+  const IMAGE_PREVIEW_KEEP_RECENT = 3;
+  useEffect(() => {
+    const curId = active?.id;
+    if (!curId || chats.length <= IMAGE_PREVIEW_KEEP_RECENT) return;
+    const cutoffIndex = chats.length - IMAGE_PREVIEW_KEEP_RECENT;
+    const hasOldPreview = chats.slice(0, cutoffIndex).some((m: any) => m.imagePreview || m.imagePreviews);
+    if (!hasOldPreview) return;
+    setConversations((prev: any[]) => prev.map((c: any) => {
+      if (c.id !== curId) return c;
+      return {
+        ...c, messages: c.messages.map((m: any, i: number) => {
+          if (i >= cutoffIndex || (!m.imagePreview && !m.imagePreviews)) return m;
+          const { imagePreview, imagePreviews, ...rest } = m;
+          return rest;
+        }),
+      };
+    }));
+  }, [chats.length, active?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // See the BUG FIX comment in send() — when send() had to create a brand
   // new conversation from scratch, it couldn't also append the user's text
@@ -4234,6 +4291,26 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           }
         } catch { /* non-fatal — proceed without cross-channel context */ }
       }
+      // FEATURE — "upload a PDF, summarize it, then schedule it and assign
+      // employees." recentFileContextRef (set when a non-receipt PDF/photo
+      // was just analyzed — see the paperclip handler above) is handed to
+      // the model for a few turns so a follow-up instruction has real
+      // content to act on, then expires — 4 turns or 20 minutes, whichever
+      // comes first, same ephemeral treatment (never synced to Supabase,
+      // never kept indefinitely) as the screenshot preview purge below.
+      let fileContext = "";
+      {
+        const fc = recentFileContextRef.current;
+        if (fc) {
+          const ageMs = Date.now() - fc.attachedAt;
+          if (fc.turnsUsed >= 4 || ageMs > 20 * 60000) {
+            recentFileContextRef.current = null;
+          } else {
+            fc.turnsUsed++;
+            fileContext = `\n\nRECENTLY ATTACHED FILE ("${fc.fileName}", analyzed a moment ago — use this content if the owner's message asks you to summarize, schedule work from, or otherwise act on it; ignore it if their message is unrelated):\n${fc.extractedText}`;
+          }
+        }
+      }
       const ownerName = (settings as any)?.ownerName || (settings as any)?.companyName;
       const businessContext = (ownerName ? `\n\nThe owner's name is ${ownerName} — use it naturally when greeting them or in casual conversation, not on every single reply.` : "") + "\n\nCurrent business snapshot:\n- Active jobs: " + stats.activeJobs + "\n- Pending quotes: " + stats.pendingEst + "\n- Revenue MTD: " + fmt(stats.totalRev) + "\n- Close rate: " + stats.closeRate + "%\n- Jobs completed this month: " + stats.doneMonth + "\n- Total customers: " + customers.length;
       // FEATURE — "a real continuous hands-free conversation... like
@@ -4333,7 +4410,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       const toolHint = `\n\nCASUAL CONVERSATION: the user can talk to you like a person, not just issue commands — small talk, a joke, venting, a random off-topic question. Actually engage with it in your own personality's voice; never refuse or deflect with something like "I'm not programmed for that" — you're not limited to business tasks, tools are just what you reach for when a request actually needs one. The RESPONSE STYLE/TASK RESULT REPORTING rules below govern how you report a TOOL ACTION's outcome specifically — they don't apply to ordinary conversation, and nothing about them means refusing to chat.\n\nYou have tools available to READ and MODIFY the CRM. USE THEM AGGRESSIVELY — don't just describe what you would do, actually do it.\n\nASK WHEN INFO IS MISSING: using tools aggressively does NOT mean guessing or silently defaulting a value the user never gave you. If a request is missing something a tool actually needs to act correctly — which customer, which date, which employee to assign — ask one short, direct clarifying question instead of calling the tool with a made-up or silently-defaulted value (e.g. schedule_job will default an unspecified date to a few days out — do not let that fire silently; ask "what date?" first if the user didn't give one). Only skip asking when the missing piece has an obviously safe default (e.g. a walkthrough with no stated time) or a tool's own fuzzy-match/suggestions can resolve it on its own (e.g. a slightly misspelled customer name).\n\nRESPONSE STYLE: Do not narrate your reasoning, your plan, or which tool you're about to call ("Let me check...", "I'll create that now...", "First I need to..."). Just call the tool(s) silently and then give the user the final result in 1-3 short sentences. No step-by-step thinking out loud.\n\nVERIFY BEFORE CONFIRMING: every action tool returns either {"success": true, ...} or {"error": "..."}. NEVER say "Done" or "All set" without checking which one came back. If you see an "error" field, tell the user exactly what went wrong (the error text) and what they could try instead — do not pretend it worked, and do not retry silently. Only confirm success when the tool result actually contains "success": true.\n\nTASK RESULT REPORTING — NO PERSONALITY FLAIR: your personality (drill sergeant / butler / quiet pro / savage) shapes how you TALK, not whether a task result is reported straight. The moment you report the outcome of an action tool (schedule_job, create_customer, create_estimate, send_estimate, assign/request crew, etc.), drop the persona voice entirely and state the plain fact: "Job scheduled successfully" / "Failed — [exact error text]" / "Estimate sent to [name] successfully" / "Failed — [exact error text]". No jokes, no military barking, no "sir", no sarcasm on the result line itself — save the personality for ordinary conversation, small talk, and check-ins, never for whether something actually saved.\n\nKEY TOOL RULES:\n- Customer queries → USE search_customers or get_customer_details FIRST\n- Stats requests → USE get_business_stats\n- "What's on the calendar" → USE get_calendar_summary\n- "Who's clocked in / who's working" → USE get_employee_status\n- "Remember/note/don't forget" → USE remember_fact\n- Create estimates, customers, jobs → USE create_estimate/create_customer/schedule_job
 - MULTI-STEP CHAINS (e.g. "create a customer, schedule them a job, and assign Mike"): call tools ONE AT A TIME across separate turns when a later step needs an id/result a real tool call hasn't returned yet (e.g. schedule_job needs the customerId create_customer just returned). Do NOT guess or fabricate an id and call multiple dependent tools in the same turn — wait for each real tool_result before issuing the next dependent call. If a step's result is an "error", STOP the chain right there, tell the user exactly which step failed and why, and do not attempt the remaining steps with made-up data.
 - "Send a quote/estimate to X" → USE create_estimate (if it doesn't exist yet) THEN send_estimate in the same turn — do not just create it and stop, and do not tell the user it was "sent" unless send_estimate actually returned success\n- "Send an invoice to X for $Y" → USE create_invoice THEN send_estimate (pass the returned invoiceId as send_estimate's estimateId) — same two-step pattern as quotes. create_invoice alone does NOT notify the customer.\n- Move or cancel a job → USE reschedule_job/cancel_job\n- "Reschedule X and text/email/let them know" → USE reschedule_job's own \`notify\` param (sms/email/both) in the SAME call — do not call send_reminder separately for this, reschedule_job already handles notifying the customer of their new date.\n- "Add [item] to the checklist" → USE add_checklist_item\n- "Show me the details for X's job" → USE get_job_details\n- "Text/email X and tell them [anything]" → USE send_reminder with the exact wording as the message param — this is not just for payment reminders, use it for any custom message the user dictates\n- NEVER REFUSE TO SEND A MESSAGE: if send_reminder/text_supplier come back "Customer not found" (or similar) because the person isn't in the CRM — a lead, an applicant, a personal contact, anyone — do NOT just report that as a dead end. Ask for their phone number if you don't have it, then USE text_phone_number to send it directly; that tool works for ANY phone number with no customer record required. The owner has full authority to send any message to anyone through their own business number. The only time it's correct to not send something is if you're missing the actual phone number or the exact wording — ask for whichever is missing, then send.\n- After the owner attaches a photo/PDF via the paperclip button and then says to upload/save/attach it to a client → USE attach_file_to_customer (no URL needed, it already knows which file).\n- "Do we have the file/paperwork for X" → USE get_customer_documents. "Text me the [file] for X" → USE text_me_document (real MMS attachment to the owner's own phone, not a description). "What's the card info for X" → USE get_customer_card_info — this only ever returns brand + last 4 digits, never the full number, which is never stored anywhere in this app.\n- "What can you do" / capabilities question → USE list_capabilities and answer from that, don't describe yourself from memory.\n- "Text/message everyone" / "let all my customers know" / send a broadcast or promo blast → USE notify_all_customers — this is a real send to real people, not a draft; confirm the exact wording first if the owner was vague.\n- Navigate somewhere → USE navigate_to (the app already auto-navigates after schedule_job/create_customer/create_estimate, but call navigate_to yourself for anything else the user asks to see)\n- Preferences/facts shared → USE remember_fact automatically\n- "Remind/nudge/follow up/text me [later/at X time/in X minutes]" → USE set_followup_reminder — this is a REAL scheduled text sent to the owner's own phone, not just a note; resolve the relative time into an exact ISO datetime yourself first. USE list_followup_reminders/cancel_followup_reminder to manage existing ones.\n- RESOLVING "that job" / "the job we just scheduled" / references to something from an earlier message: a tool result's exact jobId/customerId is only visible to you within the SAME turn it was returned — your own past replies (in the chat history) are plain text, not structured data, so they do NOT reliably carry the real id forward. Before calling assign_employee/request_employee/reschedule_job/cancel_job/add_checklist_item on something referenced from an earlier turn, first call list_jobs or get_calendar_summary (or get_job_details with the customer's name) to look up the real current jobId — never guess, reuse an id from your own prior wording, or fabricate one.\n\nAUTOMATION TOOLS (VERY IMPORTANT):\n- When user describes ANY workflow, drip sequence, reminder, or "when X do Y" scenario → USE create_automation IMMEDIATELY. Build a proper n8n-style multi-step workflow with real step types: trigger (first), then delays, conditions, actions. NEVER just describe what you'd build — actually build it with create_automation.\n- "Send review request after job complete" → trigger: Job complete, delay: 2h, action: SMS review request\n- "Follow up on unpaid invoices" → trigger: Invoice unpaid 7 days, action: polite reminder email, delay: 4 days, condition: still unpaid, action: firm SMS\n- To check existing workflows → USE list_automations\n- To enable/disable a workflow → USE toggle_automation\n\nCurrent automations: ${automations.length} total, ${automations.filter(a => a.active).length} active\n\nBULK JOB IMPORT (screenshots or a big pasted block of job/customer data): the owner may hand you several jobs at once — a block of pasted text, or screenshots (these reach you already read: a numbered list of what was found, sent to you as a normal message). Treat every distinct job/order in it as its own create_customer + schedule_job pair — schedule_job's own employeeName param assigns the crew in the SAME call, so you don't need a separate assign_employee call per job. create_customer already reuses an existing customer by phone/name match instead of duplicating, so don't worry about exact duplicates. BEFORE calling any of these tools, scan the WHOLE batch for: (a) the same employee named on two or more jobs at the same or overlapping date/time, or (b) any job whose date, time, employee, or order details are genuinely unclear or contradictory. If either is true, create NOTHING yet — ask the owner ONE direct question naming exactly what's ambiguous (e.g. "Mike's on both the Oak St and Elm St jobs at 10am today — Oak first then Elm, or should one go to someone else?") and wait for their reply. Their next message is the answer — treat "go ahead"/"looks good"/"yes" as full confirmation to proceed exactly as extracted, and anything else (a name, a time, an order) as a correction to apply before re-checking for remaining conflicts. Once everything is confirmed, create every customer and job in the batch; when the owner confirms an order for one employee's day but didn't give exact times, space that employee's jobs by a sensible gap (e.g. 45-60 min, or the job's own duration if known) so their schedule/route in the field portal reflects the right order. Report back with ONE summary line — how many customers and jobs were created — not a play-by-play of each tool call.\n\nNAME MATCHING: if a tool result comes back with "error": "Customer not found" or "Employee not found" and includes a "suggestions" array, ask the user "Do you mean [name], or [name]?" using those exact suggested names — never ask a generic clarifying question like "who do you mean?" when real candidate names are available.`;
-      const baseSystemPrompt = getPersonality(activePersonality).systemPrompt + dateContext + memoryContext + crossChannelContext + voiceSandboxContext + businessContext + workOrderStyleContext + vacationContext + googleStatus + voiceModeContext;
+      const baseSystemPrompt = getPersonality(activePersonality).systemPrompt + dateContext + memoryContext + crossChannelContext + voiceSandboxContext + businessContext + workOrderStyleContext + vacationContext + googleStatus + voiceModeContext + fileContext;
       const systemPrompt = baseSystemPrompt + toolHint;
       // BUG FIX (root cause, not another pattern-match) — a non-tool-capable
       // model (OpenRouter's free tier) was STILL being handed the full
@@ -5422,7 +5499,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             )}
             <div className="flex items-end gap-2 bg-black/60 border border-red-900/40 rounded-2xl p-2 focus-within:border-red-500/60 transition">
               {/* Image/PDF/receipt upload */}
-              <label className="flex-shrink-0 cursor-pointer p-2 rounded-xl text-white/40 hover:text-white/70 hover:bg-white/5 transition" title="Attach photo, receipt, PDF, or select multiple screenshots to bulk-import jobs">
+              <label className="flex-shrink-0 cursor-pointer p-2 rounded-xl text-white/40 hover:text-white/70 hover:bg-white/5 transition" title="Attach a photo, receipt, or PDF — or select up to 10 screenshots to bulk-import jobs">
                 <input type="file" accept="image/*,application/pdf" multiple className="hidden" onChange={async e => {
                   const filesList = Array.from(e.target.files || []);
                   if (filesList.length === 0) return;
@@ -5454,11 +5531,20 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
                       appendMessage({ id: uid(), role: "alfred", content: "Reading screenshots needs an Anthropic API key (Settings → AI Models) — that's the only provider this app can send images to right now.", timestamp: Date.now() });
                       return;
                     }
-                    const imageFiles = filesList.filter(f => f.type.startsWith("image/"));
-                    if (imageFiles.length === 0) {
+                    const allImageFiles = filesList.filter(f => f.type.startsWith("image/"));
+                    if (allImageFiles.length === 0) {
                       appendMessage({ id: uid(), role: "alfred", content: "Bulk import works with image screenshots — attach one PDF at a time instead.", timestamp: Date.now() });
                       return;
                     }
+                    // BUG FIX — "make it so up to 10 screenshots." No cap
+                    // existed at all — a huge multi-select would burn a lot of
+                    // vision tokens in one call and risk hitting the model's
+                    // own request size limit. Cap at 10, keep the rest for a
+                    // follow-up message rather than silently dropping them
+                    // with no explanation (see CLAUDE.md's "no silent caps").
+                    const imageFiles = allImageFiles.slice(0, 10);
+                    const droppedCount = allImageFiles.length - imageFiles.length;
+                    if (droppedCount > 0) toast(`Only the first 10 screenshots were used — send the other ${droppedCount} in a follow-up message.`, "yellow");
                     const readAsBase64 = (file: File) => new Promise<{ dataUrl: string; base64: string; mediaType: string }>((resolve, reject) => {
                       const rr = new FileReader();
                       rr.onload = ev => { const dataUrl = ev.target!.result as string; resolve({ dataUrl, base64: dataUrl.split(",")[1], mediaType: file.type || "image/jpeg" }); };
@@ -5482,8 +5568,8 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
                             { type: "text", text: `You are Alfred, business assistant for a pressure-washing/trash-can-cleaning company. These ${imageFiles.length} screenshots contain job/order info — texts, a spreadsheet, a scheduling app, handwritten notes, anything. Extract EVERY separate job/order visible across ALL the images. For each one list: customer full name, phone number, address, the service/order details, the date and time (resolve relative wording like "today"/"tomorrow" against ${today()}), which employee (if any) is named as assigned, and the dollar amount. If a field isn't visible for a job, write "not given" for it rather than guessing. Number each job. In a final section, explicitly call out any two jobs that name the SAME employee at the same or overlapping date/time. Be thorough — do not skip any job visible in any image.` }
                           ]
                         }],
-                        maxTokens: 2000,
-                      }), 40000, "Screenshot analysis");
+                        maxTokens: 3000,
+                      }), 45000, "Screenshot analysis");
                       const extracted = (result.text || "").trim();
                       if (!extracted) {
                         appendMessage({ id: uid(), role: "alfred", content: "Couldn't find any job/order info in those screenshots.", timestamp: Date.now() });
@@ -5541,6 +5627,18 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
                       } catch (e: any) { console.warn("[Alfred] file upload threw:", e?.message); }
                     })();
                     try {
+                      // FEATURE — "a huge job order, five paragraphs long,
+                      // inside a PDF — summarize it, then schedule it and
+                      // assign employees" / "upload this PDF to this
+                      // customer's vault." Broadened past receipt-only: for
+                      // a work order / job order / contract / any other
+                      // document, this now asks for the FULL relevant
+                      // content (not just "describe briefly"), stashed in
+                      // recentFileContextRef so a follow-up instruction in
+                      // this same conversation — summarize it, schedule it,
+                      // whatever — has real content to act on. The receipt
+                      // detection/pendingExpense flow below is completely
+                      // unchanged for an actual receipt.
                       const result: any = await withTimeout<any>((callModel as any)({
                         modelId: "claude",
                         apiKey: anthropicKey,
@@ -5550,11 +5648,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
                             isPdf
                               ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }
                               : { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
-                            { type: "text", text: "You are Alfred, business assistant for a pressure-washing company. Analyze this file. If it's a receipt or invoice: extract vendor name, date (YYYY-MM-DD), total amount, and category (fuel/supplies/equipment/food/other). Format as: RECEIPT: [vendor] | [date] | $[amount] | [category]. If it's a job photo: describe what you see and whether it's before/after. If other: describe briefly." }
+                            { type: "text", text: "You are Alfred, business assistant for a pressure-washing/trash-can-cleaning company. Analyze this file. If it's a receipt or invoice: extract vendor name, date (YYYY-MM-DD), total amount, and category (fuel/supplies/equipment/food/other). Format as: RECEIPT: [vendor] | [date] | $[amount] | [category]. If it's a job photo: describe what you see and whether it's before/after. If it's a work order, job order, contract, or any other document with real content (a commercial customer's order, scope of work, instructions, etc.): transcribe the FULL relevant content clearly and completely — customer/company name, address, phone/email if present, every service/scope item, dates, prices, and special instructions — so this can be summarized or acted on later without re-reading the file. Do not just describe it briefly in this case; the owner may ask you to schedule or assign work from it." }
                           ]
                         }],
-                        maxTokens: 400,
-                      }), 25000, "Receipt analysis");
+                        maxTokens: 1500,
+                      }), 30000, "File analysis");
                       const reply = result.text || "Could not analyze the file.";
                       const parts = reply.match(/RECEIPT: (.+?) \| (.+?) \| \$?([\d.,]+) \| (.+)/i);
                       if (parts) {
@@ -5567,6 +5665,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
                           pendingExpense: { vendor: vendor.trim(), date: date.trim(), amount, category: category.trim().toLowerCase(), receiptDataUrl: isPdf ? undefined : dataUrl },
                         } as any);
                       } else {
+                        recentFileContextRef.current = { fileName: file.name, extractedText: reply, attachedAt: Date.now(), turnsUsed: 0 };
                         appendMessage({ id: uid(), role: "alfred", content: reply, timestamp: Date.now() });
                       }
                     } catch (err: any) {
