@@ -361,6 +361,20 @@ export const sendAlfredSms = async (ctx: Ctx, toPhone: string, body: string, med
 // (logOutboundSmsToInbox in lib/messaging.ts), which always had this.
 const sendSms = async (ctx: Ctx, toPhone: string, bodyRaw: string, isOwnerReply = false, contact?: { name?: string; customerId?: string }, mediaUrl?: string): Promise<{ ok: boolean; error?: string }> => {
   if (!ctx.twilioSid || !ctx.twilioToken || !ctx.twilioFrom) return { ok: false, error: "Twilio isn't configured for this account." };
+  // BUG FIX (Alfred customer-texting audit) — smsOptOut is a real, owner-
+  // set-per-customer field (CustomerDetail.tsx's opt-in/out badge) that
+  // notify_all_customers already pre-filters on its own recipient list
+  // before ever reaching here, but every OTHER customer-directed send in
+  // this agent (text_customer/send_reminder, reschedule_job's notify leg,
+  // cancel_job's notify leg, send_estimate, send_invoice, approve/decline_
+  // customer_request) funnels through this ONE function with no check at
+  // all — checked centrally here instead of ~10 separate call sites, so
+  // any future customer-directed tool gets this for free too. Never
+  // applies to an owner reply or a supplier text (no customerId on those).
+  if (!isOwnerReply && contact?.customerId) {
+    const optRows = await sbGet(ctx, `customers?select=smsOptOut&id=eq.${encodeURIComponent(contact.customerId)}${ownerScope(ctx)}&limit=1`);
+    if (optRows[0]?.smsOptOut) return { ok: false, error: (contact.name || "This customer") + " has opted out of text messages — send email instead." };
+  }
   // BUG FIX — the model (Gemini especially) sometimes ignores the system
   // prompt's "no markdown" instruction and sends **bold**/`code`/bullet
   // asterisks straight through, which an SMS just shows as literal
@@ -948,7 +962,7 @@ const TOOLS = [
   },
   {
     name: "set_standing_preference",
-    description: "Save a persistent 'from now on' instruction so it's automatically remembered and honored in every future conversation, not just this one — e.g. 'from now on call me Boss', 'from now on don't ask before sending invoices', 'from now on go ahead and confirm reschedules yourself'. Set autoApproveReschedules/autoApproveInvoiceSends when the instruction is specifically about those two things (they actually change behavior, not just phrasing) — always also pass the plain-English instruction either way.",
+    description: "Save a persistent 'from now on' instruction so it's automatically remembered and honored in every future conversation, not just this one — e.g. 'from now on call me Boss', 'from now on don't ask before sending invoices', 'from now on go ahead and confirm reschedules yourself'. Set autoApproveReschedules/autoApproveInvoiceSends when the instruction is specifically about those two things (they actually change behavior, not just phrasing) — always also pass the plain-English instruction either way. Confirm what you're about to save back to the owner in ONE short text first (e.g. 'So from now on I always email instead of text — right?') and only call this tool once they reply yes/confirm — a standing rule is worth one text round-trip to get right, unlike an ordinary action.",
     input_schema: {
       type: "object",
       properties: {
@@ -2753,7 +2767,7 @@ export const runAlfredSmsAgent = async (
 
 CASUAL CONVERSATION: the owner can talk to you like a person, not just issue commands — "how's it going", a joke, venting about their day, a random question with nothing to do with the business. Actually engage with it in your own personality's voice; never refuse or deflect with something like "I'm not programmed for that" — you're not limited to business tasks, tools are just what you reach for when a request actually needs one. Nothing above about being terse/professional/etc. means refusing to talk — it only shapes HOW you say things, never WHETHER you're willing to.${preferencesBlock}${crossChannelBlock}
 
-STANDING PREFERENCES: when the owner says something like "from now on...", "always...", "don't ask me about... anymore", or "call me...", that's a persistent instruction, not just for this one reply — call set_standing_preference to save it (it'll be listed above automatically in every future conversation from then on). Don't wait to be asked twice.
+STANDING PREFERENCES: when the owner says something like "from now on...", "always...", "don't ask me about... anymore", or "call me...", that's a persistent instruction, not just for this one reply. First figure out whether it's really about your overall autonomy level (how much you check in before acting — "always ask before texting customers," "just handle it yourself from now on") vs. a narrower specific rule (everything else). A broad autonomy statement → set_autonomy_level. A narrower rule → set_standing_preference (it'll be listed above automatically in every future conversation from then on). Either way, send back ONE short confirming text first ("So from now on you want me to always ask before texting a customer about price — right?") and only call the tool once they reply yes — don't save it on the first message alone, and don't make them repeat the request a second time from scratch if they just say yes.
 
 VACATION MODE: when the owner says they're going on vacation, taking time off, or will be unreachable, DO NOT guess the details — walk them through it one or two questions at a time over text (how long/what dates, how they want you to handle things while they're out, how often to check in with them) and only call set_vacation_mode once you actually have their answers, then confirm the plan back in one short text. ${ctx.vacationMode?.active ? `VACATION MODE IS CURRENTLY ${(today() >= (ctx.vacationMode.startDate || "") && today() <= (ctx.vacationMode.endDate || "")) ? "ACTIVE" : "SCHEDULED"} — out ${ctx.vacationMode.startDate} to ${ctx.vacationMode.endDate}, autonomy: ${ctx.vacationMode.autonomyLevel}, check-ins: ${ctx.vacationMode.checkInFrequency}${ctx.vacationMode.notes ? ", notes: " + ctx.vacationMode.notes : ""}.` : `Vacation mode is currently off. GENERAL (STANDING) AUTONOMY LEVEL: ${ctx.alfredAutonomyLevel || "manage_everything"}.`} This is ENFORCED in code, not just a tone guideline — a capability-gated action (texting/emailing someone, money changes, schedule/crew changes, automations) under ask_first gets automatically queued instead of run, and under hold_everything gets refused outright; you don't need to self-censor those calls, the system handles it and tells you what happened. Just make the call naturally and relay whatever it reports back (done / queued for approval / on hold) — never claim something is done unless the tool result actually said so. The owner can change the standing level anytime by saying things like "always ask me first" or "you can handle things yourself" (set_autonomy_level), separate from vacation mode (set_vacation_mode, which only overrides it temporarily). If they ask what's waiting on them, or reply "approve"/"yes" after something got queued, use list_pending_approvals/approve_pending_action/decline_pending_action.
 
