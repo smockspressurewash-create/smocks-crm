@@ -38,12 +38,22 @@ const buildPropertyEmbedHtml = (address: string): string => {
   return `<iframe src="https://maps.google.com/maps?q=${encodeURIComponent(address)}&output=embed" style="width:100%;height:110px;border:0;border-radius:6px;margin-top:6px;display:block;" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>`;
 };
 
-// FEATURE — "clicking a pin should let me press 'View Full Client' to open
-// the full profile." InfoWindow content is raw DOM Google owns, not React,
-// so a click handler can't be wired the normal way — a plain onclick calling
-// a window-level bridge (registered by CustomerMapView below) is the only
-// way in. c.id is a server-generated UUID, never user-typed text, so it's
-// safe to drop straight into the single-quoted onclick attribute.
+// BUG FIX — "dead white space above the name, name text is invisible."
+// This InfoWindow content div sits inside the app's own DOM (Google inserts
+// it via innerHTML, no iframe), and the app root wraps everything in
+// `text-white` (App.tsx's `min-h-screen bg-black text-white`) — the name
+// line here had no color of its own, so it inherited white text onto
+// Google's white InfoWindow background. Invisible text read as "dead white
+// space," not a layout bug. Every text node below now sets its own color
+// explicitly instead of relying on inherited (and here, wrong) color.
+//
+// BUG FIX — "View Full Client button doesn't work." An inline onclick=""
+// attribute on HTML handed to InfoWindow's `content` is not reliably wired
+// up by the Maps JS API across versions — the button rendered but the
+// handler never fired. InfoWindow's own `domready` event (fired each time
+// its content is actually attached to the page DOM) is Google's documented
+// way to add real interactivity — LiveMap binds a real addEventListener to
+// this button (by its unique per-customer id) when that fires instead.
 const buildInfoHtml = (c: any): string => {
   const name = `${c.firstName || ""} ${c.lastName || ""}`.trim() || "Unnamed customer";
   const rows: string[] = [];
@@ -54,12 +64,12 @@ const buildInfoHtml = (c: any): string => {
   const tagsHtml = tags.length
     ? `<div style="margin-top:4px;">${tags.map(t => `<span style="display:inline-block;background:#eef2ff;color:#3730a3;font-size:10px;font-weight:600;padding:1px 6px;border-radius:9999px;margin:2px 3px 0 0;">${escapeHtml(t)}</span>`).join("")}</div>`
     : "";
-  return `<div style="font:600 13px system-ui,sans-serif;padding:2px 4px;max-width:220px;">
-    ${escapeHtml(name)}
+  return `<div style="font:600 13px system-ui,sans-serif;padding:2px 4px;max-width:220px;color:#111;">
+    <div style="color:#111;">${escapeHtml(name)}</div>
     <div style="font-weight:400;color:#444;font-size:11.5px;line-height:1.5;margin-top:3px;">${rows.join("<br/>")}</div>
     ${tagsHtml}
     ${buildPropertyEmbedHtml(c.address || "")}
-    <button onclick='window.__cmvViewCustomer && window.__cmvViewCustomer(${JSON.stringify(String(c.id))})' style="margin-top:8px;width:100%;padding:6px 10px;border-radius:8px;border:none;background:#2563eb;color:#fff;font:600 11px system-ui,sans-serif;cursor:pointer;">View Full Client →</button>
+    <button id="cmv-view-${escapeHtml(String(c.id))}" style="margin-top:8px;width:100%;padding:6px 10px;border-radius:8px;border:none;background:#2563eb;color:#fff;font:600 11px system-ui,sans-serif;cursor:pointer;">View Full Client →</button>
   </div>`;
 };
 

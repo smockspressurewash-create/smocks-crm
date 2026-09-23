@@ -66,6 +66,16 @@ export function LiveMap({ apiKey, pins, heightClassName = "h-56", routeLine = fa
           styles: dark && !satellite ? DARK_STYLE : [],
         });
         streetViewRef.current = mapObjRef.current.getStreetView();
+        // BUG FIX — "click a pin, then click away, it should close." Google's
+        // InfoWindow does NOT auto-close on an outside map click by default
+        // (only via its own [x] or another explicit .close() call) — clicking
+        // empty map space left every previously-opened pin popup stuck open.
+        // Marker clicks don't bubble into this map-level listener (Maps JS
+        // keeps marker and map click events separate), so this only fires for
+        // genuine "clicked away" clicks.
+        mapObjRef.current.addListener("click", () => {
+          markersRef.current.forEach(m => m.__clickInfo?.close());
+        });
         setReady(true);
       })
       .catch((e: Error) => setError(e.message));
@@ -105,13 +115,28 @@ export function LiveMap({ apiKey, pins, heightClassName = "h-56", routeLine = fa
       // clicking should display a pop-up with customer information." A
       // styled InfoWindow (not the unstyled native `title` tooltip) shows
       // just the name on hover; a click swaps in the richer `infoHtml`.
+      // BUG FIX — text here had no explicit color, so it silently inherited
+      // the app root's `text-white` (App.tsx) onto Google's white InfoWindow
+      // background — invisible text, not a layout bug. See CustomerMapView's
+      // buildInfoHtml comment for the full story; same fix here for callers
+      // that don't supply their own infoHtml (Crew View's plain pins).
       const hoverName = `${p.stopNumber != null ? `Stop ${p.stopNumber} — ` : ""}${p.label}`;
       const hoverInfo = new g.maps.InfoWindow({
-        content: `<div style="font:600 12px system-ui,sans-serif;padding:2px 4px;">${hoverName}</div>`,
+        content: `<div style="font:600 12px system-ui,sans-serif;padding:2px 4px;color:#111;">${hoverName}</div>`,
         disableAutoPan: true,
       });
       const clickInfo = new g.maps.InfoWindow({
-        content: p.infoHtml || `<div style="font:600 13px system-ui,sans-serif;padding:2px 4px;">${hoverName}<br/><span style="font-weight:400;color:#666;font-size:11px;">updated ${new Date(p.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span></div>`,
+        content: p.infoHtml || `<div style="font:600 13px system-ui,sans-serif;padding:2px 4px;color:#111;">${hoverName}<br/><span style="font-weight:400;color:#666;font-size:11px;">updated ${new Date(p.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</span></div>`,
+      });
+      // FEATURE — a caller's infoHtml (CustomerMapView) can include a button
+      // with id="cmv-view-<id>"; an inline onclick="" attribute on InfoWindow
+      // content isn't reliably wired up by the Maps JS API, but `domready`
+      // (fired each time this content is actually attached to the page DOM)
+      // is Google's own documented hook for real interactivity — a no-op for
+      // any pin whose content doesn't include that button.
+      clickInfo.addListener("domready", () => {
+        const btn = document.getElementById(`cmv-view-${p.id}`);
+        if (btn) btn.onclick = () => (window as any).__cmvViewCustomer?.(p.id);
       });
       marker.__hoverInfo = hoverInfo;
       marker.__clickInfo = clickInfo;
@@ -119,6 +144,7 @@ export function LiveMap({ apiKey, pins, heightClassName = "h-56", routeLine = fa
       marker.addListener("mouseout", () => hoverInfo.close());
       marker.addListener("click", () => {
         hoverInfo.close();
+        markersRef.current.forEach(m => { if (m !== marker) m.__clickInfo?.close(); });
         clickInfo.open(mapObjRef.current, marker);
       });
       return marker;
