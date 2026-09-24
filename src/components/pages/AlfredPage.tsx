@@ -4476,7 +4476,21 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     }
   ];
 
-  const send = async (overrideText?: string) => {
+  // BUG FIX (user report) — "when I messaged Alfred, it literally responded
+  // as if it was me messaging it... shows messages incoming from Alfred as
+  // if they're outgoing and in red." The color logic was already correct
+  // (isUser -> red/right) — the REAL bug: sendWithAttachments used to feed
+  // Alfred's own full screenshot-extraction breakdown into a plain
+  // send(longText) call, which appends whatever it's given as a role:"user"
+  // message. That huge, asterisk-laden breakdown was never something the
+  // owner typed — it just got MIS-ATTRIBUTED as their own outgoing message
+  // (hence the red bubble, hence "it responded as if it was me"). opts.
+  // skipVisibleMessage lets a caller feed real content to the MODEL for
+  // this turn (it's still what the tool-calling loop reasons over) without
+  // ever rendering it as a fake user bubble — the owner's actual short
+  // caption (already appended separately by the caller) stays the only
+  // thing shown as "sent by them."
+  const send = async (overrideText?: string, opts?: { skipVisibleMessage?: boolean }) => {
     const text = (overrideText ?? input).trim();
     if (!text) return;
     // BUG FIX (user report — "Alfred just sat there spinning and never
@@ -4509,18 +4523,20 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     }
 
     const userMsg = { id: uid(), role: "user", content: text, timestamp: Date.now() };
-    appendMessage(userMsg);
+    if (!opts?.skipVisibleMessage) {
+      appendMessage(userMsg);
 
-    // Auto-title from first user message
-    if (active && (active.title === "New chat" || !active.title)) {
-      const title = text.length > 42 ? text.slice(0, 42) + "…" : text;
-      updateActive({ title });
+      // Auto-title from first user message
+      if (active && (active.title === "New chat" || !active.title)) {
+        const title = text.length > 42 ? text.slice(0, 42) + "…" : text;
+        updateActive({ title });
+      }
     }
 
     setInput("");
     setShowSlash(false);
 
-    if (text.startsWith("/")) {
+    if (!opts?.skipVisibleMessage && text.startsWith("/")) {
       const r = await runSlash(text);
       if (r !== null) {
         appendMessage({ id: uid(), role: "alfred", content: r, timestamp: Date.now() });
@@ -5199,7 +5215,7 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "can you undo that", "u
           appendMessage({ id: uid(), role: "alfred", content: "Couldn't find any usable info in those attachments.", timestamp: Date.now() });
           return;
         }
-        await send(`Here's what I found in what I just attached:\n\n${combinedFindings.trim()}\n\nThese may be new jobs to add to the CRM.${caption ? ` I also said: "${caption}" — do that.` : ""} Check for any scheduling conflicts or unclear ordering and ask me before creating anything — otherwise go ahead: create the customers and jobs, assign the employees, and set the price for each.`);
+        await send(`Here's what I found in what I just attached:\n\n${combinedFindings.trim()}\n\nThese may be new jobs to add to the CRM.${caption ? ` I also said: "${caption}" — do that.` : ""} Check for any scheduling conflicts or unclear ordering and ask me before creating anything — otherwise go ahead: create the customers and jobs, assign the employees, and set the price for each.`, { skipVisibleMessage: true });
         return;
       }
 
@@ -5250,7 +5266,7 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "can you undo that", "u
         // conversation same as the bulk-import path already does, instead
         // of silently dropping it.
         if (caption) {
-          await send(`${reply}\n\n(The above is what I just found in the file I attached.) ${caption}`);
+          await send(`${reply}\n\n(The above is what I just found in the file I attached.) ${caption}`, { skipVisibleMessage: true });
         } else {
           appendMessage({ id: uid(), role: "alfred", content: reply, timestamp: Date.now() });
         }
@@ -6221,21 +6237,19 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "can you undo that", "u
                   </>
                 )}
               </div>
-              {/* BUG FIX (user report) — "expand the message box so you can
-                  see the entire message... you can't even see the message
-                  on mobile." Was rows={1}/max-h-200px — taller baseline
-                  (rows=2, min-h) and more max height so a real multi-line
-                  message is actually visible while typing, not just
-                  reachable by scrolling a nearly-collapsed box. */}
+              {/* BUG FIX (user report) — "it makes the chat bigger... don't
+                  have it." The box used to grow taller (up to 320px) as you
+                  typed a longer message. Fixed height now (rows=3, no more
+                  onInput resize) — a longer message just scrolls inside the
+                  box instead of pushing the composer/chat around. */}
               <textarea
                 ref={inputRef}
-                rows={2}
+                rows={3}
                 placeholder="Message Alfred..."
                 value={input}
                 onChange={onInputChange}
                 onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
-                onInput={e => { const t = e.target as HTMLTextAreaElement; t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 320) + "px"; }}
-                className="flex-1 bg-transparent px-3 py-2.5 text-sm text-white placeholder-white/30 focus:outline-none resize-none min-h-[52px] max-h-[320px]"
+                className="flex-1 bg-transparent px-3 py-2.5 text-sm text-white placeholder-white/30 focus:outline-none resize-none overflow-y-auto"
               />
               {/* BUG FIX (user report) — "no button to stop Alfred from
                   responding mid-chat." Send swaps to a real Stop button
