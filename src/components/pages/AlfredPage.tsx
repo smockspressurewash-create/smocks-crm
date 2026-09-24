@@ -4247,7 +4247,14 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
 
   const send = async (overrideText?: string) => {
     const text = (overrideText ?? input).trim();
-    if (!text || loading) return;
+    if (!text) return;
+    // BUG FIX (user report — "Alfred just sat there spinning and never
+    // responded, no error") — this used to silently no-op while `loading`
+    // was already true (e.g. a screenshot attachment's own vision-analysis
+    // call still in flight) — the owner's typed message just vanished with
+    // zero feedback, textarea included, looking exactly like a hang. Now it
+    // says so instead of pretending nothing happened.
+    if (loading) { toast("Alfred's still working on your last message — one sec.", "yellow"); return; }
 
     // BUG FIX — "creates a new chat but says nothing": this used to create an
     // empty-messages conversation, switch to it, then return without ever
@@ -5585,6 +5592,23 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
                   // Alfred already has. Building a separate structured-data/
                   // confirm-button pipeline would just duplicate that.
                   if (filesList.length > 1) {
+                    // BUG FIX (user report) — "I attached screenshots... please
+                    // assign my employee Luke Knight to them... Alfred just
+                    // sat there spinning and spinning and never responded."
+                    // Root cause: this whole branch fired IMMEDIATELY on
+                    // attaching, completely ignoring whatever the owner had
+                    // just typed in the composer alongside the attachment —
+                    // their real instruction was silently dropped, never sent
+                    // anywhere. Worse, if they then pressed Send themselves,
+                    // send() below no-ops while `loading` is already true
+                    // (this vision call in progress) with zero feedback — the
+                    // exact "spinning forever, no error" symptom. Capture
+                    // whatever's typed right now and actually use it: fed into
+                    // the vision prompt AND preserved verbatim in the final
+                    // send() call, and the box is cleared immediately so it's
+                    // obvious the text was picked up, not silently eaten.
+                    const ownerCaption = input.trim();
+                    setInput("");
                     const anthropicKey = (settings.modelKeys || {}).claude;
                     if (!anthropicKey) {
                       appendMessage({ id: uid(), role: "user", content: `📎 ${filesList.length} screenshots`, timestamp: Date.now() });
@@ -5625,7 +5649,7 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
                           role: "user",
                           content: [
                             ...loaded.map(l => ({ type: "image", source: { type: "base64", media_type: l.mediaType, data: l.base64 } })),
-                            { type: "text", text: `You are Alfred, business assistant for a pressure-washing/trash-can-cleaning company. These ${imageFiles.length} screenshots contain job/order info — texts, a spreadsheet, a scheduling app, handwritten notes, anything. Extract EVERY separate job/order visible across ALL the images. For each one list: customer full name, phone number, address, the service/order details, the date and time (resolve relative wording like "today"/"tomorrow" against ${today()}), which employee (if any) is named as assigned, and the dollar amount. If a field isn't visible for a job, write "not given" for it rather than guessing. Number each job. In a final section, explicitly call out any two jobs that name the SAME employee at the same or overlapping date/time. Be thorough — do not skip any job visible in any image.` }
+                            { type: "text", text: `You are Alfred, business assistant for a pressure-washing/trash-can-cleaning company. These ${imageFiles.length} screenshots contain job/order info — texts, a spreadsheet, a scheduling app, handwritten notes, anything. Extract EVERY separate job/order visible across ALL the images. For each one list: customer full name, phone number, address, the service/order details, the date and time (resolve relative wording like "today"/"tomorrow" against ${today()}), which employee (if any) is named as assigned, and the dollar amount. If a field isn't visible for a job, write "not given" for it rather than guessing. Number each job. In a final section, explicitly call out any two jobs that name the SAME employee at the same or overlapping date/time. Be thorough — do not skip any job visible in any image.${ownerCaption ? `\n\nThe owner typed this along with the screenshots — it's a real instruction, factor it in (e.g. who to assign, what to do): "${ownerCaption}"` : ""}` }
                           ]
                         }],
                         maxTokens: 3000,
@@ -5635,7 +5659,7 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
                         appendMessage({ id: uid(), role: "alfred", content: "Couldn't find any job/order info in those screenshots.", timestamp: Date.now() });
                         return;
                       }
-                      await send(`Here's what I found in the ${imageFiles.length} screenshots I just sent you:\n\n${extracted}\n\nThese are new jobs to add to the CRM. Check for any scheduling conflicts or unclear ordering and ask me before creating anything — otherwise go ahead: create the customers and jobs, assign the employees, and set the price for each.`);
+                      await send(`Here's what I found in the ${imageFiles.length} screenshots I just sent you:\n\n${extracted}\n\nThese are new jobs to add to the CRM.${ownerCaption ? ` I also said: "${ownerCaption}" — do that.` : ""} Check for any scheduling conflicts or unclear ordering and ask me before creating anything — otherwise go ahead: create the customers and jobs, assign the employees, and set the price for each.`);
                     } catch (err: any) {
                       appendMessage({ id: uid(), role: "alfred", content: "Couldn't analyze those screenshots — " + (err?.message || "unknown error") + ".", timestamp: Date.now() });
                     } finally { setLoading(false); }

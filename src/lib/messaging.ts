@@ -330,10 +330,26 @@ export const twilioSend = async (
   // hang bug in this codebase with no timeout — wrapped accordingly.
   let accessToken: string | undefined;
   if (!twilioBackendUrl) {
+    // BUG FIX (user report — "failed to send review request, not
+    // authenticated") — supabase.auth.getSession() has a documented
+    // real-world hang/timeout issue in this codebase (navigator-lock
+    // contention, seen elsewhere under real mobile network conditions) —
+    // a single attempt timing out here silently sent the request with NO
+    // Authorization header, which the server correctly (but unhelpfully)
+    // rejects as "Not authenticated" — reading like an account problem
+    // when it was actually just one slow/flaky getSession() call. One
+    // retry before giving up, same "transient blip" pattern already used
+    // for exactly this class of Supabase-call flakiness elsewhere in this
+    // app (App.tsx's settings sync).
     try {
       const { data } = await withTimeout(supabase.auth.getSession(), 8000, "Get session");
       accessToken = data?.session?.access_token;
-    } catch { /* fall through — server will reject with no valid session */ }
+    } catch {
+      try {
+        const { data } = await withTimeout(supabase.auth.getSession(), 8000, "Get session (retry)");
+        accessToken = data?.session?.access_token;
+      } catch { /* fall through — server will reject with no valid session */ }
+    }
   }
   const res = await fetch(endpoint, {
     method: "POST",

@@ -827,6 +827,19 @@ export function App() {
   // Billing instead of the default Profile tab.
   const [settingsInitialSection, setSettingsInitialSection] = useState<string | undefined>(undefined);
   const openBillingUpgrade = () => { setSettingsInitialSection("billing"); setSettingsOpen(true); };
+  // BUG FIX (user report) — "pressing go there just takes me to a blank
+  // page" / "just took me to my employees page." This routing logic used
+  // to live ONLY inline in the header bell dropdown's onClick — the full
+  // Notifications page (NotificationsPage.tsx) had its own simpler
+  // `onNav(n.page)` call that never got the same fix, so the exact same
+  // bugs (page:"settings" isn't a real route, it's a modal; openType/
+  // openId meant to highlight a SPECIFIC record after navigating) were
+  // still live from there. One shared function, used by both surfaces now.
+  const goToNotification = (n: AppNotification) => {
+    if (n.page === "settings") { openBillingUpgrade(); return; }
+    setPage(n.page || "notifications");
+    if (n.openType && n.openId) setAlfredHighlight({ type: n.openType, id: n.openId });
+  };
   // Stripe Connect OAuth redirect landing — functions/api/stripe-connect-oauth.ts
   // sends the browser back to `${origin}/#/settings?stripe_connected=1` (or
   // `?stripe_connect_error=...`) after the owner authorizes on Stripe's own
@@ -1852,20 +1865,16 @@ export function App() {
               ? ` — payload is only ${sizeKb}KB, so size isn't the cause; most likely a dropped connection, or another tab/device saving settings at the same moment. Will retry automatically on the next change.`
               : " — if this keeps happening, check your Supabase project isn't paused or over its usage quota (Supabase dashboard → Usage)";
             console.warn("[Settings Sync] error:", firstErr?.message + hint, `(payload ${sizeKb}KB)`);
-            // BUG FIX — "I don't want people inside the CRM seeing that."
-            // This effect runs for ANY signed-in CRM session sharing the
-            // owner's settings row (crmUserId is set for managers too, not
-            // just the owner) — a manager's own tab hitting this exact
-            // save-lock-contention race (which the hint text itself
-            // describes: "another tab/device saving settings at the same
-            // moment") surfaced an internal sync-diagnostic toast/
-            // notification to them, which means nothing to a manager and
-            // reads as an alarming internal error. Owner-only now — a
-            // manager's session still retries the save silently underneath.
-            if (crmRole === "owner") {
-              toast("Settings saved to this device but not to the server — " + (firstErr?.message || "check connection") + hint, "red");
-              pushSettingsSyncNotification("Settings didn't sync to the server" + hint);
-            }
+            // BUG FIX (user report, repeated) — "I keep getting this
+            // notification... either way I don't want people seeing that,
+            // hide it and don't have it as a notification." The retry logic
+            // above already gives this a real second attempt before ever
+            // reaching here, and the save keeps retrying silently on every
+            // future change regardless — there's nothing actionable for
+            // the owner to do with this, so stop surfacing it as a toast or
+            // a persisted notification at all (previously owner-only, now
+            // silent for everyone). console.warn above is still there for
+            // anyone actually debugging via devtools.
             return;
           }
           try {
@@ -1882,14 +1891,9 @@ export function App() {
             throw new Error(r2.error.message);
           } catch (secondErr: any) {
             const isTimeout2 = /timed out/i.test(secondErr?.message || "");
-            console.warn("[Settings Sync] error (both attempts failed):", secondErr?.message);
-            const hint2 = isTimeout2 ? " — likely a slow/unstable connection, not your Supabase account. Will retry on the next change." : " — if this keeps happening, check your Supabase project isn't paused or over its usage quota (Supabase dashboard → Usage)";
-            // Owner-only — see the matching comment on the first attempt's
+            console.warn("[Settings Sync] error (both attempts failed):", secondErr?.message, isTimeout2 ? "(timeout)" : "");
+            // Silent — see the matching comment on the first attempt's
             // failure branch above.
-            if (crmRole === "owner") {
-              toast("Settings saved to this device but not to the server — " + (secondErr?.message || "check connection") + hint2, "red");
-              pushSettingsSyncNotification("Settings didn't sync to the server" + hint2);
-            }
           }
         }
       })();
@@ -2044,39 +2048,6 @@ export function App() {
   // becomes a short "recent + unread" preview of the same store.
   const [notifications, setNotifications] = usePersistent<AppNotification[]>("smocks.notifications", []);
   const NOTIFICATIONS_CAP = 300;
-  // Settings-sync failures previously only fired a toast, which disappears
-  // and is easy to miss — the Notifications tab is where the owner would
-  // expect to find it later. Throttled to once per 30 minutes (was 5 — a
-  // genuinely flaky connection still hit that every few minutes and read as
-  // "I keep getting this notification" even though the underlying save now
-  // also gets a real second attempt before this fires at all, see the plain
-  // retry added above) so a bad connection doesn't nag repeatedly in one
-  // sitting.
-  // BUG FIX — "I still got this notification" repeating far more often than
-  // once per 30 minutes. The throttle above was a plain useRef, reset to 0
-  // on every page load/reload — an owner who reloads or re-opens the tab
-  // (normal CRM usage) got a fresh notification on the very next timeout,
-  // even seconds after the last one, because the ref forgot it ever fired.
-  // Seed it from localStorage (and from the notification list itself, in
-  // case localStorage was cleared but the notification history wasn't) so
-  // the throttle survives reloads and actually means "once per 30 minutes,"
-  // not "once per 30 minutes per page load."
-  const SETTINGS_SYNC_NOTIF_KEY = "smocks.lastSettingsSyncNotifAt";
-  const lastSettingsSyncNotifAtRef = useRef<number>((() => {
-    try {
-      const stored = Number(localStorage.getItem(SETTINGS_SYNC_NOTIF_KEY)) || 0;
-      const fromHistory = (JSON.parse(localStorage.getItem("smocks.notifications") || "[]") as AppNotification[])
-        .find(n => n.category === "system" && /didn't sync/i.test(n.text))?.at || 0;
-      return Math.max(stored, fromHistory);
-    } catch { return 0; }
-  })());
-  const pushSettingsSyncNotification = (text: string) => {
-    const now = Date.now();
-    if (now - lastSettingsSyncNotifAtRef.current < 30 * 60 * 1000) return;
-    lastSettingsSyncNotifAtRef.current = now;
-    try { localStorage.setItem(SETTINGS_SYNC_NOTIF_KEY, String(now)); } catch { /* ignore */ }
-    setNotifications((prev: AppNotification[]) => [{ id: uid(), text, at: now, read: false, category: "system" as const, page: "dashboard" }, ...prev].slice(0, NOTIFICATIONS_CAP));
-  };
   const deleteNotification = (id: string) => setNotifications((prev: AppNotification[]) => prev.filter(n => n.id !== id));
   const clearAllNotifications = () => setNotifications([]);
   const markAllNotificationsRead = () => setNotifications((prev: AppNotification[]) => prev.map(n => ({ ...n, read: true })));
@@ -5576,12 +5547,17 @@ export function App() {
               any screen narrower than md — icon-only on small screens
               (matching InstallAppButton's own responsive pattern right
               below) instead of fully gone. */}
+          {/* BUG FIX (user report) — "make the demo button bigger... just
+              says Demo in text with the same looking UI." Bumped padding/
+              icon/text size, and the "Demo" label now always shows (short
+              enough to fit at any width) instead of being icon-only below
+              sm — same classes/colors otherwise, just sized up. */}
           <button
             onClick={() => setClientDemoOpen(true)}
             title="Client Demo"
-            className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 bg-black/40 border border-red-900/30 rounded-xl text-xs text-white/50 hover:text-white hover:border-red-600/50 transition flex-shrink-0"
+            className="flex items-center gap-2 px-3 py-2 bg-black/40 border border-red-900/30 rounded-xl text-sm text-white/50 hover:text-white hover:border-red-600/50 transition flex-shrink-0"
           >
-            <Globe size={13} /><span className="hidden sm:inline">Client Demo</span>
+            <Globe size={16} /><span>Demo</span>
           </button>
           {/* PWA — always-visible install button (see InstallAppButton.tsx —
               it explains itself instead of disappearing when there's
@@ -5590,7 +5566,13 @@ export function App() {
               phone — this header has no wrap/scroll fallback, so an item
               that's too wide here doesn't just look cramped, it can shove
               later items past the visible edge entirely. */}
-          <InstallAppButton className="!flex flex-shrink-0 !px-2 sm:!px-3" label="Install App" labelClassName="hidden sm:inline" />
+          {/* BUG FIX (user report) — "the download button shouldn't show at
+              the top, specifically for phones." Hidden below sm now — a
+              prominent "Install App" prompt at the top of the CRM header
+              reads as clutter on a phone (often already the installed app
+              itself), still shown on desktop where install is more of a
+              discovery moment. */}
+          <InstallAppButton className="!hidden sm:!flex flex-shrink-0 sm:!px-3" label="Install App" labelClassName="hidden sm:inline" />
           {/* Notifications */}
           <div className="relative">
           <button onClick={() => setNotifOpen(!notifOpen)} className="relative p-2 text-white/60 hover:text-white">
@@ -5611,14 +5593,7 @@ export function App() {
                   {notifications.slice(0, 8).map(n => (
                     <button key={n.id + n.at} onClick={() => {
                       markNotificationRead(n.id);
-                      // BUG FIX — "clicking the notification takes me to a
-                      // blank page." "settings" was never a real routed
-                      // page (Settings is a modal, opened via
-                      // setSettingsOpen), so setPage("settings") landed on
-                      // nothing — exactly the referral nudge notification's
-                      // reported bug. Open the actual modal instead.
-                      if (n.page === "settings") { openBillingUpgrade(); }
-                      else { setPage(n.page || "notifications"); if (n.openType && n.openId) setAlfredHighlight({ type: n.openType, id: n.openId }); }
+                      goToNotification(n);
                       setNotifOpen(false);
                     }} className={"w-full flex items-center gap-3 p-2.5 hover:bg-white/5 rounded-xl text-left " + (n.read ? "opacity-50" : "")}>
                       <div className={"p-1.5 rounded-lg " + (n.category === "issue" ? "bg-red-950/30 text-red-400" : n.category === "crew" ? "bg-blue-950/30 text-blue-400" : "bg-green-950/30 text-green-400")}>
@@ -5768,7 +5743,7 @@ export function App() {
                 {page === "jobs"           && <JobsPage jobs={jobs} setJobs={setJobs} customers={customers} setCustomers={setCustomers} employees={employees} estimates={estimates} setEstimates={setEstimates} settings={settings} setSettings={setSettings} toast={toast} posts={socialPosts} setPosts={setSocialPosts} setTimeline={setTimeline} initialDetailId={openJobId} onInitialDetailIdConsumed={() => setOpenJobId(null)} onPortal={id => setPortalEstId(id)} ownerId={crmUserId} autoOpenNew={fabAutoOpenNew === "jobs"} onAutoOpenNewConsumed={() => setFabAutoOpenNew(null)} autoOpenNewWorkOrder={fabAutoOpenNew === "jobs-workorder"} onAutoOpenNewWorkOrderConsumed={() => setFabAutoOpenNew(null)} highlightId={alfredHighlight?.type === "job" ? alfredHighlight.id : null} pushUndo={pushUndo} markRecentlyDeleted={markRecentlyDeleted} unmarkRecentlyDeleted={unmarkRecentlyDeleted} services={services} />}
                 {page === "pipeline"       && <PipelinePage jobs={jobs} setJobs={setJobs} customers={customers} toast={toast} />}
                 {page === "calendar"       && <CalendarPage jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} settings={settings} setSettings={setSettings} ownerId={crmUserId} posts={socialPosts} setPosts={setSocialPosts} />}
-                {page === "inbox"          && (managerBlocked("inbox") ? <RestrictedNotice label="the Inbox" /> : <InboxPage threads={inboxThreads} setThreads={setInboxThreads} customers={customers} setCustomers={setCustomers} setJobs={setJobs} settings={settings} toast={toast} ownerId={crmUserId} onNav={setPage} />)}
+                {page === "inbox"          && (managerBlocked("inbox") ? <RestrictedNotice label="the Inbox" /> : <InboxPage threads={inboxThreads} setThreads={setInboxThreads} customers={customers} setCustomers={setCustomers} setJobs={setJobs} settings={settings} toast={toast} ownerId={crmUserId} onNav={setPage} onViewCustomerInCrm={(id: string) => { setAlfredHighlight({ type: "customer", id }); setPage("customers"); }} />)}
                 {page === "campaigns"      && (planBlocked("campaigns") ? <PlanRestrictedNotice label="Campaign Blasts" feature="campaigns" /> : <CampaignsPage campaigns={campaigns} setCampaigns={setCampaigns} customers={customers} estimates={estimates} jobs={jobs} settings={settings} setSettings={setSettings} inboxThreads={inboxThreads} setInboxThreads={setInboxThreads} automations={automations} setAutomations={setAutomations} toast={toast} />)}
                 {page === "reviews"        && <ReviewsPage reviews={reviews} setReviews={setReviews} jobs={jobs} customers={customers} toast={toast} negativeAlerts={negativeAlerts} setNegativeAlerts={setNegativeAlerts} settings={settings} setSettings={setSettings} />}
                 {page === "automations"    && <AutomationsPage automations={automations} setAutomations={setAutomations} jobs={jobs} customers={customers} estimates={estimates} settings={settings} setSettings={setSettings} toast={toast} />}
@@ -5801,7 +5776,7 @@ export function App() {
                 {page === "expenses"       && <ExpensesPage expenses={expenses} setExpenses={setExpenses} toast={toast} />}
                 {page === "chemicals"      && <ChemicalsPage chemicals={chemicals} setChemicals={setChemicals} toast={toast} settings={settings} ownerId={crmUserId} markRecentlyDeleted={markRecentlyDeleted} />}
                 {page === "training"       && <TrainingPage modules={trainingModules} setModules={setTrainingModules} employees={employees} toast={toast} ownerId={crmUserId} />}
-                {page === "notifications"  && <NotificationsPage notifications={notifications} onDelete={deleteNotification} onMarkRead={markNotificationRead} onMarkAllRead={markAllNotificationsRead} onClearAll={clearAllNotifications} onNav={setPage} />}
+                {page === "notifications"  && <NotificationsPage notifications={notifications} onDelete={deleteNotification} onMarkRead={markNotificationRead} onMarkAllRead={markAllNotificationsRead} onClearAll={clearAllNotifications} onNav={setPage} onGoTo={goToNotification} />}
                 {page === "reports"        && <ReportsPage jobs={jobs} customers={customers} estimates={estimates} expenses={expenses} employees={employees} chemicals={chemicals} />}
                 {page === "analytics"      && <AnalyticsPage jobs={jobs} customers={customers} estimates={estimates} expenses={expenses} />}
                 {page === "budget"         && <BudgetPage jobs={jobs} estimates={estimates} expenses={expenses} settings={settings} toast={toast} />}

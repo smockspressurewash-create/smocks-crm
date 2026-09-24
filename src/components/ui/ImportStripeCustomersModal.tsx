@@ -38,7 +38,18 @@ export function ImportStripeCustomersModal({ open, onClose, customers = [], setC
         // chance to run, so `finally`'s setLoading(false) never fires
         // either. listStripeCustomers already had its own 20s timeout;
         // this call had none.
-        const { data: { session } } = await withTimeout(supabase.auth.getSession(), 10000, "Get session");
+        // BUG FIX (user report — "didn't do anything, eventually said get
+        // session timed out") — the 10s timeout above stops it from hanging
+        // forever, but getSession() itself still genuinely times out on a
+        // flaky/mobile connection with no second chance. One retry before
+        // giving up, same pattern used for this exact class of flakiness
+        // elsewhere in this app (lib/messaging.ts's twilioSend).
+        let session: any;
+        try {
+          session = (await withTimeout(supabase.auth.getSession(), 10000, "Get session")).data.session;
+        } catch {
+          session = (await withTimeout(supabase.auth.getSession(), 10000, "Get session (retry)")).data.session;
+        }
         const token = session?.access_token;
         if (!token) throw new Error("Not signed in");
         const { customers: list } = await listStripeCustomers(token);
@@ -96,7 +107,13 @@ export function ImportStripeCustomersModal({ open, onClose, customers = [], setC
         <div className="text-xs text-white/50">
           Every real customer on your Stripe account. Rows matching an existing CRM customer's email or phone link automatically — anything with no match creates a new customer record. Card details always load live from Stripe, never copied here.
         </div>
-        {loading && <div className="text-center py-8 text-white/40 text-sm">Loading Stripe customers…</div>}
+        {/* FEATURE — "add a spinner for when it's loading" — was text-only. */}
+        {loading && (
+          <div className="flex flex-col items-center justify-center gap-2 py-8 text-white/40 text-sm">
+            <div className="w-5 h-5 border-2 border-white/20 border-t-white/70 rounded-full animate-spin" />
+            Loading Stripe customers…
+          </div>
+        )}
         {error && <div className="p-3 rounded-xl bg-red-950/30 border border-red-700/40 text-red-300 text-sm">{error}</div>}
         {!loading && !error && stripeCustomers.length === 0 && (
           <div className="text-center py-8 text-white/40 text-sm">No customers found on your connected Stripe account yet.</div>

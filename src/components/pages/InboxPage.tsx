@@ -80,7 +80,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function InboxPage({ threads = [], setThreads, customers = [], setCustomers, setJobs, settings = {} as AppSettings, toast, ownerId = "", onNav }: { threads?: any[]; setThreads?: any; customers?: any[]; setCustomers?: any; setJobs?: any; settings?: AppSettings; toast?: any; ownerId?: string; onNav?: (page: string) => void }) {
+export function InboxPage({ threads = [], setThreads, customers = [], setCustomers, setJobs, settings = {} as AppSettings, toast, ownerId = "", onNav, onViewCustomerInCrm }: { threads?: any[]; setThreads?: any; customers?: any[]; setCustomers?: any; setJobs?: any; settings?: AppSettings; toast?: any; ownerId?: string; onNav?: (page: string) => void; onViewCustomerInCrm?: (customerId: string) => void }) {
   const [active, setActive] = useState(threads[0]?.id || null);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -1285,7 +1285,10 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
             </div>
             <div className="flex items-center gap-2 flex-wrap">
               {findCustomer(activeThread) ? (
-                <GBtn variant="ghost" className="!text-xs !py-1"><Users size={11} className="inline mr-1" />View CRM</GBtn>
+                // BUG FIX (user report) — "pressing View CRM doesn't do
+                // anything." Had no onClick at all — not mobile-specific,
+                // just never wired up.
+                <GBtn variant="ghost" onClick={() => onViewCustomerInCrm?.(findCustomer(activeThread)!.id)} className="!text-xs !py-1"><Users size={11} className="inline mr-1" />View CRM</GBtn>
               ) : (
                 <GBtn variant="ghost" onClick={() => convertToLead(activeThread)} className="!text-xs !py-1"><UserCheck size={11} className="inline mr-1" />Convert to Lead</GBtn>
               )}

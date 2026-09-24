@@ -15,6 +15,7 @@ export function NotificationsPage({
   onMarkAllRead,
   onClearAll,
   onNav,
+  onGoTo,
 }: {
   notifications?: AppNotification[];
   onDelete: (id: string) => void;
@@ -22,6 +23,17 @@ export function NotificationsPage({
   onMarkAllRead: () => void;
   onClearAll: () => void;
   onNav?: (page: string) => void;
+  // BUG FIX (user report) — "pressing go there just takes me to a blank
+  // page" (the referral-nudge notification, page:"settings" — not a real
+  // routed page, it's a modal) / "just took me to my employees page" (a
+  // crew-photo notification with openType/openId meant to highlight the
+  // SPECIFIC employee, not just land on the list). The header bell
+  // dropdown (App.tsx) already handles both cases correctly — this page's
+  // own "Go there" button was a separate, simpler `onNav(n.page)` call
+  // that never got the same fix. onGoTo, when passed, is the SAME routing
+  // function the bell dropdown uses — falls back to plain onNav if a
+  // caller doesn't pass it.
+  onGoTo?: (n: AppNotification) => void;
 }) {
   const [filter, setFilter] = useState<"all" | "unread" | "invoice" | "crew" | "issue">("all");
   const [sort, setSort] = useState<"newest" | "oldest">("newest");
@@ -106,8 +118,8 @@ export function NotificationsPage({
                     {n.category ? n.category[0].toUpperCase() + n.category.slice(1) : "System"} · {new Date(n.at).toLocaleString()}
                     {n.detail ? <div className="mt-1 text-white/60">{n.detail}</div> : null}
                   </div>
-                  {n.page && onNav && (
-                    <button onClick={() => onNav(n.page!)} className="px-2.5 py-1 rounded-lg bg-red-900/30 border border-red-700/40 text-red-300 text-[11px] font-semibold hover:bg-red-800/40 transition flex-shrink-0">
+                  {n.page && (onGoTo || onNav) && (
+                    <button onClick={() => onGoTo ? onGoTo(n) : onNav!(n.page!)} className="px-2.5 py-1 rounded-lg bg-red-900/30 border border-red-700/40 text-red-300 text-[11px] font-semibold hover:bg-red-800/40 transition flex-shrink-0">
                       Go there →
                     </button>
                   )}

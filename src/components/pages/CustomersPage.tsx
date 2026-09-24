@@ -639,7 +639,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
               <GInput placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} className="!pl-9 !py-1.5 !text-xs w-full sm:w-auto" />
             </div>}
             {pageTab === "list" && (
-              <GSel value={sortBy} onChange={e => setSortBy(e.target.value as any)} className="!py-1.5 !text-xs !w-auto">
+              <GSel value={sortBy} onChange={e => setSortBy(e.target.value as any)} className="!py-1.5 !text-xs w-full sm:!w-auto">
                 <option value="name">Sort: Name</option>
                 <option value="dateAdded">Sort: Date Added</option>
                 <option value="lastJob">Sort: Last Job</option>
@@ -647,13 +647,13 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
               </GSel>
             )}
             {pageTab === "list" && allCustomerTags.length > 0 && (
-              <GSel value={tagFilter} onChange={e => setTagFilter(e.target.value)} className="!py-1.5 !text-xs !w-auto">
+              <GSel value={tagFilter} onChange={e => setTagFilter(e.target.value)} className="!py-1.5 !text-xs w-full sm:!w-auto">
                 <option value="">All Tags</option>
                 {allCustomerTags.map((t: string) => <option key={t} value={t}>{t}</option>)}
               </GSel>
             )}
             {pageTab === "list" && (
-              <GSel value={folderFilter} onChange={e => setFolderFilter(e.target.value)} className="!py-1.5 !text-xs !w-auto">
+              <GSel value={folderFilter} onChange={e => setFolderFilter(e.target.value)} className="!py-1.5 !text-xs w-full sm:!w-auto">
                 <option value="">📁 All Folders</option>
                 <option value="__unfiled__">Unfiled</option>
                 {allFolderPaths.map((f: string) => <option key={f} value={f}>{"—".repeat(folderDepth(f))} 📁 {folderLabel(f)}</option>)}
