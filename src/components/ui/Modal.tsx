@@ -74,11 +74,11 @@ export const Modal = ({ open, onClose, title, children, maxW = "max-w-lg", noBod
       <div style={scrollWrapStyle} onClick={onClose}>
         <div style={{ display: "flex", minHeight: "100%", alignItems: fullScreenMode ? "stretch" : "center", justifyContent: "center" }}>
           <div
-            className={maxW + " w-full bg-surface border border-edge/40 shadow-2xl flex flex-col overflow-hidden" + (fullScreenMode ? "" : " rounded-2xl")}
+            className={maxW + " w-full bg-surface border border-edge/40 shadow-2xl flex flex-col overflow-hidden relative" + (fullScreenMode ? "" : " rounded-2xl")}
             style={cardStyle}
             onClick={e => e.stopPropagation()}
           >
-            {title !== "" && (
+            {title !== "" ? (
               <div className="flex items-center justify-between px-5 py-4 border-b border-edge/30 flex-shrink-0">
                 <h3 className="text-lg font-semibold text-ink">{title}</h3>
                 <button
@@ -88,6 +88,22 @@ export const Modal = ({ open, onClose, title, children, maxW = "max-w-lg", noBod
                   <X size={18} />
                 </button>
               </div>
+            ) : fullScreenMode && (
+              // BUG FIX (user report) — "on mobile, viewing client demos or
+              // previewing estimates, the full-screen view has no X button
+              // ... you get stuck." A title-less modal (ClientPortal's
+              // estimate/invoice preview) skipped the header entirely — on
+              // mobile fullScreenMode the card fills the ENTIRE viewport,
+              // so there's no backdrop margin left to tap-to-close either,
+              // only whatever close control the content itself might have
+              // buried at the bottom of a long scroll. A small floating X
+              // guarantees a way out regardless of what's inside.
+              <button
+                onClick={onClose}
+                className="absolute top-3 right-3 z-10 w-9 h-9 flex items-center justify-center rounded-full bg-black/50 backdrop-blur text-white border border-white/15"
+              >
+                <X size={18} />
+              </button>
             )}
             {noBodyScroll
               ? <div className="flex-1 min-h-0 overflow-hidden">{children}</div>

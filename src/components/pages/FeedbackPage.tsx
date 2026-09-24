@@ -7,7 +7,7 @@
 // the logged-out landing-page equivalent that only shows planned/
 // in_progress/done items, no submit/vote).
 import React, { useEffect, useRef, useState } from "react";
-import { Bug, Lightbulb, ChevronUp, ChevronDown, Plus, Trash2, Clock, CheckCircle, Rocket, LayoutGrid, List } from "lucide-react";
+import { Bug, Lightbulb, ChevronUp, ChevronDown, Plus, Trash2, Clock, CheckCircle, Rocket, LayoutGrid, List, Edit, X, Check } from "lucide-react";
 import { supabase } from "../../lib/supabase";
 import { uid, withTimeout } from "../../lib/utils";
 import { Glass } from "../ui/Glass";
@@ -21,8 +21,8 @@ import { useConfirm } from "../ui/ConfirmModal";
 type FeedbackItem = {
   id: string; title: string; description: string; type: "bug" | "feature";
   status: "submitted" | "planned" | "in_progress" | "done" | "declined";
-  submitted_by_email: string; submitted_by_name: string; admin_note: string;
-  created_at: string; updated_at: string;
+  submitted_by_email: string; submitted_by_name: string; submitted_by_uid?: string; admin_note: string;
+  created_at: string; updated_at: string; edited_at?: string | null;
 };
 
 const STATUS_META: Record<string, { label: string; color: string; icon: any }> = {
@@ -51,6 +51,12 @@ export function FeedbackPage({ userEmail, userName, isAdmin, toast, publicMode =
   const [submitting, setSubmitting] = useState(false);
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [myUid, setMyUid] = useState<string | null>(null);
+  // FEATURE (user report) — "people should be able to delete or edit their
+  // feedback, and it should show that it was edited."
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editDesc, setEditDesc] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
   const { confirmAsync, ConfirmDialog } = useConfirm();
   // FEATURE — "have the kanban style board to see what you're doing." Admin
   // (you) gets a real drag-between-columns board; everyone else still gets
@@ -98,7 +104,7 @@ export function FeedbackPage({ userEmail, userName, isAdmin, toast, publicMode =
     if (!newTitle.trim()) { toast?.("Give it a title first", "red"); return; }
     setSubmitting(true);
     try {
-      const row = { id: uid(), title: newTitle.trim(), description: newDesc.trim(), type: newType, status: "submitted", submitted_by_email: userEmail || "", submitted_by_name: userName || "" };
+      const row = { id: uid(), title: newTitle.trim(), description: newDesc.trim(), type: newType, status: "submitted", submitted_by_email: userEmail || "", submitted_by_name: userName || "", submitted_by_uid: myUid || null };
       // BUG FIX (user report — "added feedback, it didn't save") — this had
       // no withTimeout, unlike every other critical write in this app (see
       // CLAUDE.md) — supabase-js refreshing a stale session internally
@@ -160,6 +166,37 @@ export function FeedbackPage({ userEmail, userName, isAdmin, toast, publicMode =
     const { error } = await (supabase as any).from("feedback_items").delete().eq("id", itemId);
     if (error) { toast?.("Couldn't delete — " + error.message, "red"); return; }
     setItems(prev => prev.filter(it => it.id !== itemId));
+  };
+
+  // FEATURE (user report) — "people should be able to delete or edit their
+  // feedback, and it should show that it was edited." Only the original
+  // submitter (submitted_by_uid — see migration 0098) or the admin can
+  // actually save this; RLS enforces that server-side too, not just this
+  // client-side gate on the button itself.
+  const startEdit = (it: FeedbackItem) => { setEditingId(it.id); setEditTitle(it.title); setEditDesc(it.description || ""); };
+  const cancelEdit = () => { setEditingId(null); setEditTitle(""); setEditDesc(""); };
+  const saveEdit = async (itemId: string) => {
+    if (!editTitle.trim()) { toast?.("Give it a title first", "red"); return; }
+    setSavingEdit(true);
+    try {
+      const patch = { title: editTitle.trim(), description: editDesc.trim(), edited_at: new Date().toISOString() };
+      const { error, data } = await withTimeout<any>(
+        (supabase as any).from("feedback_items").update(patch).eq("id", itemId).select("id"),
+        15000, "Save feedback edit"
+      );
+      if (error) throw new Error(error.message);
+      // BUG FIX pattern (see CLAUDE.md) — RLS silently accepts a 0-row
+      // write that doesn't match instead of erroring; check the row count,
+      // not just `error`, before claiming this actually saved.
+      if (!Array.isArray(data) || data.length === 0) throw new Error("The server didn't confirm the change");
+      setItems(prev => prev.map(it => it.id === itemId ? { ...it, ...patch } : it));
+      toast?.("Updated ✓", "green");
+      cancelEdit();
+    } catch (e: any) {
+      toast?.("Couldn't save — " + (e?.message || "unknown error"), "red");
+    } finally {
+      setSavingEdit(false);
+    }
   };
 
   // FEATURE — kanban drag-to-change-status. Pointer events work uniformly
@@ -313,6 +350,8 @@ export function FeedbackPage({ userEmail, userName, isAdmin, toast, publicMode =
             const meta = STATUS_META[it.status];
             const v = votes[it.id] || { total: 0, mine: 0 };
             const TypeIcon = it.type === "bug" ? Bug : Lightbulb;
+            const isMine = !!myUid && !!it.submitted_by_uid && it.submitted_by_uid === myUid;
+            const isEditing = editingId === it.id;
             return (
               <Glass key={it.id} className="p-3 flex gap-3">
                 {(!publicMode || canInteract) ? (
@@ -328,19 +367,49 @@ export function FeedbackPage({ userEmail, userName, isAdmin, toast, publicMode =
                   </div>
                 )}
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <TypeIcon size={12} className={it.type === "bug" ? "text-red-400" : "text-yellow-400"} />
-                    <div className="text-sm font-semibold text-white">{it.title}</div>
-                    <Badge tone={it.status === "done" ? "green" : it.status === "in_progress" ? "yellow" : it.status === "planned" ? "blue" : "gray"}>{meta.label}</Badge>
-                  </div>
-                  {it.description && <div className="text-xs text-white/50 mt-1 whitespace-pre-wrap">{it.description}</div>}
-                  <div className="text-[10px] text-white/30 mt-1">{it.submitted_by_name || it.submitted_by_email || "Anonymous"} · {new Date(it.created_at).toLocaleDateString()}</div>
-                  {isAdmin && (
+                  {isEditing ? (
+                    // FEATURE (user report) — "people should be able to
+                    // delete or edit their feedback." Same title/description
+                    // inputs as the New Feedback form, inline in place of
+                    // the static title/description while editing.
+                    <div className="space-y-2">
+                      <GInput value={editTitle} onChange={(e: any) => setEditTitle(e.target.value)} placeholder="Short title" className="!text-sm" />
+                      <GTxt value={editDesc} onChange={(e: any) => setEditDesc(e.target.value)} rows={3} placeholder="Details (optional)" className="!text-sm" />
+                      <div className="flex gap-2">
+                        <GBtn onClick={() => saveEdit(it.id)} disabled={savingEdit} className="!text-xs"><Check size={12} className="inline mr-1" />{savingEdit ? "Saving…" : "Save"}</GBtn>
+                        <GBtn variant="ghost" onClick={cancelEdit} disabled={savingEdit} className="!text-xs"><X size={12} className="inline mr-1" />Cancel</GBtn>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <TypeIcon size={12} className={it.type === "bug" ? "text-red-400" : "text-yellow-400"} />
+                        <div className="text-sm font-semibold text-white">{it.title}</div>
+                        <Badge tone={it.status === "done" ? "green" : it.status === "in_progress" ? "yellow" : it.status === "planned" ? "blue" : "gray"}>{meta.label}</Badge>
+                      </div>
+                      {it.description && <div className="text-xs text-white/50 mt-1 whitespace-pre-wrap">{it.description}</div>}
+                      <div className="text-[10px] text-white/30 mt-1">
+                        {it.submitted_by_name || it.submitted_by_email || "Anonymous"} · {new Date(it.created_at).toLocaleDateString()}
+                        {/* BUG FIX (user report) — "it should show that it
+                            was edited." edited_at is only ever set by
+                            saveEdit below, so this never shows for an
+                            item that's only had its status changed. */}
+                        {it.edited_at && <span title={new Date(it.edited_at).toLocaleString()}> · edited</span>}
+                      </div>
+                    </>
+                  )}
+                  {!isEditing && (isAdmin || isMine) && (
                     <div className="flex items-center gap-1.5 mt-2 pt-2 border-t border-white/10">
-                      <GSel value={it.status} onChange={(e: any) => setStatus(it.id, e.target.value)} className="!text-[11px] !py-1">
-                        {Object.entries(STATUS_META).map(([k, m]) => <option key={k} value={k} className="bg-black">{m.label}</option>)}
-                      </GSel>
-                      <button onClick={() => deleteItem(it.id)} className="text-red-400/60 hover:text-red-400 p-1"><Trash2 size={13} /></button>
+                      {isAdmin && (
+                        <GSel value={it.status} onChange={(e: any) => setStatus(it.id, e.target.value)} className="!text-[11px] !py-1">
+                          {Object.entries(STATUS_META).map(([k, m]) => <option key={k} value={k} className="bg-black">{m.label}</option>)}
+                        </GSel>
+                      )}
+                      {/* Own item (or admin) can edit; admin could always
+                          delete anything, now the original submitter can
+                          delete their own too (see migration 0098). */}
+                      <button onClick={() => startEdit(it)} title="Edit" className="text-white/40 hover:text-white p-1"><Edit size={13} /></button>
+                      <button onClick={() => deleteItem(it.id)} title="Delete" className="text-red-400/60 hover:text-red-400 p-1"><Trash2 size={13} /></button>
                     </div>
                   )}
                 </div>
