@@ -5575,9 +5575,18 @@ export function App() {
           <InstallAppButton className="!hidden sm:!flex flex-shrink-0 sm:!px-3" label="Install App" labelClassName="hidden sm:inline" />
           {/* Notifications */}
           <div className="relative">
+          {/* BUG FIX (user report) — "marked all notifications read, red dot
+              still shows." negativeAlerts/overdueCount/lowStock are live
+              business conditions with no "read" state of their own (an
+              overdue invoice or low chemical stock doesn't go away just
+              because you looked at it) — mixing them into the same dot as
+              actual notification read/unread meant "mark all read" could
+              never fully clear it, which reads as broken. The dot now only
+              tracks real unread notifications; those other alerts still
+              show inside the dropdown/list itself, just don't drive the dot. */}
           <button onClick={() => setNotifOpen(!notifOpen)} className="relative p-2 text-white/60 hover:text-white">
             <Bell size={18} />
-            {(notifications.filter(n => !n.read).length + negativeAlerts.length + overdueCount + lowStock) > 0 && (
+            {notifications.some(n => !n.read) && (
               <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full animate-pulse" />
             )}
           </button>

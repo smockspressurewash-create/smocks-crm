@@ -843,6 +843,20 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   useEffect(() => {
     if (!scrollRef.current) return;
     scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    // BUG FIX (user report — "clicking an Alfred chat should open to the
+    // bottom automatically") — the instant assignment above runs the
+    // moment this effect fires, but a conversation carrying image
+    // previews (screenshots, receipts — see imagePreview/imagePreviews on
+    // messages) still has those <img> tags loading asynchronously at that
+    // exact point; each one finishing growing the container's real
+    // scrollHeight a beat later, leaving the view short of the true
+    // bottom with no further correction. Two follow-up passes — one after
+    // the next paint, one after a short delay for slower image loads —
+    // catch that without fighting a smooth-scroll animation (there isn't
+    // one here; this is instant scrollTop assignment, same as above).
+    const raf = requestAnimationFrame(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; });
+    const t = setTimeout(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, 250);
+    return () => { cancelAnimationFrame(raf); clearTimeout(t); };
   }, [chats.length, loading, active?.id]);
 
   // Slash command suggestions
@@ -5292,8 +5306,19 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
     <>
     {mountEl && createPortal(
     <div className="relative w-full flex-1 min-h-0 flex bg-black border border-red-900/30 rounded-2xl overflow-hidden">
-      {/* Conversation sidebar */}
-      <aside className={"bg-black/80 backdrop-blur-xl border-r border-red-900/30 flex flex-col transition-all duration-300 overflow-hidden " + (sidebarOpen ? "w-[280px] md:w-[280px]" : "w-0") + " absolute md:relative h-full z-20"}>
+      {/* Conversation sidebar — BUG FIX (user report) — "the animation isn't
+          smooth, the text looks glitchy." The width transition used to run
+          directly on THIS element, which also holds the conversation list
+          text — animating an element's own width forces the browser to
+          re-wrap/re-flow its text content at every intermediate width
+          during the whole 300ms, which is exactly what reads as glitchy
+          text. Split into an outer wrapper that owns the animated width
+          (0 → 280px, clipped via overflow-hidden) and an inner element
+          that always renders at a CONSTANT 280px — its text never needs to
+          re-wrap mid-animation, only the outer clipping window's size
+          changes, so it reads as a clean slide/reveal instead. */}
+      <div className={"transition-all duration-300 overflow-hidden flex-shrink-0 " + (sidebarOpen ? "w-[280px]" : "w-0") + " absolute md:relative h-full z-20"}>
+      <aside className="w-[280px] h-full bg-black/80 backdrop-blur-xl border-r border-red-900/30 flex flex-col">
         <div className="p-3 border-b border-red-900/30 flex items-center gap-2">
           <button onClick={newConversation} className="flex-1 flex items-center gap-2 px-3 py-2.5 rounded-lg border border-red-600/40 bg-red-950/30 hover:bg-red-900/40 text-sm font-medium transition">
             <Plus size={14} />New chat
@@ -5384,6 +5409,7 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
           )}
         </div>
       </aside>
+      </div>
 
       {sidebarOpen && <div className="md:hidden fixed inset-0 bg-black/60 z-10" onClick={() => setSidebarOpen(false)} />}
 
