@@ -49,6 +49,22 @@ export function LeadFormPage() {
   const bgColor = isHex(bgParam) ? bgParam : "#0a0a0a";
   const btnColor = isHex(btnParam) ? btnParam : "#dc2626";
   const textColor = isHex(textParam) ? textParam : "#ffffff";
+  // FEATURE — "you should be able to customize the lead intake form as much
+  // as you want... choose to add your logo." Same plain, non-secret query-
+  // param pattern as bg/btn/text above (see this file's own header comment
+  // for why it never reads app_settings directly) — LeadIntakePage.tsx's
+  // Customize panel is what actually sets these before copying the embed
+  // snippet. Every one of these needs a sane default so an OLDER embed
+  // snippet (copied before this feature existed, with none of these params)
+  // still renders exactly as it always did.
+  const headline = decodeURIComponent(hashParam("headline") || "") || "Get a free estimate — we respond fast";
+  const buttonText = decodeURIComponent(hashParam("btntext") || "") || "Get My Free Estimate →";
+  const thankYouMessage = decodeURIComponent(hashParam("thankyou") || "") || "We'll call or text you shortly to schedule your free estimate.";
+  const logoUrlParam = hashParam("logo");
+  const logoUrl = logoUrlParam.startsWith("http") ? logoUrlParam : "";
+  const showAddress = hashParam("showaddr") !== "0";
+  const showService = hashParam("showsvc") !== "0";
+  const showMessage = hashParam("shownote") !== "0";
 
   const [f, setF] = useState({ firstName: "", lastName: "", email: "", phone: "", address: "", service: "", message: "" });
   const [submitting, setSubmitting] = useState(false);
@@ -117,16 +133,19 @@ export function LeadFormPage() {
       <div className="min-h-screen bg-neutral-950 text-white flex flex-col items-center justify-center p-6 text-center">
         <CheckCircle size={48} className="text-green-400 mb-3" />
         <div className="text-xl font-bold text-green-400">We got your request!</div>
-        <div className="text-white/60 text-sm mt-1">We'll call or text you shortly to schedule your free estimate.</div>
+        <div className="text-white/60 text-sm mt-1">{thankYouMessage}</div>
       </div>
     );
   }
 
   return (
     <div className="min-h-screen text-white" style={{ backgroundColor: bgColor }}>
-      <div className="px-6 py-5" style={{ backgroundColor: btnColor }}>
-        <div className="font-bold text-lg" style={{ color: textColor }}>{companyName}</div>
-        <div className="text-xs mt-0.5" style={{ color: textColor, opacity: 0.8 }}>Get a free estimate — we respond fast{companyPhone ? ` · ${companyPhone}` : ""}</div>
+      <div className="px-6 py-5 flex items-center gap-3" style={{ backgroundColor: btnColor }}>
+        {logoUrl && <img src={logoUrl} alt="" className="w-10 h-10 object-contain rounded-lg bg-white/10 p-1 flex-shrink-0" />}
+        <div>
+          <div className="font-bold text-lg" style={{ color: textColor }}>{companyName}</div>
+          <div className="text-xs mt-0.5" style={{ color: textColor, opacity: 0.8 }}>{headline}{companyPhone ? ` · ${companyPhone}` : ""}</div>
+        </div>
       </div>
       <div className="p-6 max-w-lg mx-auto space-y-4">
         <div className="grid grid-cols-2 gap-3">
@@ -151,24 +170,24 @@ export function LeadFormPage() {
           <input type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} placeholder="jen@email.com"
             className="w-full bg-white/5 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white placeholder-white/25 focus:outline-none focus:border-red-500/50" />
         </div>
-        <div>
+        {showAddress && <div>
           <label className="text-xs text-white/60 mb-1 block">Property Address</label>
           <input value={f.address} onChange={e => setF({ ...f, address: e.target.value })} placeholder="412 Oak Ridge Ln, York PA"
             className="w-full bg-white/5 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white placeholder-white/25 focus:outline-none focus:border-red-500/50" />
-        </div>
-        <div>
+        </div>}
+        {showService && <div>
           <label className="text-xs text-white/60 mb-1 block">Service Needed</label>
           <select value={f.service} onChange={e => setF({ ...f, service: e.target.value })}
             className="w-full bg-white/5 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-red-500/50">
             <option value="" className="bg-black">Select service…</option>
             {COMMON_SERVICES.map(s => <option key={s} value={s} className="bg-black">{s}</option>)}
           </select>
-        </div>
-        <div>
+        </div>}
+        {showMessage && <div>
           <label className="text-xs text-white/60 mb-1 block">Anything else we should know?</label>
           <textarea rows={3} value={f.message} onChange={e => setF({ ...f, message: e.target.value })} placeholder="Gate code, dog on property, specific concerns..."
             className="w-full bg-white/5 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white placeholder-white/25 resize-none focus:outline-none focus:border-red-500/50" />
-        </div>
+        </div>}
         <label className="flex items-start gap-2.5 p-3 rounded-xl bg-white/5 border border-white/10 cursor-pointer">
           <input type="checkbox" checked={smsOptIn} onChange={e => setSmsOptIn(e.target.checked)} className="mt-0.5 flex-shrink-0" />
           <span className="text-[11px] text-white/60 leading-relaxed">
@@ -184,7 +203,7 @@ export function LeadFormPage() {
           style={{ backgroundColor: btnColor, color: textColor }}
           className="w-full py-4 font-bold rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-90"
         >
-          {submitting ? "Submitting…" : "Get My Free Estimate →"}
+          {submitting ? "Submitting…" : buttonText}
         </button>
         {!smsOptIn && <div className="text-center text-[10px] text-yellow-400/70">Check the box above to submit</div>}
         <div className="text-center text-[10px] text-white/30">🔒 We never share your info · No spam</div>

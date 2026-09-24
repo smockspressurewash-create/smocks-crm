@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, uploadJobMedia } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, logOutboundSmsToInbox } from "../../lib/messaging";
 import { supabase } from "../../lib/supabase";
@@ -252,6 +252,44 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
   const leadBg = (settings as any)?.leadFormBgColor || "#0a0a0a";
   const leadBtn = (settings as any)?.leadFormButtonColor || "#dc2626";
   const leadText = (settings as any)?.leadFormTextColor || "#ffffff";
+  // FEATURE — "you can't edit the preview till you press preview and then
+  // get embed code... you should be able to customize the lead intake form
+  // as much as you want... choose to add your logo to it." Real text/logo/
+  // field customization, not just three colors — all plain, non-secret
+  // values (LeadFormPage.tsx deliberately never reads app_settings
+  // directly, see its own comment on why), carried the same way co/ph/bg/
+  // btn/text already are: as query params baked into the embed snippet.
+  const leadHeadline = (settings as any)?.leadFormHeadline || "Get a free estimate — we respond within 2 hours";
+  const leadButtonText = (settings as any)?.leadFormButtonText || "Get My Free Estimate →";
+  const leadThankYou = (settings as any)?.leadFormThankYou || "We'll call or text you within 2 hours to schedule your free estimate.";
+  const leadLogoUrl = (settings as any)?.leadFormLogoUrl || "";
+  const leadShowAddress = (settings as any)?.leadFormShowAddress !== false;
+  const leadShowService = (settings as any)?.leadFormShowService !== false;
+  const leadShowMessage = (settings as any)?.leadFormShowMessage !== false;
+  const [uploadingLogo, setUploadingLogo] = useState(false);
+  const uploadLeadFormLogo = async (file: File) => {
+    setUploadingLogo(true);
+    try {
+      const url = await uploadJobMedia(file, `leadform-logo/${ownerId}.${(file.name.split(".").pop() || "png")}`, file.type);
+      if (!url) { toast?.("Logo upload failed — try again", "red"); return; }
+      setSettings?.((s: any) => ({ ...s, leadFormLogoUrl: url }));
+      toast?.("Logo added ✓", "green");
+    } finally {
+      setUploadingLogo(false);
+    }
+  };
+
+  // ITEM 1 — owner-set colors (and now text/logo/field toggles) ride along
+  // as plain, non-secret query params; LeadFormPage.tsx reads and applies
+  // them, same pattern as co/ph. Lifted to component scope (was only
+  // computed inside the old embedOpen-gated IIFE) so both the Customize
+  // panel and the embed-code snippet share one source of truth.
+  // BUG FIX — this embed URL never carried which business the lead belongs
+  // to (oid=). Harmless when this was truly single-tenant, but once RLS
+  // went owner_id-scoped there was no way for the public #/lead-form page
+  // to know whose account to save the lead under.
+  const embedUrl = `${window.location.origin}${window.location.pathname}#/lead-form?oid=${encodeURIComponent(ownerId)}&co=${encodeURIComponent(companyName)}&ph=${encodeURIComponent(settings?.companyPhone || "")}&bg=${encodeURIComponent(leadBg)}&btn=${encodeURIComponent(leadBtn)}&text=${encodeURIComponent(leadText)}&headline=${encodeURIComponent(leadHeadline)}&btntext=${encodeURIComponent(leadButtonText)}&thankyou=${encodeURIComponent(leadThankYou)}&logo=${encodeURIComponent(leadLogoUrl)}&showaddr=${leadShowAddress ? 1 : 0}&showsvc=${leadShowService ? 1 : 0}&shownote=${leadShowMessage ? 1 : 0}`;
+  const embedHtml = `<!-- ${companyName} — Request a Quote -->\n<iframe\n  src="${embedUrl}"\n  width="100%"\n  height="720"\n  frameborder="0"\n  style="border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,0.15)"\n  title="Request a Quote"\n></iframe>`;
 
   return (
     <div className="space-y-5">
@@ -260,14 +298,71 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
         <div className="flex items-start justify-between flex-wrap gap-3">
           <div>
             <div className="flex items-center gap-2 mb-1"><FileImage size={16} className="text-blue-400" /><h3 className="font-bold text-lg">Lead Intake Form</h3></div>
-            <p className="text-xs text-white/60 max-w-lg">New leads from your website land here and auto-create a customer record in the CRM. Preview the customer-facing form, then embed the code on your site.</p>
+            <p className="text-xs text-white/60 max-w-lg">New leads from your website land here and auto-create a customer record in the CRM. Preview and customize the form, then embed the code on your site.</p>
           </div>
           <div className="flex items-center gap-2">
-            <GBtn variant="ghost" onClick={() => setPreview(!preview)} className="!text-xs"><Globe size={12} className="inline mr-1" />{preview ? "Hide Form" : "Preview Form"}</GBtn>
+            <GBtn variant="ghost" onClick={() => setPreview(!preview)} className="!text-xs"><Globe size={12} className="inline mr-1" />{preview ? "Hide Form" : "Preview & Edit Form"}</GBtn>
             <GBtn onClick={() => setEmbedOpen(o => !o)} className="!text-xs"><Copy size={12} className="inline mr-1" />Get Embed Code</GBtn>
           </div>
         </div>
       </Glass>
+
+      {/* BUG FIX (user report) — "you can't edit the preview till you press
+          preview and then get embed code... you should have an edit button
+          right then and there... be able to customize the lead intake form
+          as much as you want... choose to add your logo." Every editing
+          control (colors, headline/button/thank-you text, logo, which
+          optional fields show) now lives here, visible the moment Preview
+          is on — not gated behind a second, separate "Get Embed Code"
+          click. First/Last name and Phone always stay (the lead is
+          unusable without them); Address/Service/Message can be toggled
+          off for a shorter form. */}
+      {preview && (
+        <Glass className="p-5 space-y-4">
+          <div className="text-sm font-semibold">Customize your form</div>
+          <div className="grid md:grid-cols-3 gap-4">
+            <div>
+              <label className="text-[10px] text-white/50 mb-1 block">Background color</label>
+              <input type="color" value={leadBg} onChange={(e: any) => setSettings?.((s: any) => ({ ...s, leadFormBgColor: e.target.value }))} className="w-full h-8 rounded-lg bg-transparent cursor-pointer" />
+            </div>
+            <div>
+              <label className="text-[10px] text-white/50 mb-1 block">Buttons / header color</label>
+              <input type="color" value={leadBtn} onChange={(e: any) => setSettings?.((s: any) => ({ ...s, leadFormButtonColor: e.target.value }))} className="w-full h-8 rounded-lg bg-transparent cursor-pointer" />
+            </div>
+            <div>
+              <label className="text-[10px] text-white/50 mb-1 block">Text color</label>
+              <input type="color" value={leadText} onChange={(e: any) => setSettings?.((s: any) => ({ ...s, leadFormTextColor: e.target.value }))} className="w-full h-8 rounded-lg bg-transparent cursor-pointer" />
+            </div>
+          </div>
+          <div>
+            <label className="text-[10px] text-white/50 mb-1 block">Logo (shown next to your company name)</label>
+            <div className="flex items-center gap-3">
+              {leadLogoUrl ? <img src={leadLogoUrl} alt="Logo" className="w-12 h-12 object-contain rounded-lg bg-black/40 border border-white/10 p-1" /> : <div className="w-12 h-12 rounded-lg bg-black/40 border border-white/10 flex items-center justify-center text-white/30 text-xl flex-shrink-0">🏢</div>}
+              <label className="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-xs text-white/70 hover:text-white cursor-pointer transition">
+                {uploadingLogo ? "Uploading…" : leadLogoUrl ? "Replace" : "Upload logo"}
+                <input type="file" accept="image/*" className="hidden" disabled={uploadingLogo} onChange={e => { const file = e.target.files?.[0]; if (file) uploadLeadFormLogo(file); e.target.value = ""; }} />
+              </label>
+              {leadLogoUrl && <button onClick={() => setSettings?.((s: any) => ({ ...s, leadFormLogoUrl: "" }))} className="text-[11px] text-red-400 hover:text-red-300">Remove</button>}
+            </div>
+          </div>
+          <div className="grid md:grid-cols-2 gap-4">
+            <div><label className="text-[10px] text-white/50 mb-1 block">Subheadline</label><GInput value={leadHeadline} onChange={(e: any) => setSettings?.((s: any) => ({ ...s, leadFormHeadline: e.target.value }))} className="!text-xs" /></div>
+            <div><label className="text-[10px] text-white/50 mb-1 block">Button text</label><GInput value={leadButtonText} onChange={(e: any) => setSettings?.((s: any) => ({ ...s, leadFormButtonText: e.target.value }))} className="!text-xs" /></div>
+          </div>
+          <div><label className="text-[10px] text-white/50 mb-1 block">Thank-you message (after they submit)</label><GInput value={leadThankYou} onChange={(e: any) => setSettings?.((s: any) => ({ ...s, leadFormThankYou: e.target.value }))} className="!text-xs" /></div>
+          <div>
+            <label className="text-[10px] text-white/50 mb-2 block">Optional fields to include</label>
+            <div className="flex flex-wrap gap-4">
+              {[["leadFormShowAddress", "Property Address", leadShowAddress], ["leadFormShowService", "Service Needed", leadShowService], ["leadFormShowMessage", "Anything else? (notes)", leadShowMessage]].map(([key, label, val]) => (
+                <label key={key as string} className="flex items-center gap-2 text-xs text-white/70 cursor-pointer">
+                  <input type="checkbox" checked={val as boolean} onChange={(e: any) => setSettings?.((s: any) => ({ ...s, [key as string]: e.target.checked }))} />
+                  {label}
+                </label>
+              ))}
+            </div>
+          </div>
+        </Glass>
+      )}
 
       {/* FIX 18 — the old "Copy Embed" button silently copied an iframe
           pointed at a hardcoded, nonexistent URL (https://smocks.com/lead-form
@@ -276,48 +371,23 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
           ever reach the CRM. #/lead-form is now a real public route
           (LeadFormPage.tsx) that inserts straight into Supabase's customers
           table with no owner session required. */}
-      {embedOpen && (() => {
-        // ITEM 1 — owner-set colors ride along as bg/btn/text query params;
-        // LeadFormPage.tsx reads and applies them, same non-secret pattern as
-        // co/ph above.
-        // BUG FIX — this embed URL never carried which business the lead
-        // belongs to (oid=). Harmless when this was truly single-tenant, but
-        // once RLS went owner_id-scoped there was no way for the public
-        // #/lead-form page to know whose account to save the lead under.
-        const embedUrl = `${window.location.origin}${window.location.pathname}#/lead-form?oid=${encodeURIComponent(ownerId)}&co=${encodeURIComponent(companyName)}&ph=${encodeURIComponent(settings?.companyPhone || "")}&bg=${encodeURIComponent(leadBg)}&btn=${encodeURIComponent(leadBtn)}&text=${encodeURIComponent(leadText)}`;
-        const embedHtml = `<!-- ${companyName} — Request a Quote -->\n<iframe\n  src="${embedUrl}"\n  width="100%"\n  height="720"\n  frameborder="0"\n  style="border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,0.15)"\n  title="Request a Quote"\n></iframe>`;
-        return (
-          <Glass className="p-5 space-y-3">
-            <div className="text-sm font-semibold">Embed on your website</div>
-            <div className="text-xs text-white/60 leading-relaxed">
-              Paste this snippet into your website's HTML (most site builders — Wix, Squarespace, WordPress — have an "Embed HTML" or "Custom Code" block). Every submission creates a customer record in this CRM automatically — no setup needed on your end.
-            </div>
-            <div className="grid grid-cols-3 gap-3">
-              <div>
-                <label className="text-[10px] text-white/50 mb-1 block">Background</label>
-                <input type="color" value={leadBg} onChange={(e: any) => setSettings?.((s: any) => ({ ...s, leadFormBgColor: e.target.value }))} className="w-full h-8 rounded-lg bg-transparent cursor-pointer" />
-              </div>
-              <div>
-                <label className="text-[10px] text-white/50 mb-1 block">Buttons / Header</label>
-                <input type="color" value={leadBtn} onChange={(e: any) => setSettings?.((s: any) => ({ ...s, leadFormButtonColor: e.target.value }))} className="w-full h-8 rounded-lg bg-transparent cursor-pointer" />
-              </div>
-              <div>
-                <label className="text-[10px] text-white/50 mb-1 block">Text</label>
-                <input type="color" value={leadText} onChange={(e: any) => setSettings?.((s: any) => ({ ...s, leadFormTextColor: e.target.value }))} className="w-full h-8 rounded-lg bg-transparent cursor-pointer" />
-              </div>
-            </div>
-            <pre className="text-[11px] bg-black/60 border border-white/10 rounded-xl p-3 overflow-x-auto whitespace-pre-wrap break-all text-white/80">{embedHtml}</pre>
-            <div className="flex gap-2">
-              <GBtn onClick={() => { navigator.clipboard?.writeText(embedHtml).catch(() => {}); toast("Embed code copied! Paste into your website's HTML ✓"); }} className="!text-xs">
-                <Copy size={12} className="inline mr-1" />Copy Code
-              </GBtn>
-              <GBtn variant="ghost" onClick={() => window.open(embedUrl, "_blank", "noopener,noreferrer")} className="!text-xs">
-                <ExternalLink size={12} className="inline mr-1" />Open Form in New Tab
-              </GBtn>
-            </div>
-          </Glass>
-        );
-      })()}
+      {embedOpen && (
+        <Glass className="p-5 space-y-3">
+          <div className="text-sm font-semibold">Embed on your website</div>
+          <div className="text-xs text-white/60 leading-relaxed">
+            Paste this snippet into your website's HTML (most site builders — Wix, Squarespace, WordPress — have an "Embed HTML" or "Custom Code" block). Every submission creates a customer record in this CRM automatically — no setup needed on your end.
+          </div>
+          <pre className="text-[11px] bg-black/60 border border-white/10 rounded-xl p-3 overflow-x-auto whitespace-pre-wrap break-all text-white/80">{embedHtml}</pre>
+          <div className="flex gap-2">
+            <GBtn onClick={() => { navigator.clipboard?.writeText(embedHtml).catch(() => {}); toast("Embed code copied! Paste into your website's HTML ✓"); }} className="!text-xs">
+              <Copy size={12} className="inline mr-1" />Copy Code
+            </GBtn>
+            <GBtn variant="ghost" onClick={() => window.open(embedUrl, "_blank", "noopener,noreferrer")} className="!text-xs">
+              <ExternalLink size={12} className="inline mr-1" />Open Form in New Tab
+            </GBtn>
+          </div>
+        </Glass>
+      )}
 
       {/* Incoming Leads — sortable/filterable list of customers rows still in
           the "lead" pipeline stage (see comment above allLeads), with row
@@ -413,9 +483,12 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
       {preview && (
         <div className="rounded-2xl overflow-hidden border border-white/10 shadow-2xl">
           {/* Form header */}
-          <div className="px-6 py-5" style={{ background: leadBtn }}>
-            <div className="font-bold text-lg" style={{ color: leadText }}>{companyName}</div>
-            <div className="text-xs mt-0.5 opacity-80" style={{ color: leadText }}>Get a free estimate — we respond within 2 hours</div>
+          <div className="px-6 py-5 flex items-center gap-3" style={{ background: leadBtn }}>
+            {leadLogoUrl && <img src={leadLogoUrl} alt="" className="w-10 h-10 object-contain rounded-lg bg-white/10 p-1 flex-shrink-0" />}
+            <div>
+              <div className="font-bold text-lg" style={{ color: leadText }}>{companyName}</div>
+              <div className="text-xs mt-0.5 opacity-80" style={{ color: leadText }}>{leadHeadline}</div>
+            </div>
           </div>
 
           {/* Form body */}
@@ -424,7 +497,7 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
               <div className="text-center py-8 space-y-3">
                 <div className="text-4xl">🎉</div>
                 <div className="text-xl font-bold text-green-400">We got your request!</div>
-                <div className="text-white/60 text-sm">We'll call or text you within 2 hours to schedule your free estimate.</div>
+                <div className="text-white/60 text-sm">{leadThankYou}</div>
               </div>
             ) : (
               <div className="space-y-4 max-w-lg mx-auto">
@@ -434,8 +507,8 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
                 </div>
                 <div><label className="text-xs text-white/60 mb-1 block">Phone Number *</label><GInput type="tel" value={f.phone} onChange={e => setF({ ...f, phone: e.target.value })} placeholder="(717) 555-0100" /></div>
                 <div><label className="text-xs text-white/60 mb-1 block">Email</label><GInput type="email" value={f.email} onChange={e => setF({ ...f, email: e.target.value })} placeholder="jen@email.com" /></div>
-                <div><label className="text-xs text-white/60 mb-1 block">Property Address *</label><AddressAutocomplete value={f.address} onChange={v => setF({ ...f, address: v })} mapsKey={settings.googleMapsKey || (settings as any).mapsKey || ""} placeholder="412 Oak Ridge Ln, York PA" knownAddresses={customers.map((c: any) => c.address).filter(Boolean)} /></div>
-                <div className="grid grid-cols-2 gap-3">
+                {leadShowAddress && <div><label className="text-xs text-white/60 mb-1 block">Property Address</label><AddressAutocomplete value={f.address} onChange={v => setF({ ...f, address: v })} mapsKey={settings.googleMapsKey || (settings as any).mapsKey || ""} placeholder="412 Oak Ridge Ln, York PA" knownAddresses={customers.map((c: any) => c.address).filter(Boolean)} /></div>}
+                {leadShowService && <div className="grid grid-cols-2 gap-3">
                   <div><label className="text-xs text-white/60 mb-1 block">Service Needed</label>
                     <GSel value={f.service} onChange={e => setF({ ...f, service: e.target.value })} className="!text-xs">
                       <option value="" className="bg-black">Select service…</option>
@@ -444,8 +517,8 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
                     </GSel>
                   </div>
                   <div><label className="text-xs text-white/60 mb-1 block">Est. Sq Footage</label><GInput type="number" value={f.sqFootage} onChange={e => setF({ ...f, sqFootage: e.target.value })} placeholder="2000" /></div>
-                </div>
-                <div><label className="text-xs text-white/60 mb-1 block">Anything else we should know?</label><GTxt rows={3} value={f.message} onChange={e => setF({ ...f, message: e.target.value })} placeholder="Gate code, dog on property, specific concerns..." className="!text-xs" /></div>
+                </div>}
+                {leadShowMessage && <div><label className="text-xs text-white/60 mb-1 block">Anything else we should know?</label><GTxt rows={3} value={f.message} onChange={e => setF({ ...f, message: e.target.value })} placeholder="Gate code, dog on property, specific concerns..." className="!text-xs" /></div>}
                 <div>
                   <label className="text-xs text-white/60 mb-1 block">How did you find us?</label>
                   <GSel value={f.source} onChange={e => setF({ ...f, source: e.target.value })} className="!text-xs">
@@ -461,11 +534,11 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
                 </div>
                 <button
                   onClick={handleSubmit}
-                  disabled={!f.firstName || !f.phone || !f.address || submitting}
+                  disabled={!f.firstName || !f.phone || (leadShowAddress && !f.address) || submitting}
                   style={{ background: leadBtn, color: leadText }}
                   className="w-full py-4 font-bold rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {submitting ? "Submitting…" : "Get My Free Estimate →"}
+                  {submitting ? "Submitting…" : leadButtonText}
                 </button>
                 <div className="text-center text-[10px] opacity-50" style={{ color: leadText }}>🔒 We never share your info · No spam · Usually respond within 2 hours</div>
               </div>
