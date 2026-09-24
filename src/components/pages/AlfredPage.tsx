@@ -5154,26 +5154,52 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "can you undo that", "u
         // NORMAL send()/tool-calling conversation as if the owner had
         // typed it — see the BULK JOB IMPORT rules in the system prompt.
         const imageFiles = attachments.filter(a => !a.isPdf);
-        if (imageFiles.length === 0) {
-          appendMessage({ id: uid(), role: "alfred", content: "Bulk import works with image screenshots — attach one PDF at a time instead.", timestamp: Date.now() });
+        const pdfFiles = attachments.filter(a => a.isPdf);
+        // BUG FIX (user report) — "attach photos, files, screenshots, etc.
+        // and write the message with them and send them all at once —
+        // that wasn't working." A multi-select mixing images with a PDF
+        // used to silently drop every PDF here (only imageFiles ever got
+        // analyzed) — the PDF just vanished with no analysis and no error.
+        // Each PDF now gets its own single-document read, merged with the
+        // screenshot findings into one combined message.
+        let combinedFindings = "";
+        if (imageFiles.length > 0) {
+          const result: any = await callVisionModel({
+            messages: [{
+              role: "user",
+              content: [
+                ...imageFiles.map(a => ({ type: "image", source: { type: "base64", media_type: a.mediaType, data: a.base64 } })),
+                { type: "text", text: `You are Alfred, business assistant for a pressure-washing/trash-can-cleaning company. These ${imageFiles.length} screenshots contain job/order info — texts, a spreadsheet, a scheduling app, handwritten notes, anything. Extract EVERY separate job/order visible across ALL the images. For each one list: customer full name, phone number, address, the service/order details, the date and time (resolve relative wording like "today"/"tomorrow" against ${today()}), which employee (if any) is named as assigned, and the dollar amount. If a field isn't visible for a job, write "not given" for it rather than guessing. Number each job. In a final section, explicitly call out any two jobs that name the SAME employee at the same or overlapping date/time. Be thorough — do not skip any job visible in any image.` }
+              ]
+            }],
+            maxTokens: 3000,
+          }, 45000, "Screenshot analysis");
+          const extracted = (result.text || "").trim();
+          if (extracted) combinedFindings += `From the ${imageFiles.length} screenshot(s):\n${extracted}\n\n`;
+        }
+        for (const pdf of pdfFiles) {
+          try {
+            const result: any = await callVisionModel({
+              messages: [{
+                role: "user",
+                content: [
+                  { type: "document", source: { type: "base64", media_type: "application/pdf", data: pdf.base64 } },
+                  { type: "text", text: "You are Alfred, business assistant for a pressure-washing/trash-can-cleaning company. Transcribe the FULL relevant content of this document clearly and completely — customer/company name, address, phone/email if present, every service/scope item, dates, prices, and special instructions — so this can be scheduled or acted on without re-reading the file." }
+                ]
+              }],
+              maxTokens: 1500,
+            }, 30000, "File analysis", { pdf: true });
+            const reply = (result.text || "").trim();
+            if (reply) combinedFindings += `From the attached PDF "${pdf.file.name}":\n${reply}\n\n`;
+          } catch (e: any) {
+            combinedFindings += `Couldn't analyze the attached PDF "${pdf.file.name}" — ${e?.message || "unknown error"}.\n\n`;
+          }
+        }
+        if (!combinedFindings.trim()) {
+          appendMessage({ id: uid(), role: "alfred", content: "Couldn't find any usable info in those attachments.", timestamp: Date.now() });
           return;
         }
-        const result: any = await callVisionModel({
-          messages: [{
-            role: "user",
-            content: [
-              ...imageFiles.map(a => ({ type: "image", source: { type: "base64", media_type: a.mediaType, data: a.base64 } })),
-              { type: "text", text: `You are Alfred, business assistant for a pressure-washing/trash-can-cleaning company. These ${imageFiles.length} screenshots contain job/order info — texts, a spreadsheet, a scheduling app, handwritten notes, anything. Extract EVERY separate job/order visible across ALL the images. For each one list: customer full name, phone number, address, the service/order details, the date and time (resolve relative wording like "today"/"tomorrow" against ${today()}), which employee (if any) is named as assigned, and the dollar amount. If a field isn't visible for a job, write "not given" for it rather than guessing. Number each job. In a final section, explicitly call out any two jobs that name the SAME employee at the same or overlapping date/time. Be thorough — do not skip any job visible in any image.${caption ? `\n\nThe owner typed this along with the screenshots — it's a real instruction, factor it in (e.g. who to assign, what to do): "${caption}"` : ""}` }
-            ]
-          }],
-          maxTokens: 3000,
-        }, 45000, "Screenshot analysis");
-        const extracted = (result.text || "").trim();
-        if (!extracted) {
-          appendMessage({ id: uid(), role: "alfred", content: "Couldn't find any job/order info in those screenshots.", timestamp: Date.now() });
-          return;
-        }
-        await send(`Here's what I found in the ${imageFiles.length} screenshots I just sent you:\n\n${extracted}\n\nThese are new jobs to add to the CRM.${caption ? ` I also said: "${caption}" — do that.` : ""} Check for any scheduling conflicts or unclear ordering and ask me before creating anything — otherwise go ahead: create the customers and jobs, assign the employees, and set the price for each.`);
+        await send(`Here's what I found in what I just attached:\n\n${combinedFindings.trim()}\n\nThese may be new jobs to add to the CRM.${caption ? ` I also said: "${caption}" — do that.` : ""} Check for any scheduling conflicts or unclear ordering and ask me before creating anything — otherwise go ahead: create the customers and jobs, assign the employees, and set the price for each.`);
         return;
       }
 
