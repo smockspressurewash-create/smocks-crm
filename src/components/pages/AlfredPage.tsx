@@ -1736,9 +1736,109 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     return null;
   };
 
+  // FEATURE (user report) — "if I send a message and Alfred says it did
+  // something... it asks 'Hey, can you undo that?'... confirm... and then
+  // undoes it, regardless of whether it created a new customer, scheduled
+  // new jobs, etc." Tracks the last reversible action Alfred actually took
+  // in THIS conversation so a plain "undo that" (after the model confirms
+  // with the owner first — see the UNDO REQUESTS system-prompt rule below)
+  // can really reverse it: delete the row it created, or restore the field
+  // it changed. Deliberately scoped to what's cleanly reversible — a sent
+  // SMS/email can't be unsent, so those tools are never listed here.
+  const lastActionsRef = useRef<Array<{ label: string; undo: () => Promise<{ success: boolean; message: string }> }>>([]);
+  const UNDO_HANDLERS: Record<string, {
+    label: (result: any) => string;
+    before?: (inputs: any) => any;
+    undo: (result: any, inputs: any, before: any) => Promise<{ success: boolean; message: string }>;
+  }> = {
+    create_customer: {
+      label: (result) => `creating the customer ${result?.customer?.firstName || ""} ${result?.customer?.lastName || ""}`.trim(),
+      undo: async (result) => {
+        if (!result?.customer?.id || result?.note) return { success: false, message: "That customer already existed before this — nothing to delete." };
+        const { data, error } = await (supabase as any).from("customers").delete().eq("id", result.customer.id).select("id");
+        if (error || !Array.isArray(data) || data.length === 0) return { success: false, message: "Couldn't delete the customer — " + (error?.message || "no matching row") };
+        setCustomers((prev: any[]) => prev.filter((x: any) => x.id !== result.customer.id));
+        return { success: true, message: `Deleted customer ${result.customer.firstName} ${result.customer.lastName}.` };
+      },
+    },
+    schedule_job: {
+      label: (result) => `scheduling the job for ${result?.customer || "that customer"}${result?.date ? " on " + result.date : ""}`,
+      undo: async (result) => {
+        if (!result?.jobId) return { success: false, message: "No job id was recorded for that action." };
+        const { data, error } = await (supabase as any).from("jobs").delete().eq("id", result.jobId).select("id");
+        if (error || !Array.isArray(data) || data.length === 0) return { success: false, message: "Couldn't delete the job — " + (error?.message || "no matching row") };
+        setJobs((prev: any[]) => prev.filter((x: any) => x.id !== result.jobId));
+        return { success: true, message: "Deleted that job." };
+      },
+    },
+    create_estimate: {
+      label: (result) => `creating the estimate for ${result?.customer || "that customer"}`,
+      undo: async (result) => {
+        if (!result?.estimateId) return { success: false, message: "No estimate id was recorded for that action." };
+        const { data, error } = await (supabase as any).from("estimates").delete().eq("id", result.estimateId).select("id");
+        if (error || !Array.isArray(data) || data.length === 0) return { success: false, message: "Couldn't delete the estimate — " + (error?.message || "no matching row") };
+        setEstimates((prev: any[]) => prev.filter((x: any) => x.id !== result.estimateId));
+        return { success: true, message: "Deleted that estimate." };
+      },
+    },
+    create_invoice: {
+      label: (result) => `creating the invoice for ${result?.customer || "that customer"}`,
+      undo: async (result) => {
+        if (!result?.invoiceId) return { success: false, message: "No invoice id was recorded for that action." };
+        const { data, error } = await (supabase as any).from("estimates").delete().eq("id", result.invoiceId).select("id");
+        if (error || !Array.isArray(data) || data.length === 0) return { success: false, message: "Couldn't delete the invoice — " + (error?.message || "no matching row") };
+        setEstimates((prev: any[]) => prev.filter((x: any) => x.id !== result.invoiceId));
+        return { success: true, message: "Deleted that invoice." };
+      },
+    },
+    assign_employee: {
+      label: (result) => `assigning ${result?.employee || "that employee"} to the job`,
+      undo: async (result) => {
+        if (!result?.jobId || !result?.employeeId) return { success: false, message: "No job/employee id was recorded for that action." };
+        const j = await findJobFresh({ jobId: result.jobId });
+        if (!j) return { success: false, message: "Couldn't find that job anymore." };
+        const newCrew = (j.crew || []).filter((id: string) => id !== result.employeeId);
+        const newCrewAssignedAt = { ...(j.crewAssignedAt || {}) };
+        delete newCrewAssignedAt[result.employeeId];
+        const { error } = await (supabase as any).from("jobs").update({ crew: newCrew, crewAssignedAt: newCrewAssignedAt }).eq("id", result.jobId).select("id");
+        if (error) return { success: false, message: "Couldn't revert the assignment — " + error.message };
+        setJobs((prev: any[]) => prev.map((x: any) => x.id === result.jobId ? { ...x, crew: newCrew, crewAssignedAt: newCrewAssignedAt } : x));
+        return { success: true, message: `Removed ${result.employee || "that employee"} from the job.` };
+      },
+    },
+    reschedule_job: {
+      label: (result) => `rescheduling the job to ${result?.newDate || "that date"}`,
+      before: (inputs) => { const j = jobs.find((x: any) => x.id === inputs.jobId); return j ? { scheduledDate: j.scheduledDate, scheduledTime: j.scheduledTime } : null; },
+      undo: async (result, _inputs, before) => {
+        if (!before || !result?.jobId) return { success: false, message: "The previous date wasn't captured, so this can't be safely reverted." };
+        const { error } = await (supabase as any).from("jobs").update(before).eq("id", result.jobId).select("id");
+        if (error) return { success: false, message: "Couldn't revert the reschedule — " + error.message };
+        setJobs((prev: any[]) => prev.map((x: any) => x.id === result.jobId ? { ...x, ...before } : x));
+        return { success: true, message: `Moved the job back to ${before.scheduledDate}${before.scheduledTime ? " at " + before.scheduledTime : ""}.` };
+      },
+    },
+    cancel_job: {
+      label: () => `cancelling that job`,
+      before: (inputs) => { const j = jobs.find((x: any) => x.id === inputs.jobId); return j ? { status: j.status } : null; },
+      undo: async (result, _inputs, before) => {
+        if (!before || !result?.jobId) return { success: false, message: "The previous status wasn't captured, so this can't be safely reverted." };
+        const { error } = await (supabase as any).from("jobs").update({ status: before.status }).eq("id", result.jobId).select("id");
+        if (error) return { success: false, message: "Couldn't un-cancel the job — " + error.message };
+        setJobs((prev: any[]) => prev.map((x: any) => x.id === result.jobId ? { ...x, status: before.status } : x));
+        return { success: true, message: "Un-cancelled that job." };
+      },
+    },
+  };
+
   const executeTool = async (name, inputs) => {
     const __t0 = Date.now();
     console.log("[AlfredTool] → call:", name, "input:", inputs);
+    // Undo — snapshot whatever "before" state a reversible tool needs
+    // BEFORE it runs (e.g. a job's date/status prior to reschedule/cancel).
+    // Must happen before executeToolCore, not after — by then the row's
+    // already changed and there's nothing left to snapshot.
+    const __undoHandler = UNDO_HANDLERS[name];
+    const __before = __undoHandler?.before ? __undoHandler.before(inputs) : undefined;
     let __result;
     try {
       const cap = ALFRED_TOOL_CAPABILITY[name];
@@ -1767,6 +1867,12 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       }
     } catch (err: any) {
       __result = { error: err?.message || String(err) };
+    }
+    // Undo — a successful reversible action gets pushed onto the stack so
+    // a later confirmed "undo that" (see undo_last_action) can reverse it.
+    if (__undoHandler && __result && !__result.error && __result.success) {
+      lastActionsRef.current.push({ label: __undoHandler.label(__result), undo: () => __undoHandler.undo(__result, inputs, __before) });
+      if (lastActionsRef.current.length > 8) lastActionsRef.current.shift();
     }
     const __ms = Date.now() - __t0;
     if (__result && __result.error) {
@@ -3349,6 +3455,18 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (filtered.length === 0) return { success: true, memories: [], summary: q ? `Nothing saved matching "${inputs.search}".` : "Nothing saved yet." };
           return { success: true, count: filtered.length, memories: filtered.slice(0, 30).map((m: any) => ({ text: m.text, category: m.category })) };
         }
+        case "undo_last_action": {
+          const entry = lastActionsRef.current[lastActionsRef.current.length - 1];
+          if (!entry) return { error: "Nothing to undo — there's no reversible action recorded in this conversation." };
+          // Pop before running it — if the undo itself throws, don't leave
+          // a broken entry sitting on the stack for a second attempt to
+          // "undo" whatever partial state the failed reversal left behind.
+          lastActionsRef.current = lastActionsRef.current.slice(0, -1);
+          const r = await entry.undo();
+          if (!r.success) return { error: r.message };
+          toast(r.message);
+          return { success: true, message: r.message, undone: entry.label };
+        }
         case "set_vacation_mode": {
           if (inputs.active === false) {
             setSettings((prev: any) => ({ ...prev, vacationMode: { ...(prev?.vacationMode || {}), active: false } }));
@@ -4350,6 +4468,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       name: "upload_to_drive",
       description: "Upload a file to the user's Google Drive. Only works if Google Drive is connected.",
       input_schema: { type: "object", properties: { filename: { type: "string" }, folder: { type: "string" }, content: { type: "string" } }, required: ["filename"] }
+    },
+    {
+      name: "undo_last_action",
+      description: "Reverses the single most recent reversible action YOU (Alfred) took in this conversation — creating a customer, scheduling a job, creating an estimate/invoice, assigning crew, rescheduling, or cancelling a job. ALWAYS confirm first: restate exactly what you're about to undo in plain English ('Wait — you want me to undo scheduling the pressure washing job for Sarah Miller on 2026-09-30?') and wait for a clear yes before calling this. Only call it after that confirmation. If there's nothing undoable, it returns an error saying so — tell the user plainly rather than pretending something was undone.",
+      input_schema: { type: "object", properties: {} }
     }
   ];
 
@@ -4584,7 +4707,9 @@ Once saved, a remembered preference or the current autonomy level is a BINDING c
 
 CUSTOMER TEXTING — PER-CUSTOMER SETTINGS ARE REAL, NOT ADVISORY: a customer's smsOptOut flag (visible on search_customers/get_customer_details results) is enforced by every texting tool now — attempting to SMS an opted-out customer returns an error/warning instead of sending, so you will never silently succeed at texting someone who opted out. Still check it yourself before calling a texting tool when you already have the customer's record in context this turn: don't make the owner discover the opt-out from a tool error you could have already told them about. If a customer's "notes" field mentions a communication preference ("prefers email," "call, don't text," "spouse handles texts") treat that the same as a standing instruction for that one customer — follow it even if the owner didn't restate it in this conversation, and mention it if it changes what you're about to do (e.g. "Sarah's notes say she prefers email, so I sent it that way instead of texting — let me know if you want it texted anyway").
 
-NAME MATCHING: if a tool result comes back with "error": "Customer not found" or "Employee not found" and includes a "suggestions" array, ask the user "Do you mean [name], or [name]?" using those exact suggested names — never ask a generic clarifying question like "who do you mean?" when real candidate names are available.`;
+NAME MATCHING: if a tool result comes back with "error": "Customer not found" or "Employee not found" and includes a "suggestions" array, ask the user "Do you mean [name], or [name]?" using those exact suggested names — never ask a generic clarifying question like "who do you mean?" when real candidate names are available.
+
+UNDO REQUESTS: if the owner says "undo that", "undo it", "can you undo that", "undo the last thing", or similar — right after you (Alfred) just reported doing something (created a customer, scheduled a job, created an estimate/invoice, assigned crew, rescheduled, or cancelled a job) — do NOT call undo_last_action immediately. First confirm exactly what you're about to reverse in plain English ("Wait — you want me to undo scheduling that job for Sarah on 2026-09-30?") and wait for a clear yes. Only once they confirm, call undo_last_action. If they say no, or clarify they meant something else, don't call it. undo_last_action only reverses the ONE most recent reversible action from THIS conversation — if the owner asks to undo something from much earlier or a different chat, tell them that's outside what you can automatically reverse and ask what they'd like changed instead.`;
       const baseSystemPrompt = getPersonality(activePersonality).systemPrompt + dateContext + memoryContext + crossChannelContext + voiceSandboxContext + businessContext + workOrderStyleContext + vacationContext + googleStatus + voiceModeContext + fileContext;
       const systemPrompt = baseSystemPrompt + toolHint;
       // BUG FIX (root cause, not another pattern-match) — a non-tool-capable
@@ -4711,6 +4836,16 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
           const localTraces = [];
           while (rounds < 5) {
             rounds++;
+            // BUG FIX (user report) — "you literally still can't stop
+            // Alfred from responding mid-conversation." abortController
+            // was only ever checked inside the catch block below, i.e.
+            // only while a model fetch was actually the thing in flight.
+            // Most of a tool-calling turn's time is spent EXECUTING tools
+            // (real Supabase calls, not abortable) or between rounds —
+            // pressing Stop during any of that silently did nothing, the
+            // loop kept going, and the real reply still showed up. Re-check
+            // at the top of every round too.
+            if (abortController.signal.aborted) { stopped = true; break; }
             const toolsForModel = MODELS_MAP[mid]?.supportsTools ? toolDefinitions : undefined;
             // BUG FIX — callModel had NO timeout at all. If a provider's API
             // just hangs (no response, no error — happens for real on flaky
@@ -4788,10 +4923,16 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
                 return { type: "tool_result", tool_use_id: tu.id, content: JSON.stringify(r) };
               }));
               localConv.push({ role: "user", content: toolResults });
+              // Re-check right after tool execution too — the tools
+              // themselves can take real time (Supabase writes), and a
+              // Stop pressed during that window needs to actually land
+              // before the next model round fires.
+              if (abortController.signal.aborted) { stopped = true; break; }
               continue;
             }
             break;
           }
+          if (stopped) break;
           // Success: commit
           finalText = localFinal;
           toolTraces.push(...localTraces);
@@ -4883,11 +5024,14 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
       // just aren't concatenated into the displayed text anymore. A failover
       // is the one thing still worth surfacing, since it explains why the
       // response might read differently than usual.
-      // BUG FIX (user report) — "Alfred should never respond with asterisks."
-      // The system prompt now tells every model not to use markdown, but a
-      // model can still ignore that — strip stray **bold**/*italic* markers
-      // defensively so raw asterisks never reach the plain-text chat bubble.
-      let displayText = finalText.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\*([^*]+)\*/g, "$1");
+      // BUG FIX (user report) — "Alfred still responds with asterisks."
+      // Paired-marker stripping (**bold**/*italic*) missed markdown bullet
+      // lists ("* Point one\n* Point two...") — an ODD number of single
+      // asterisks in the text left one unpaired and un-stripped, which is
+      // exactly the inconsistent "sometimes still has one" symptom. The
+      // owner's ask is literal — never any asterisk — so after unwrapping
+      // real bold/italic text, blanket-remove every asterisk left over.
+      let displayText = finalText.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\*([^*]+)\*/g, "$1").replace(/\*/g, "");
       if (modelUsed !== (settings.activeModel || "claude") && !failoverNoticeShownRef.current.has(activeId)) {
         failoverNoticeShownRef.current.add(activeId);
         displayText += "\n\n⚡ Failed over to " + (MODELS_MAP[modelUsed]?.name || modelUsed);
@@ -5778,7 +5922,7 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
                         </div>
                       )}
                       <div className={"px-4 py-2.5 rounded-2xl text-sm whitespace-pre-wrap leading-relaxed inline-block " + (isUser ? "bg-gradient-to-br from-red-600 to-red-800 text-white rounded-br-sm float-right" : isError ? "bg-red-950/60 border border-red-700/50 rounded-bl-sm text-red-200" : "bg-black/50 border border-red-900/30 rounded-bl-sm text-white/90")}>
-                        {isUser ? m.content : String(m.content || "").split("\n").filter(l => l.trim() !== "---").join("\n").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\*([^*]+)\*/g, "$1").replace(/^#{1,6} /gm, "").trim()}
+                        {isUser ? m.content : String(m.content || "").split("\n").filter(l => l.trim() !== "---").join("\n").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\*([^*]+)\*/g, "$1").replace(/\*/g, "").replace(/^#{1,6} /gm, "").trim()}
                       </div>
                       {/* FEATURE — receipt → expense. A clickable button
                           instead of the old "say 'yes log it'" magic phrase,

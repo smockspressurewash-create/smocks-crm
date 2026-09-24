@@ -1160,7 +1160,16 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
             </div>
           )}
         </div>
-        <div className="flex-1 overflow-y-auto">
+        {/* BUG FIX (user report) — "I can slide the messages to the right,
+            moving the conversation off screen... locked so you can't move
+            it left or right." On mobile Safari/Chrome a horizontal swipe
+            over scrollable content is read as a "swipe back" page-navigation
+            gesture, sliding the whole view off screen — touch-action:pan-y
+            restricts touch scrolling here to vertical only, and
+            overscroll-x-none stops any residual horizontal rubber-banding,
+            so a swipe can never be mistaken for that gesture. Vertical
+            scroll/tap-to-open are untouched. */}
+        <div className="flex-1 overflow-y-auto overscroll-x-none [touch-action:pan-y]">
           {filteredThreads.length === 0 && <div className="text-center py-10 text-xs text-white/40">No conversations{search || unreadOnly || channelView !== "all" ? " match these filters" : " yet"}</div>}
           {filteredThreads.map(t => {
             const last = t.messages[t.messages.length - 1];
@@ -1236,9 +1245,15 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
 
       {/* Conversation panel */}
       {activeThread ? (
-        <div className="flex-1 flex flex-col min-w-0 min-h-0">
-          {/* Header */}
-          <div className="flex items-center gap-3 p-3 border-b border-red-900/30 bg-black/40">
+        <div className="flex-1 flex flex-col min-w-0 min-h-0 overscroll-x-none [touch-action:pan-y]">
+          {/* Header — BUG FIX (user report) — "formatting at the top bar...
+              is weird" on mobile: the action buttons (View CRM/Convert to
+              Lead, etc.) used to squeeze onto the same row as the
+              avatar/name, wrapping mid-row and overlapping. flex-wrap on
+              the header itself plus a full-width button row on mobile
+              (w-full md:w-auto below) drops them cleanly onto their own
+              line instead. */}
+          <div className="flex flex-wrap items-center gap-3 p-3 border-b border-red-900/30 bg-black/40">
             {/* BUG (mobile) — this button sits near enough to the left edge that
                 its touches could fall inside App.tsx's sidebar edge-swipe zone
                 (see EDGE_ZONE_PX there); stopPropagation on touchstart/touchmove
@@ -1283,7 +1298,7 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
                 {activeThread.contactEmail && <span>{activeThread.contactEmail}</span>}
               </div>
             </div>
-            <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-2 flex-wrap w-full md:w-auto">
               {findCustomer(activeThread) ? (
                 // BUG FIX (user report) — "pressing View CRM doesn't do
                 // anything." Had no onClick at all — not mobile-specific,
@@ -1296,7 +1311,7 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
             </div>
           </div>
           {/* Messages */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          <div className="flex-1 overflow-y-auto overscroll-x-none [touch-action:pan-y] p-4 space-y-3">
             {/* ISSUE 2 (round 6) — final safety net: dedupe at render time too,
                 so even a row that somehow still has duplicate entries (e.g.
                 loaded before this round's fix ran once to self-heal it via
