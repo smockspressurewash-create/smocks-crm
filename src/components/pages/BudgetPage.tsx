@@ -78,12 +78,78 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings = {} as AppSettings, toast }: { jobs?: any[]; estimates?: any[]; expenses?: any[]; settings?: AppSettings; toast?: any }) {
+export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings = {} as AppSettings, toast, ownerId = "" }: { jobs?: any[]; estimates?: any[]; expenses?: any[]; settings?: AppSettings; toast?: any; ownerId?: string }) {
   const [timeframe, setTimeframe] = useState("1y");
   const [budgetGoals, setBudgetGoals] = useState(() => {
     try { return JSON.parse(localStorage.getItem("smocks.budgetGoals") || "{}"); } catch { return {}; }
   });
   const [editGoal, setEditGoal] = useState(null); // { key, value }
+
+  // FEATURE — "there's no way to edit your budget stuff... manually adding
+  // things, manually subtracting things." Everything below was 100% derived
+  // from real jobs/expenses records — no way to log a one-off income (a
+  // cash tip not tied to a job, a reimbursement) or a manual adjustment.
+  // manual_budget_entries (migration 0097) is a plain income/expense line
+  // item, owner_id-scoped like every other table, folded into every total
+  // below alongside the auto-derived numbers. Deleting a row is how a
+  // manual entry gets "subtracted" back out.
+  const [manualEntries, setManualEntries] = useState<any[]>([]);
+  const [manualEntryModal, setManualEntryModal] = useState<{ kind: "income" | "expense" } | null>(null);
+  const [meForm, setMeForm] = useState({ category: "", label: "", amount: "", date: today() });
+  const [meSaving, setMeSaving] = useState(false);
+
+  useEffect(() => {
+    if (!ownerId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data, error } = await (supabase as any).from("manual_budget_entries").select("*").eq("owner_id", ownerId).order("date", { ascending: false });
+        if (!cancelled && !error && Array.isArray(data)) setManualEntries(data);
+        else if (error) console.warn("[Budget] manual_budget_entries fetch failed — run supabase/migrations/0097_manual_budget_entries.sql if this table doesn't exist yet:", error.message);
+      } catch (e: any) {
+        console.warn("[Budget] manual_budget_entries fetch threw:", e?.message);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [ownerId]);
+
+  const openManualEntry = (kind: "income" | "expense") => {
+    setMeForm({ category: "", label: "", amount: "", date: today() });
+    setManualEntryModal({ kind });
+  };
+
+  const saveManualEntry = async () => {
+    if (!manualEntryModal || !meForm.category || !meForm.amount) { toast?.("Category and amount are required", "red"); return; }
+    setMeSaving(true);
+    const row = {
+      id: uid(), owner_id: ownerId, kind: manualEntryModal.kind,
+      category: meForm.category, label: meForm.label.trim(), amount: Number(meForm.amount) || 0, date: meForm.date,
+    };
+    try {
+      const { data, error } = await (supabase as any).from("manual_budget_entries").insert(row).select().single();
+      if (error) throw new Error(error.message);
+      setManualEntries(prev => [data, ...prev]);
+      toast?.("Manual " + manualEntryModal.kind + " entry added ✓", "green");
+      setManualEntryModal(null);
+    } catch (e: any) {
+      toast?.("Couldn't save — " + (e?.message || "unknown error"), "red");
+    } finally {
+      setMeSaving(false);
+    }
+  };
+
+  const deleteManualEntry = async (id: string) => {
+    if (!confirm("Delete this manual entry?")) return;
+    try {
+      const { data, error } = await (supabase as any).from("manual_budget_entries").delete().eq("id", id).eq("owner_id", ownerId).select("id");
+      if (error) throw new Error(error.message);
+      if (!Array.isArray(data) || data.length === 0) throw new Error("Nothing was deleted — it may already be gone");
+      setManualEntries(prev => prev.filter(m => m.id !== id));
+      toast?.("Deleted", "green");
+    } catch (e: any) {
+      toast?.("Couldn't delete — " + (e?.message || "unknown error"), "red");
+    }
+  };
 
   const saveGoal = (key, value) => {
     const updated = { ...budgetGoals, [key]: Number(value) };
@@ -96,15 +162,23 @@ export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings 
   // Filtered data
   const tfJobs = filterByTimeframe(jobs.filter(j => j.status === "completed"), "scheduledDate", timeframe);
   const tfExp = filterByTimeframe(expenses, "date", timeframe);
+  const tfManualIncome = filterByTimeframe(manualEntries.filter(m => m.kind === "income"), "date", timeframe);
+  const tfManualExpense = filterByTimeframe(manualEntries.filter(m => m.kind === "expense"), "date", timeframe);
+  const manualIncomeTotal = tfManualIncome.reduce((s, m) => s + Number(m.amount), 0);
+  const manualExpenseTotal = tfManualExpense.reduce((s, m) => s + Number(m.amount), 0);
   const tfLabel = TIMEFRAMES.find(t => t.key === timeframe)?.label || "All";
   const IRS_RATE = 0.67;
 
-  // P&L
-  const grossRevenue = tfJobs.reduce((s, j) => s + j.amount, 0);
+  // P&L — manual entries folded in alongside the auto-derived job/expense
+  // numbers (see the manual_budget_entries feature comment above).
+  const grossRevenue = tfJobs.reduce((s, j) => s + j.amount, 0) + manualIncomeTotal;
   const cashRevenue = tfJobs.filter(j => j.isCash).reduce((s, j) => s + j.amount, 0);
-  const cardRevenue = grossRevenue - cashRevenue;
-  const totalExpenses = tfExp.reduce((s, e) => s + Number(e.amount), 0);
-  const deductibleExp = tfExp.filter(e => e.taxDeductible).reduce((s, e) => s + Number(e.amount), 0);
+  const cardRevenue = grossRevenue - cashRevenue - manualIncomeTotal;
+  const totalExpenses = tfExp.reduce((s, e) => s + Number(e.amount), 0) + manualExpenseTotal;
+  // Manual expense entries are treated as deductible by default — simplest
+  // reasonable default for a quick manual adjustment, matching what most
+  // ad-hoc business expenses actually are.
+  const deductibleExp = tfExp.filter(e => e.taxDeductible).reduce((s, e) => s + Number(e.amount), 0) + manualExpenseTotal;
 
   // BUG FIX — "mileage gets approved but doesn't show up in the tax
   // section": this only ever read the owner's own local smocks.mileage
@@ -152,6 +226,7 @@ export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings 
   // Expense by category for chart
   const expByCat: Record<string, number> = {};
   tfExp.forEach(e => { expByCat[e.category] = (expByCat[e.category] || 0) + Number(e.amount); });
+  tfManualExpense.forEach(m => { expByCat[m.category] = (expByCat[m.category] || 0) + Number(m.amount); });
   const expCatArr = Object.entries(expByCat).sort((a, b) => b[1] - a[1]).slice(0, 8);
 
   // Revenue by month
@@ -172,6 +247,16 @@ export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings 
       if (!e.date) return;
       const key = new Date(e.date).toLocaleString("default", { month: "short" });
       if (months[key]) months[key].expenses += Number(e.amount);
+    });
+    tfManualIncome.forEach(m => {
+      if (!m.date) return;
+      const key = new Date(m.date).toLocaleString("default", { month: "short" });
+      if (months[key]) months[key].revenue += Number(m.amount);
+    });
+    tfManualExpense.forEach(m => {
+      if (!m.date) return;
+      const key = new Date(m.date).toLocaleString("default", { month: "short" });
+      if (months[key]) months[key].expenses += Number(m.amount);
     });
     Object.values(months).forEach(m => { m.profit = m.revenue - m.expenses; });
     return Object.values(months);
@@ -289,15 +374,22 @@ export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings 
     return "misc";
   };
 
-  // Bucket actual expenses by category
+  // Bucket actual expenses by category — manual entries store one of
+  // willBudgetCategories.expenses' own keys directly (see the Add Manual
+  // Entry modal below), so they add straight in with no mapping needed.
   const actualByCategory: Record<string, number> = {};
   tfExp.forEach(e => {
     const key = mapToWillCategory(e.category);
     actualByCategory[key] = (actualByCategory[key] || 0) + Number(e.amount);
   });
+  tfManualExpense.forEach(m => {
+    actualByCategory[m.category] = (actualByCategory[m.category] || 0) + Number(m.amount);
+  });
 
-  // Map job revenue to income categories and customer relations 
-  const actualIncome = {
+  // Map job revenue to income categories and customer relations — manual
+  // income entries (their category is one of willBudgetCategories.income's
+  // own keys) add straight in the same way.
+  const actualIncome: Record<string, number> = {
     pressure_washing: tfJobs.filter(j => !(j.notes || "").toLowerCase().includes("roof") && !(j.notes || "").toLowerCase().includes("soft")).reduce((s, j) => s + j.amount, 0),
     soft_wash: tfJobs.filter(j => (j.notes || j.address || "").toLowerCase().includes("soft")).reduce((s, j) => s + j.amount, 0),
     roof_wash: tfJobs.filter(j => (j.notes || j.address || "").toLowerCase().includes("roof")).reduce((s, j) => s + j.amount, 0),
@@ -306,6 +398,9 @@ export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings 
     gutter_clean: tfJobs.filter(j => (j.notes || "").toLowerCase().includes("gutter")).reduce((s, j) => s + j.amount, 0),
     commercial: tfJobs.filter(j => (j.notes || "").toLowerCase().includes("commercial")).reduce((s, j) => s + j.amount, 0),
   };
+  tfManualIncome.forEach(m => {
+    actualIncome[m.category] = (actualIncome[m.category] || 0) + Number(m.amount);
+  });
 
   const totalIncome = Object.values(actualIncome).reduce((s, v) => s + (v as number), 0);
   const totalExpCats = Object.values(actualByCategory).reduce((s, v) => s + (v as number), 0);
@@ -320,6 +415,11 @@ export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings 
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <TimeframeSelector value={timeframe} onChange={setTimeframe} options={["30d", "90d", "6m", "1y", "all"]} />
+          {/* FEATURE — "manually adding things, manually subtracting
+              things." Everything else on this page was purely derived from
+              real jobs/expenses records with no way to log an ad-hoc entry. */}
+          <GBtn variant="ghost" onClick={() => openManualEntry("income")} className="!text-xs !border-green-700/40 !text-green-300"><Plus size={12} className="inline mr-1" />Income</GBtn>
+          <GBtn variant="ghost" onClick={() => openManualEntry("expense")} className="!text-xs !border-red-700/40 !text-red-300"><Plus size={12} className="inline mr-1" />Expense</GBtn>
           <GBtn onClick={exportTaxPDF} className="!text-xs"><Download size={12} className="inline mr-1.5" />Tax PDF</GBtn>
         </div>
       </div>
@@ -416,6 +516,30 @@ export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings 
             </tbody>
           </table>
         </Glass>
+
+        {/* Manual entries — see the manual_budget_entries feature comment
+            near the top of this component for the full reasoning. */}
+        {(tfManualIncome.length > 0 || tfManualExpense.length > 0) && (
+          <Glass className="overflow-hidden">
+            <div className="px-4 py-3 bg-white/[0.03] border-b border-white/10 font-bold text-sm">Manual Entries ({tfLabel})</div>
+            <div className="divide-y divide-white/5">
+              {[...tfManualIncome.map(m => ({ ...m, _sign: 1 })), ...tfManualExpense.map(m => ({ ...m, _sign: -1 }))]
+                .sort((a, b) => (b.date || "").localeCompare(a.date || ""))
+                .map(m => (
+                  <div key={m.id} className="flex items-center justify-between px-4 py-2.5 text-sm group">
+                    <div className="min-w-0">
+                      <div className="text-white/80">{m.label || (m._sign > 0 ? willBudgetCategories.income : willBudgetCategories.expenses).find(c => c.key === m.category)?.label || m.category}</div>
+                      <div className="text-[10px] text-white/40">{m.date}</div>
+                    </div>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      <span className={"font-semibold " + (m._sign > 0 ? "text-green-400" : "text-red-400")}>{m._sign > 0 ? "+" : "−"}{fmt(Number(m.amount))}</span>
+                      <button onClick={() => deleteManualEntry(m.id)} className="p-1 rounded hover:bg-red-900/30 text-white/30 hover:text-red-400 opacity-0 group-hover:opacity-100 transition"><Trash2 size={12} /></button>
+                    </div>
+                  </div>
+                ))}
+            </div>
+          </Glass>
+        )}
 
         {/* NET */}
         <Glass className={"p-4 " + (totalIncome - totalExpCats >= 0 ? "!bg-green-950/20 !border-green-700/40" : "!bg-red-950/20 !border-red-700/40")}>
@@ -580,6 +704,29 @@ export function BudgetPage({ jobs = [], estimates = [], expenses = [], settings 
           <div className="flex gap-2 justify-end">
             <GBtn variant="ghost" onClick={() => setEditGoal(null)}>Cancel</GBtn>
             <GBtn onClick={() => saveGoal(editGoal.key, editGoal.value)}>Save</GBtn>
+          </div>
+        </div>}
+      </Modal>
+
+      {/* Add Manual Entry Modal */}
+      <Modal open={!!manualEntryModal} onClose={() => setManualEntryModal(null)} title={"Add Manual " + (manualEntryModal?.kind === "income" ? "Income" : "Expense")} maxW="max-w-sm">
+        {manualEntryModal && <div className="space-y-3">
+          <div>
+            <label className="text-xs text-white/60 mb-1 block">Category</label>
+            <GSel value={meForm.category} onChange={e => setMeForm({ ...meForm, category: e.target.value })}>
+              <option value="">Select a category…</option>
+              {(manualEntryModal.kind === "income" ? willBudgetCategories.income : willBudgetCategories.expenses).map(c => (
+                <option key={c.key} value={c.key}>{c.icon} {c.label}</option>
+              ))}
+            </GSel>
+          </div>
+          <div><label className="text-xs text-white/60 mb-1 block">Description (optional)</label><GInput value={meForm.label} onChange={e => setMeForm({ ...meForm, label: e.target.value })} placeholder="e.g. Cash tip from Saturday job" /></div>
+          <div><label className="text-xs text-white/60 mb-1 block">Amount ($)</label><GInput type="number" step="0.01" value={meForm.amount} onChange={e => setMeForm({ ...meForm, amount: e.target.value })} autoFocus /></div>
+          <div><label className="text-xs text-white/60 mb-1 block">Date</label><GDate value={meForm.date} onChange={e => setMeForm({ ...meForm, date: e.target.value })} /></div>
+          {manualEntryModal.kind === "expense" && <div className="text-[10px] text-white/40">Treated as tax-deductible by default, same as a regular business expense.</div>}
+          <div className="flex gap-2 justify-end pt-1">
+            <GBtn variant="ghost" onClick={() => setManualEntryModal(null)}>Cancel</GBtn>
+            <GBtn onClick={saveManualEntry} disabled={meSaving || !meForm.category || !meForm.amount}>{meSaving ? "Saving…" : "Add " + (manualEntryModal.kind === "income" ? "Income" : "Expense")}</GBtn>
           </div>
         </div>}
       </Modal>

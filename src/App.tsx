@@ -5779,7 +5779,7 @@ export function App() {
                 {page === "notifications"  && <NotificationsPage notifications={notifications} onDelete={deleteNotification} onMarkRead={markNotificationRead} onMarkAllRead={markAllNotificationsRead} onClearAll={clearAllNotifications} onNav={setPage} onGoTo={goToNotification} />}
                 {page === "reports"        && <ReportsPage jobs={jobs} customers={customers} estimates={estimates} expenses={expenses} employees={employees} chemicals={chemicals} />}
                 {page === "analytics"      && <AnalyticsPage jobs={jobs} customers={customers} estimates={estimates} expenses={expenses} />}
-                {page === "budget"         && <BudgetPage jobs={jobs} estimates={estimates} expenses={expenses} settings={settings} toast={toast} />}
+                {page === "budget"         && <BudgetPage jobs={jobs} estimates={estimates} expenses={expenses} settings={settings} toast={toast} ownerId={crmUserId} />}
                 {page === "personal"       && <PersonalBudgetPage toast={toast} />}
                 {page === "accountability" && (managerBlocked("accountability") ? <RestrictedNotice label="Accountability Tools" /> : <AccountabilityPage entries={accountability} setEntries={setAccountability} goals={goalsList} setGoals={setGoalsList} wins={wins} setWins={setWins} toast={toast} settings={settings} ownerId={crmUserId} onNav={setPage} />)}
                 {page === "goals" && <GoalsPage goals={goalsList} setGoals={setGoalsList} jobs={jobs} customers={customers} estimates={estimates} settings={settings} onOpenSettings={() => setSettingsOpen(true)} toast={toast} />}

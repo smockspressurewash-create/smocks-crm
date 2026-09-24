@@ -14,7 +14,7 @@ import {
   Globe, Share2, Trophy, ExternalLink, Workflow, ToggleLeft, ToggleRight,
   Navigation, TrendingDown, PieChart as PieIcon, Package, Wrench,
   CheckSquare, Route, Users2, Layers, ArrowRight, BarChart2, Filter,
-  Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User, Sparkles, PhoneOff, Pause, MicOff, ChevronDown, Maximize2
+  Paperclip, ImageIcon, FileImage, MoreVertical, Mic, Upload, Link, Lock, User, Sparkles, PhoneOff, Pause, MicOff, ChevronDown, Maximize2, Square
 } from "lucide-react";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
@@ -307,6 +307,14 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // composer's paperclip button below for the full reasoning.
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const mainAttachInputRef = useRef<HTMLInputElement>(null);
+
+  // FEATURE — "no button to stop Alfred from responding mid-chat." One
+  // AbortController per send() call, aborted by the Stop button — see
+  // send()'s own use of this for how a stop is detected and reported
+  // without falling over to the next model in the failover chain (that
+  // would defeat the whole point of stopping).
+  const currentAbortControllerRef = useRef<AbortController | null>(null);
+  const stopGenerating = () => { currentAbortControllerRef.current?.abort(); };
 
   // FIX 2 — Alfred conversations sync with Supabase. Previously lived in
   // App.tsx keyed off the owner's session resolving, which meant it ran (or
@@ -4595,6 +4603,9 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
       // Always try all viable models in order — failoverEnabled controls whether non-rate-limit errors cascade
       const chain = viableModels;
 
+      const abortController = new AbortController();
+      currentAbortControllerRef.current = abortController;
+      let stopped = false;
       let success = false;
       for (const mid of chain) {
         try {
@@ -4624,7 +4635,8 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
               systemPrompt: toolsForModel ? systemPrompt : noToolsPrompt,
               messages: localConv,
               tools: toolsForModel,
-              maxTokens: 1500
+              maxTokens: 1500,
+              signal: abortController.signal,
             }), 25000, MODELS_MAP[mid]?.name || mid);
             console.log("[AlfredModel] round", rounds, "model:", mid, "stopReason:", result.stopReason, "toolUses:", (result.toolUses || []).map((tu: any) => tu.name), "textPreview:", (result.text || "").slice(0, 120));
             // BUG FIX — a non-tool-capable model (e.g. OpenRouter's free
@@ -4694,6 +4706,14 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
           if (modelStatus[mid]) setModelStatus(s => { const n = { ...s }; delete n[mid]; return n; });
           break;
         } catch (err) {
+          // FEATURE — "no button to stop Alfred mid-chat." A user-triggered
+          // abort must never look like a model failure — no failover to the
+          // next model in the chain (defeats the point of stopping), no
+          // "X failed, trying next" toast, no lockout/cooldown recorded.
+          if (abortController.signal.aborted || (err as any)?.name === "AbortError") {
+            stopped = true;
+            break;
+          }
           failoverChain.push({ model: mid, error: err.message });
           const rateLimit = (parseRateLimitError as any)(err, mid);
           const isLast = chain.indexOf(mid) === chain.length - 1;
@@ -4722,6 +4742,16 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
           }
           // continue to next model
         }
+      }
+
+      // FEATURE — "no button to stop Alfred mid-chat." Report a stop
+      // plainly and stop here — no failover error message, no TTS, no
+      // push-notification-while-away (all further down this same try
+      // block), since the owner deliberately interrupted this turn.
+      if (stopped) {
+        currentAbortControllerRef.current = null;
+        appendMessage({ id: uid(), role: "alfred", content: "Stopped.", timestamp: Date.now() });
+        return;
       }
 
       if (!success) {
@@ -5896,9 +5926,20 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
                 onInput={e => { const t = e.target as HTMLTextAreaElement; t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 200) + "px"; }}
                 className="flex-1 bg-transparent px-3 py-2 text-sm text-white placeholder-white/30 focus:outline-none resize-none max-h-[200px]"
               />
-              <button onClick={() => send()} disabled={loading || !input.trim()} className={"p-2.5 rounded-xl transition " + (loading || !input.trim() ? "bg-white/5 text-white/30" : "bg-gradient-to-br from-red-600 to-red-800 text-white hover:scale-105")}>
-                <Send size={14} />
-              </button>
+              {/* BUG FIX (user report) — "no button to stop Alfred from
+                  responding mid-chat." Send swaps to a real Stop button
+                  while a reply is in flight — aborts the actual model
+                  fetch (see stopGenerating/currentAbortControllerRef), not
+                  just a UI no-op that lets the response keep coming in. */}
+              {loading ? (
+                <button onClick={stopGenerating} title="Stop" className="p-2.5 rounded-xl bg-red-950/60 border border-red-700/50 text-red-300 hover:bg-red-900/60 transition">
+                  <Square size={14} fill="currentColor" />
+                </button>
+              ) : (
+                <button onClick={() => send()} disabled={!input.trim()} className={"p-2.5 rounded-xl transition " + (!input.trim() ? "bg-white/5 text-white/30" : "bg-gradient-to-br from-red-600 to-red-800 text-white hover:scale-105")}>
+                  <Send size={14} />
+                </button>
+              )}
             </div>
             <div className="text-[10px] text-white/30 text-center mt-2">Alfred can make mistakes. Verify critical info. Shift+Enter for newline.</div>
           </div>

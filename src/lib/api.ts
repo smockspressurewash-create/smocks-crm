@@ -362,6 +362,11 @@ export const callModel = async (opts: {
   messages: Array<{ role: string; content: unknown }>;
   tools?: unknown[];
   maxTokens?: number;
+  // FEATURE — "no button to stop Alfred from responding mid-chat." Optional
+  // so every existing caller is unaffected; AlfredPage.tsx's stop button
+  // aborts this fetch directly instead of just ignoring the eventual result
+  // (which would still burn the API call and could still act on tools).
+  signal?: AbortSignal;
 }): Promise<CallModelResult> => {
   const { supabase } = await import("./supabase");
   const { data: { session } } = await supabase.auth.getSession();
@@ -371,6 +376,7 @@ export const callModel = async (opts: {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
     body: JSON.stringify({ modelId: opts.modelId, systemPrompt: opts.systemPrompt, messages: opts.messages, tools: opts.tools, maxTokens: opts.maxTokens }),
+    signal: opts.signal,
   });
   const responseData = await res.json().catch(() => ({} as any));
   if (!res.ok) {

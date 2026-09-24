@@ -423,7 +423,19 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
     }
   };
 
-  const del = (id: string) => { if (confirm("Delete post?")) setPosts(posts.filter((p: any) => p.id !== id)); };
+  // BUG FIX (user report — "make sure video editing stuff doesn't take up
+  // too much storage in the backend") — cleanupPublishedMedia (above)
+  // already deletes a post's Storage object once published, but plain
+  // manual delete never did the same — every deleted draft/post left its
+  // full video or photo orphaned in Storage forever, with nothing to ever
+  // clean it up. A social video export can easily be tens of MB; this is
+  // the actual unbounded-storage-growth path.
+  const del = (id: string) => {
+    if (!confirm("Delete post?")) return;
+    const p = posts.find((x: any) => x.id === id);
+    if (p?.mediaUrl && p.mediaUrl.startsWith("http")) deleteJobMediaByUrl([p.mediaUrl]).catch((e: any) => console.warn("[Social] delete-time media cleanup failed (non-fatal):", e?.message));
+    setPosts(posts.filter((p: any) => p.id !== id));
+  };
 
   // Real analytics refresh — only works for posts that actually went through
   // Buffer (bufferPostId set at post time). Buffer's Post.metrics is
