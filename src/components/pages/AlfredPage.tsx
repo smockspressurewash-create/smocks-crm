@@ -303,10 +303,37 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // of image bytes.
   const recentFileContextRef = useRef<{ fileName: string; extractedText: string; attachedAt: number; turnsUsed: number } | null>(null);
 
+  // BUG FIX (user report) — "it says I need an Anthropic API key for
+  // screenshots. We don't need that — any API key you use, specifically
+  // OpenRouter, should work too." The screenshot/receipt/PDF analyzer used
+  // to hardcode modelId:"claude" and refuse to run without that exact key,
+  // even when the owner had a different provider configured and working
+  // fine for everything else. functions/api/call-model.ts now actually
+  // translates the image content block per-provider instead of silently
+  // dropping it (see that file's own comment), so any of these can
+  // genuinely see the image — this just picks whichever one the owner
+  // actually has a key for, in the order most likely to handle vision
+  // well (Groq/Mistral/NVIDIA's configured free models here are text-only,
+  // so left out of this list on purpose).
+  const VISION_MODEL_PRIORITY = ["claude", "openai", "gemini", "openrouter"];
+  const pickVisionModel = (): { modelId: string; apiKey: string } | null => {
+    const keys = (settings.modelKeys || {}) as Record<string, string>;
+    for (const id of VISION_MODEL_PRIORITY) {
+      if (keys[id]) return { modelId: id, apiKey: keys[id] };
+    }
+    return null;
+  };
+
   // FEATURE — mobile attach menu (Photo/Video vs Document), see the
   // composer's paperclip button below for the full reasoning.
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const mainAttachInputRef = useRef<HTMLInputElement>(null);
+  // FEATURE — "only one button for the whole note STT, sending that note,
+  // or voice mode." Replaces the old three separate controls (a text
+  // label toggle, the mic record button, and a big standalone Voice Mode
+  // button) that were cramping the composer — see the composer's mic
+  // button below for the full reasoning.
+  const [voiceMenuOpen, setVoiceMenuOpen] = useState(false);
 
   // FEATURE — "no button to stop Alfred from responding mid-chat." One
   // AbortController per send() call, aborted by the Stop button — see
@@ -5643,7 +5670,11 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
                 ))}
               </div>
             )}
-            <div className="flex items-end gap-2 bg-black/60 border border-red-900/40 rounded-2xl p-2 focus-within:border-red-500/60 transition">
+            {/* BUG FIX (user report) — "move the buttons... too cramped."
+                Down from 3 voice controls to 1 (see the unified mic button
+                below) plus a tighter gap reclaims real width for the
+                textarea, which is the thing that actually needs the room. */}
+            <div className="flex items-end gap-1.5 bg-black/60 border border-red-900/40 rounded-2xl p-2 focus-within:border-red-500/60 transition">
               {/* BUG FIX (user report) — "on mobile it should also give the
                   option for photos, not just camera and files." The single
                   file input below (accept="image/*,application/pdf") mixes
@@ -5761,10 +5792,10 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
                     // obvious the text was picked up, not silently eaten.
                     const ownerCaption = input.trim();
                     setInput("");
-                    const anthropicKey = (settings.modelKeys || {}).claude;
-                    if (!anthropicKey) {
+                    const visionModel = pickVisionModel();
+                    if (!visionModel) {
                       appendMessage({ id: uid(), role: "user", content: `📎 ${filesList.length} screenshots`, timestamp: Date.now() });
-                      appendMessage({ id: uid(), role: "alfred", content: "Reading screenshots needs an Anthropic API key (Settings → AI Models) — that's the only provider this app can send images to right now.", timestamp: Date.now() });
+                      appendMessage({ id: uid(), role: "alfred", content: "Reading screenshots needs an API key for Claude, GPT-4o, Gemini, or OpenRouter — add one in Settings → AI Models.", timestamp: Date.now() });
                       return;
                     }
                     const allImageFiles = filesList.filter(f => f.type.startsWith("image/"));
@@ -5788,15 +5819,23 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
                       rr.readAsDataURL(file);
                     });
                     const msgId = uid();
-                    appendMessage({ id: msgId, role: "user", content: `📎 ${imageFiles.length} screenshots (analyzing...)`, timestamp: Date.now() });
                     setLoading(true);
                     try {
+                      // BUG FIX (user report) — "when I attach screenshots...
+                      // it should show that there's an attachment." Used to
+                      // post a text-only "(analyzing...)" bubble first and
+                      // only patch the thumbnails in afterward once the
+                      // (fast, local) file reads finished — a real gap,
+                      // however brief, where the message existed with no
+                      // visible sign of what was actually attached. Reading
+                      // the files BEFORE posting anything means the very
+                      // first render of this message already carries its
+                      // thumbnails.
                       const loaded = await Promise.all(imageFiles.map(readAsBase64));
-                      updateMessageContent(msgId, `📎 ${imageFiles.length} screenshots`);
-                      setConversations((prev: any[]) => prev.map((c: any) => c.id === activeId ? { ...c, messages: c.messages.map((cm: any) => cm.id === msgId ? { ...cm, imagePreviews: loaded.map(l => l.dataUrl) } : cm) } : c));
+                      appendMessage({ id: msgId, role: "user", content: `📎 ${imageFiles.length} screenshots`, imagePreviews: loaded.map(l => l.dataUrl), timestamp: Date.now() } as any);
                       const result: any = await withTimeout<any>((callModel as any)({
-                        modelId: "claude",
-                        apiKey: anthropicKey,
+                        modelId: visionModel.modelId,
+                        apiKey: visionModel.apiKey,
                         messages: [{
                           role: "user",
                           content: [
@@ -5831,10 +5870,19 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
                   // real clickable "Log to Expenses" button instead of a
                   // phrase to guess.
                   const isPdf = file.type === "application/pdf";
-                  const anthropicKey = (settings.modelKeys || {}).claude;
-                  if (!anthropicKey) {
+                  // PDFs still need a provider that can actually read a PDF
+                  // block server-side — Claude and Gemini both translate it
+                  // (see call-model.ts), OpenAI-compatible providers degrade
+                  // it to a text note instead ("can't read PDFs directly").
+                  // Prefer Claude/Gemini specifically for a PDF so it's read
+                  // properly instead of just explained as unreadable.
+                  const keys = (settings.modelKeys || {}) as Record<string, string>;
+                  const visionModel = isPdf
+                    ? (keys.claude ? { modelId: "claude", apiKey: keys.claude } : keys.gemini ? { modelId: "gemini", apiKey: keys.gemini } : pickVisionModel())
+                    : pickVisionModel();
+                  if (!visionModel) {
                     appendMessage({ id: uid(), role: "user", content: "📎 " + file.name, timestamp: Date.now() });
-                    appendMessage({ id: uid(), role: "alfred", content: "Reading receipts/photos needs an Anthropic API key (Settings → AI Models) — that's the only provider this app can send images/PDFs to right now.", timestamp: Date.now() });
+                    appendMessage({ id: uid(), role: "alfred", content: "Reading " + (isPdf ? "PDFs" : "photos/receipts") + " needs an API key for Claude, GPT-4o, Gemini, or OpenRouter — add one in Settings → AI Models.", timestamp: Date.now() });
                     return;
                   }
                   const r = new FileReader();
@@ -5876,8 +5924,8 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
                       // detection/pendingExpense flow below is completely
                       // unchanged for an actual receipt.
                       const result: any = await withTimeout<any>((callModel as any)({
-                        modelId: "claude",
-                        apiKey: anthropicKey,
+                        modelId: visionModel.modelId,
+                        apiKey: visionModel.apiKey,
                         messages: [{
                           role: "user",
                           content: [
@@ -5911,46 +5959,75 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
                   r.readAsDataURL(file);
                 }} />
               </div>
-              {/* Voice input — two modes: "dictate" lands the transcript in
-                  the text box to review/edit before sending, "note" sends
-                  automatically once the recording stops. Click the small
-                  label to switch modes; click the mic to start/stop. */}
-              <button
-                onClick={() => setVoiceMode(m => m === "dictate" ? "note" : "dictate")}
-                title="Switch voice input mode"
-                className="text-[9px] px-1.5 py-2 text-white/30 hover:text-white/60 transition flex-shrink-0 uppercase tracking-wide"
-              >
-                {voiceMode === "dictate" ? "STT" : "Note"}
-              </button>
-              <VoiceMicButton
-                mode={voiceMode}
-                onTranscript={(text, autoSend) => { if (autoSend) send(text); else setInput(prev => prev + (prev ? " " : "") + text); }}
-                apiKey={settings?.openAiKey || settings?.openaiKey || ""}
-              />
-              {/* BUG FIX — "I'm not seeing a section to have back-and-forth
-                  conversations... it shouldn't be [buried at the bottom of
-                  the personality sidebar]." Voice Mode is a whole
-                  hands-free conversation, not a small utility toggle — it
-                  belongs next to how you'd normally start talking to
-                  Alfred, not tucked under Memory/Voice Replies. Still
-                  reachable from the sidebar too (harmless), but this is
-                  now the real, discoverable entry point. */}
-              <button
-                onClick={openVoiceMode}
-                title="Talk to Alfred hands-free"
-                className="flex-shrink-0 p-2.5 rounded-xl bg-gradient-to-br from-red-600 to-red-800 text-white hover:scale-105 transition"
-              >
-                <Mic size={16} />
-              </button>
+              {/* FEATURE (user report) — "only one button for the whole note
+                  STT, sending that note, or voice mode... show a mic icon,
+                  have a cool animation, and present options... If you
+                  choose STT or notes, the button should work when held or
+                  pressed." Replaces the three separate controls that used
+                  to crowd this corner (a text label mode-toggle, the mic
+                  record button, and a big standalone Voice Mode button).
+                  Tap opens a small menu; Voice Mode is a normal click,
+                  Dictate/Voice Note are dense VoiceMicButton rows wired for
+                  press-and-hold (holdToRecord) instead of click-to-toggle. */}
+              <div className="relative flex-shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setVoiceMenuOpen(o => !o)}
+                  title="Voice options"
+                  className="relative flex-shrink-0 p-2.5 rounded-xl bg-gradient-to-br from-red-600 to-red-800 text-white hover:scale-105 transition"
+                >
+                  <span className="absolute inset-0 rounded-xl bg-red-600/60 animate-ping [animation-duration:2.5s]" />
+                  <Mic size={16} className="relative" />
+                </button>
+                {voiceMenuOpen && (
+                  <>
+                    <div className="fixed inset-0 z-10" onClick={() => setVoiceMenuOpen(false)} />
+                    <div className="absolute bottom-full mb-2 right-0 w-52 bg-black/95 border border-red-900/40 rounded-xl shadow-2xl overflow-hidden z-20 backdrop-blur">
+                      <button
+                        onClick={() => { setVoiceMenuOpen(false); openVoiceMode(); }}
+                        className="w-full flex items-center gap-2.5 px-3 py-2.5 text-xs text-white/80 hover:bg-red-950/40 transition text-left border-b border-red-900/20"
+                      >
+                        <Mic size={14} className="text-red-400 flex-shrink-0" />
+                        <span className="flex-1">Voice Mode</span>
+                        <span className="text-[9px] text-white/30 flex-shrink-0">HANDS-FREE</span>
+                      </button>
+                      <VoiceMicButton
+                        mode="dictate"
+                        dense
+                        holdToRecord
+                        label="Dictate (STT)"
+                        onTranscript={(text, autoSend) => { setVoiceMenuOpen(false); if (autoSend) send(text); else setInput(prev => prev + (prev ? " " : "") + text); }}
+                        apiKey={settings?.openAiKey || settings?.openaiKey || ""}
+                      />
+                      <div className="border-t border-red-900/20">
+                        <VoiceMicButton
+                          mode="note"
+                          dense
+                          holdToRecord
+                          label="Voice Note"
+                          onTranscript={(text, autoSend) => { setVoiceMenuOpen(false); if (autoSend) send(text); else setInput(prev => prev + (prev ? " " : "") + text); }}
+                          apiKey={settings?.openAiKey || settings?.openaiKey || ""}
+                        />
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+              {/* BUG FIX (user report) — "expand the message box so you can
+                  see the entire message... you can't even see the message
+                  on mobile." Was rows={1}/max-h-200px — taller baseline
+                  (rows=2, min-h) and more max height so a real multi-line
+                  message is actually visible while typing, not just
+                  reachable by scrolling a nearly-collapsed box. */}
               <textarea
                 ref={inputRef}
-                rows={1}
+                rows={2}
                 placeholder="Message Alfred..."
                 value={input}
                 onChange={onInputChange}
                 onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-                onInput={e => { const t = e.target as HTMLTextAreaElement; t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 200) + "px"; }}
-                className="flex-1 bg-transparent px-3 py-2 text-sm text-white placeholder-white/30 focus:outline-none resize-none max-h-[200px]"
+                onInput={e => { const t = e.target as HTMLTextAreaElement; t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 320) + "px"; }}
+                className="flex-1 bg-transparent px-3 py-2.5 text-sm text-white placeholder-white/30 focus:outline-none resize-none min-h-[52px] max-h-[320px]"
               />
               {/* BUG FIX (user report) — "no button to stop Alfred from
                   responding mid-chat." Send swaps to a real Stop button
@@ -5967,7 +6044,7 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
                 </button>
               )}
             </div>
-            <div className="text-[10px] text-white/30 text-center mt-2">Alfred can make mistakes. Verify critical info. Shift+Enter for newline.</div>
+            <div className="text-[10px] text-white/30 text-center mt-2">Alfred can make mistakes. Verify critical info.</div>
           </div>
         </div>
       </div>

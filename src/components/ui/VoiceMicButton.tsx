@@ -15,7 +15,7 @@ import { Mic, Play, Pause, Send, Trash2, Square } from "lucide-react";
 // - "note": records actual audio for playback. On stop, nothing is sent yet —
 //   the user hears it back and explicitly presses Send (or Discard). Only on
 //   Send is the transcript produced and onTranscript(text, true) called.
-export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate" }: { onTranscript?: (text: string, autoSend: boolean) => void; apiKey?: any; mode?: "dictate" | "note" }) {
+export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate", holdToRecord = false, dense = false, label }: { onTranscript?: (text: string, autoSend: boolean) => void; apiKey?: any; mode?: "dictate" | "note"; holdToRecord?: boolean; dense?: boolean; label?: string }) {
   const [recording, setRecording] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [elapsed, setElapsed] = useState(0);
@@ -215,6 +215,29 @@ export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate" }: { onT
     else startDictateRecognition();
   };
 
+  // FEATURE — "if you choose STT or notes, the button should work when
+  // held or pressed." Push-to-talk: press down starts recording, release
+  // (anywhere — mouse/finger can slide off the button, still has to stop)
+  // ends it, instead of the click-to-toggle behavior used elsewhere in
+  // this app. Pointer Events unify mouse/touch/pen in one handler pair —
+  // preventDefault on pointerdown stops a touch from also firing a
+  // trailing synthetic click/mouse event, which would otherwise double-
+  // trigger start/stop on mobile.
+  const holdStartedRef = useRef(false);
+  const onHoldStart = (e: React.PointerEvent) => {
+    e.preventDefault();
+    if (recording || holdStartedRef.current) return;
+    holdStartedRef.current = true;
+    if (mode === "note") startNoteRecording();
+    else startDictateRecognition();
+  };
+  const onHoldEnd = (e: React.PointerEvent) => {
+    e.preventDefault();
+    if (!holdStartedRef.current) return;
+    holdStartedRef.current = false;
+    stopRecording();
+  };
+
   const discardNote = () => {
     if (pendingAudioUrl) URL.revokeObjectURL(pendingAudioUrl);
     setPendingAudioUrl(null);
@@ -288,11 +311,33 @@ export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate" }: { onT
     );
   }
 
+  const idleTitle = holdToRecord
+    ? (mode === "note" ? "Hold to record a voice note — listen back before sending" : "Hold to dictate — transcript lands in the text box to review before sending")
+    : (mode === "note" ? "Record a voice note — listen back before sending" : "Dictate — transcript lands in the text box to review before sending");
+
+  if (dense) {
+    // Compact row form factor for use inside a dropdown/menu (see the
+    // unified mic button in AlfredPage.tsx's composer) — same underlying
+    // recording logic, just rendered as a full-width labeled row instead
+    // of an icon-only circular button.
+    return (
+      <button
+        {...(holdToRecord ? { onPointerDown: onHoldStart, onPointerUp: onHoldEnd, onPointerLeave: onHoldEnd, onPointerCancel: onHoldEnd } : { onClick: toggleRecording })}
+        title={idleTitle}
+        className="w-full flex items-center gap-2.5 px-3 py-2.5 text-xs text-white/80 hover:bg-red-950/40 transition text-left select-none touch-none"
+      >
+        <Mic size={14} className="text-red-400 flex-shrink-0" />
+        <span className="flex-1">{label || (mode === "note" ? "Voice Note" : "Dictate")}</span>
+        {holdToRecord && <span className="text-[9px] text-white/30 flex-shrink-0">HOLD</span>}
+      </button>
+    );
+  }
+
   return (
     <button
-      onClick={toggleRecording}
-      title={recording ? "Click to stop recording" : mode === "note" ? "Record a voice note — listen back before sending" : "Dictate — transcript lands in the text box to review before sending"}
-      className={"p-2 rounded-xl transition flex-shrink-0 " + (recording ? "bg-red-600/40 text-red-300 animate-pulse" : "text-white/40 hover:text-white/70 hover:bg-white/5")}
+      {...(holdToRecord ? { onPointerDown: onHoldStart, onPointerUp: onHoldEnd, onPointerLeave: onHoldEnd, onPointerCancel: onHoldEnd } : { onClick: toggleRecording })}
+      title={idleTitle}
+      className={"p-2 rounded-xl transition flex-shrink-0 select-none touch-none " + (recording ? "bg-red-600/40 text-red-300 animate-pulse" : "text-white/40 hover:text-white/70 hover:bg-white/5")}
     >
       <Mic size={16} />
     </button>

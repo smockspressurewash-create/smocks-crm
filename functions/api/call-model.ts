@@ -65,6 +65,43 @@ const getOpenRouterFreeModels = async (): Promise<string[]> => {
   } catch { return []; }
 };
 
+// FEATURE — "any API key you use, specifically OpenRouter, works for
+// screenshots too." OpenRouter's own /models catalog (same public,
+// unauthenticated, CORS-open endpoint getOpenRouterFreeModels already
+// uses) publishes each model's real input modalities under
+// architecture.input_modalities — filtering on "image" there, instead of
+// tool support, is how a vision request picks a model that can actually
+// see the picture instead of silently ignoring it. Kept as its own cache
+// (not merged with the tool-capable list) since a vision-capable model
+// isn't necessarily tool-capable and vice versa — the image-analysis
+// calls that use this list never pass `tools` anyway.
+let openRouterFreeVisionModelsCache: string[] | null = null;
+let openRouterFreeVisionModelsFetchedAt = 0;
+const getOpenRouterFreeVisionModels = async (): Promise<string[]> => {
+  if (openRouterFreeVisionModelsCache && Date.now() - openRouterFreeVisionModelsFetchedAt < OPENROUTER_CATALOG_TTL_MS) return openRouterFreeVisionModelsCache;
+  try {
+    const res = await fetch("https://openrouter.ai/api/v1/models");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const j = await res.json() as { data?: Array<{ id: string; pricing?: { prompt?: string; completion?: string }; architecture?: { input_modalities?: string[] } }> };
+    const free = (j.data || [])
+      .filter(m => m.pricing?.prompt === "0" && m.pricing?.completion === "0")
+      .filter(m => (m.architecture?.input_modalities || []).includes("image"))
+      .map(m => m.id);
+    if (free.length > 0) { openRouterFreeVisionModelsCache = free; openRouterFreeVisionModelsFetchedAt = Date.now(); return free; }
+    throw new Error("no free vision-capable models");
+  } catch { return []; }
+};
+
+// Anthropic-shaped content blocks are this app's one neutral wire format
+// for a multimodal message (every client call site — the Alfred screenshot/
+// receipt analyzer — builds this shape regardless of which model will
+// actually receive it). True per-provider request format is only decided
+// here, server-side, so a new provider only ever needs a translator added
+// in ONE place.
+type AnthropicBlock = { type: string; text?: string; source?: { type: string; media_type?: string; data?: string } };
+const hasImageBlock = (messages: Array<{ role: string; content: unknown }>): boolean =>
+  messages.some(m => Array.isArray(m.content) && (m.content as AnthropicBlock[]).some(b => b.type === "image"));
+
 const extractErrorMessage = (text: string, status: number): string => {
   try {
     const j = JSON.parse(text);
@@ -132,6 +169,28 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
             }));
             return { role: "user", parts };
           }
+          // BUG FIX (user report — "any API key... should work for
+          // screenshots too") — an Anthropic-shaped multimodal block array
+          // (our one neutral wire format for a screenshot/receipt/PDF
+          // analysis call — see hasImageBlock's comment) used to fall
+          // through to the line below unchanged: hardcoded role "model"
+          // (wrong — these are always a "user" turn) and the raw
+          // {type:"image", source:{...}} blocks handed to Gemini as-is,
+          // which doesn't recognize that shape at all and just sees no
+          // image. Real Gemini parts (text/functionCall/inlineData) never
+          // carry a `type` field, so checking for one is how this tells
+          // "our neutral format, needs translating" apart from "Gemini's
+          // own raw parts, echoed back from an earlier assistant turn in
+          // this same multi-round tool loop — already correct, pass
+          // through untouched."
+          if (Array.isArray(m.content) && (m.content as AnthropicBlock[]).some(b => "type" in b)) {
+            const parts = (m.content as AnthropicBlock[]).map(b => {
+              if (b.type === "image" && b.source?.data) return { inlineData: { mimeType: b.source.media_type || "image/jpeg", data: b.source.data } };
+              if (b.type === "document" && b.source?.data) return { inlineData: { mimeType: "application/pdf", data: b.source.data } };
+              return { text: b.text ?? "" };
+            });
+            return { role: "user", parts };
+          }
           if (Array.isArray(m.content)) return { role: "model", parts: m.content };
           return { role: m.role === "assistant" ? "model" : "user", parts: [{ text: String(m.content) }] };
         });
@@ -161,6 +220,19 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       const hint = def.provider === "nvidia" ? ` Get a free key and add it in Settings → AI Models — it should start with "nvapi-".` : "";
       return json({ error: `No API key set for this model.${hint} Add one in Settings → AI Models.` }, 400);
     }
+    // BUG FIX (user report — "any API key... specifically OpenRouter,
+    // should work for screenshots too") — this used to keep ONLY the text
+    // blocks out of a multimodal (Anthropic-shaped) content array and drop
+    // every image/document block entirely, so a screenshot sent through
+    // any OpenAI-compatible provider silently reached the model as if no
+    // image had ever been attached — not an error, just a wrong answer
+    // with no image context at all. Real image blocks now translate to
+    // OpenAI's documented image_url shape (a base64 data: URL — every one
+    // of these providers accepts that, no separate upload step needed).
+    // A "document" (PDF) block has no equivalent across this whole
+    // provider family — degrades to a plain text note instead of silently
+    // vanishing, so the model (and the person reading its answer) knows
+    // why it can't see the actual file.
     const openAiMessages: Array<Record<string, unknown>> = [...(body.systemPrompt ? [{ role: "system", content: body.systemPrompt }] : [])];
     for (const m of body.messages) {
       if (m.role !== "user" && m.role !== "assistant") continue;
@@ -170,8 +242,19 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       } else if (m.role === "assistant" && m.content && typeof m.content === "object" && !Array.isArray(m.content)) {
         openAiMessages.push(m.content as Record<string, unknown>);
       } else if (Array.isArray(m.content)) {
-        const text = (m.content as Array<{ type: string; text?: string }>).filter(b => b.type === "text").map(b => b.text ?? "").join("");
-        openAiMessages.push({ role: m.role, content: text });
+        const blocks = m.content as AnthropicBlock[];
+        const hasNonText = blocks.some(b => b.type !== "text");
+        if (!hasNonText) {
+          openAiMessages.push({ role: m.role, content: blocks.map(b => b.text ?? "").join("") });
+        } else {
+          const parts: Array<Record<string, unknown>> = [];
+          for (const b of blocks) {
+            if (b.type === "text") parts.push({ type: "text", text: b.text ?? "" });
+            else if (b.type === "image" && b.source?.data) parts.push({ type: "image_url", image_url: { url: `data:${b.source.media_type || "image/jpeg"};base64,${b.source.data}` } });
+            else if (b.type === "document") parts.push({ type: "text", text: "[A PDF was attached here, but this AI provider can't read PDF files directly — only images. Switch to Claude in Settings → AI Models to analyze PDFs.]" });
+          }
+          openAiMessages.push({ role: m.role, content: parts });
+        }
       } else openAiMessages.push({ role: m.role, content: String(m.content) });
     }
     const openAiTools = body.tools?.length
@@ -183,8 +266,20 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     };
     let modelCandidates: string[];
     if (def.provider === "openrouter") {
-      const live = await getOpenRouterFreeModels();
-      modelCandidates = Array.from(new Set([...live, ...OPENROUTER_FREE_FALLBACKS])).slice(0, 8);
+      if (hasImageBlock(body.messages)) {
+        const visionModels = await getOpenRouterFreeVisionModels();
+        // No vision-capable free model found live (catalog fetch failed,
+        // or genuinely none right now) — falling through to the tool-
+        // capable list would silently send the image to a text-only
+        // model, the exact bug this whole fix is for. Fail clearly
+        // instead so the owner knows to try a different provider for
+        // this one request, rather than getting a confidently wrong answer.
+        if (visionModels.length === 0) return json({ error: "No free vision-capable model is currently available on OpenRouter. Try again shortly, or use Claude/GPT-4o/Gemini in Settings → AI Models for image analysis." }, 400);
+        modelCandidates = visionModels.slice(0, 8);
+      } else {
+        const live = await getOpenRouterFreeModels();
+        modelCandidates = Array.from(new Set([...live, ...OPENROUTER_FREE_FALLBACKS])).slice(0, 8);
+      }
     } else modelCandidates = [def.modelId];
 
     let data: any;
