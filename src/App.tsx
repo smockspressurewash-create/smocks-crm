@@ -678,6 +678,20 @@ export function App() {
     const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","goals","referrals","promotions","trashcans","sops","expenses","reports","analytics","budget","personal","accountability","employees","hiring","fleet","chemicals","google","portal","reset-password","client","referral","rate","welcome","login","features","pricing","about","cockpit","feedback","roadmap"];
     return valid.includes(hash) ? hash : "dashboard";
   });
+  // BUG FIX (user report) — "whenever I open the CRM as an owner... it
+  // briefly shows unread text and a black screen for a second before
+  // displaying the dashboard." On a cold PWA relaunch the browser/OS
+  // restores whatever hash was open when the app was last closed (e.g.
+  // "#/inbox" from tapping an SMS notification) — the `page` init above
+  // resolves straight to that page's real content, which then briefly
+  // renders (a real "N unread messages" inbox list) while the async
+  // session bootstrap is still resolving, before anything sends the owner
+  // on to the dashboard. Captured once, on the very first render only, so
+  // the one-time redirect below can tell "this is what we booted into"
+  // apart from "the owner just navigated to Inbox normally" (same `page`
+  // value, but only the boot one should force a redirect).
+  const bootPageRef = useRef(page);
+  const bootRedirectDoneRef = useRef(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   // BUG FIX — the marketing pages (#/welcome, #/features, #/pricing,
   // #/about) were coded as PUBLIC-ONLY: their render condition itself
@@ -4893,6 +4907,21 @@ export function App() {
     // they land in the same tick.
     setTimeout(() => { setMarketingPreview(false); setPage("dashboard"); }, 0);
   } else if (hasCrmSession && !marketingPreview && (page === "welcome" || page === "features" || page === "pricing" || page === "about")) {
+    setTimeout(() => setPage("dashboard"), 0);
+  } else if (
+    hasCrmSession &&
+    !bootRedirectDoneRef.current &&
+    page === bootPageRef.current &&
+    (bootPageRef.current === "inbox" || bootPageRef.current === "notifications")
+  ) {
+    // BUG FIX (user report, see bootPageRef comment above) — only fires
+    // once, for the page the app actually booted into. bootRedirectDoneRef
+    // is set immediately (not just after the timeout) so a normal in-app
+    // visit to Inbox/Notifications later in the same session — where
+    // `page` happens to equal the same boot value again — never re-fires
+    // this and yanks the owner back to the dashboard while they're
+    // actually trying to read their inbox.
+    bootRedirectDoneRef.current = true;
     setTimeout(() => setPage("dashboard"), 0);
   }
 
