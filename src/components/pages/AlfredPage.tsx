@@ -316,12 +316,49 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // well (Groq/Mistral/NVIDIA's configured free models here are text-only,
   // so left out of this list on purpose).
   const VISION_MODEL_PRIORITY = ["claude", "openai", "gemini", "openrouter"];
-  const pickVisionModel = (): { modelId: string; apiKey: string } | null => {
+  const getVisionModelChain = (opts?: { pdf?: boolean }): Array<{ modelId: string; apiKey: string }> => {
     const keys = (settings.modelKeys || {}) as Record<string, string>;
-    for (const id of VISION_MODEL_PRIORITY) {
-      if (keys[id]) return { modelId: id, apiKey: keys[id] };
+    // PDFs are only actually parsed by Claude/Gemini server-side (see
+    // call-model.ts) — try those first for a PDF, but still fall back to
+    // whatever else is configured rather than hard-failing (it'll just get
+    // the "can't read PDFs directly" text stub, same as before).
+    const order = opts?.pdf ? ["claude", "gemini", "openai", "openrouter"] : VISION_MODEL_PRIORITY;
+    return order.filter(id => keys[id]).map(id => ({ modelId: id, apiKey: keys[id] }));
+  };
+  // BUG FIX (user report) — "Couldn't analyze those screenshots. HTTP 503.
+  // This model is currently experiencing high demand." A single hardcoded
+  // vision call had no fallback at all — a transient overload on whichever
+  // provider happened to be first in the chain (usually Claude) dead-ended
+  // the whole attachment even when the owner had a second/third vision-
+  // capable key configured. Try every configured vision-capable provider,
+  // in priority order, before actually giving up.
+  const isRetryableVisionError = (err: any): boolean => {
+    const status = err?.status;
+    const msg = String(err?.message || "");
+    return status === 503 || status === 529 || status === 429 || /overloaded|high demand|try again later|rate.?limit/i.test(msg);
+  };
+  const callVisionModel = async (payload: any, timeoutMs: number, label: string, opts?: { pdf?: boolean }): Promise<any> => {
+    const chain = getVisionModelChain(opts);
+    let lastErr: any = new Error("No vision-capable model configured.");
+    for (const cand of chain) {
+      // One same-provider retry on a transient overload/rate-limit before
+      // moving on to the next configured provider — covers the common case
+      // of only one vision-capable key being set, where there's nothing
+      // else to fail over to.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          return await withTimeout<any>((callModel as any)({ ...payload, modelId: cand.modelId, apiKey: cand.apiKey }), timeoutMs, label);
+        } catch (err: any) {
+          lastErr = err;
+          if (attempt === 0 && isRetryableVisionError(err)) {
+            await new Promise(r => setTimeout(r, 1500));
+            continue;
+          }
+          break;
+        }
+      }
     }
-    return null;
+    throw lastErr;
   };
 
   // FEATURE — mobile attach menu (Photo/Video vs Document), see the
@@ -343,6 +380,13 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // (up to 30-45s). Attachment analysis gets its own flag now — the typing
   // indicator still shows for it, but the real Send button stays live.
   const [attachAnalyzing, setAttachAnalyzing] = useState(false);
+  // BUG FIX (user report) — "it still sends the file... before I send the
+  // message... should never send until you actually press send." Attaching
+  // used to fire a real vision call and post messages to Alfred the instant
+  // a file was picked. Now the attach handler only stages a local preview
+  // here — the actual analysis + send only happens from sendMessage() once
+  // the owner presses Send, and each attachment gets a remove (X) button.
+  const [pendingAttachments, setPendingAttachments] = useState<Array<{ id: string; file: File; dataUrl: string; base64: string; mediaType: string; isPdf: boolean }>>([]);
 
   // FEATURE — "no button to stop Alfred from responding mid-chat." One
   // AbortController per send() call, aborted by the Stop button — see
@@ -4935,6 +4979,135 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
   };
   useEffect(() => { sendRef.current = send; }); // no deps — always the latest send, see sendRef's comment
 
+  // BUG FIX (user report) — "it still sends the file before I press send...
+  // should never send until you actually press send." This is the deferred
+  // version of what used to run the instant a file was picked (same
+  // prompts, same receipt detection, same bulk-job-import handoff into
+  // send()) — now triggered from sendMessage() below on a real Send press,
+  // reading from the staged pendingAttachments instead of a live FileList,
+  // and threading the owner's typed caption into the single-attachment
+  // path too (it never had anywhere to type one before this).
+  const sendWithAttachments = async (caption: string, attachments: typeof pendingAttachments) => {
+    if (getVisionModelChain().length === 0) {
+      appendMessage({ id: uid(), role: "user", content: caption || (attachments.length === 1 ? "📎 " + attachments[0].file.name : `📎 ${attachments.length} attachments`), imagePreviews: attachments.filter(a => !a.isPdf).map(a => a.dataUrl), timestamp: Date.now() } as any);
+      appendMessage({ id: uid(), role: "alfred", content: "Reading " + (attachments.length > 1 ? "screenshots" : attachments[0].isPdf ? "PDFs" : "photos/receipts") + " needs an API key for Claude, GPT-4o, Gemini, or OpenRouter — add one in Settings → AI Models.", timestamp: Date.now() });
+      return;
+    }
+    const msgId = uid();
+    appendMessage({
+      id: msgId, role: "user",
+      content: caption || (attachments.length === 1 ? "📎 " + attachments[0].file.name : `📎 ${attachments.length} attachments`),
+      imagePreviews: attachments.filter(a => !a.isPdf).map(a => a.dataUrl),
+      timestamp: Date.now(),
+    } as any);
+    setAttachAnalyzing(true);
+    try {
+      if (attachments.length > 1) {
+        // FEATURE — "Alfred can receive screenshots... extract the
+        // information, assign employees, set the cost... ask clarifying
+        // questions." One vision call reads every screenshot and extracts
+        // a plain numbered list of every job it can find, handed to the
+        // NORMAL send()/tool-calling conversation as if the owner had
+        // typed it — see the BULK JOB IMPORT rules in the system prompt.
+        const imageFiles = attachments.filter(a => !a.isPdf);
+        if (imageFiles.length === 0) {
+          appendMessage({ id: uid(), role: "alfred", content: "Bulk import works with image screenshots — attach one PDF at a time instead.", timestamp: Date.now() });
+          return;
+        }
+        const result: any = await callVisionModel({
+          messages: [{
+            role: "user",
+            content: [
+              ...imageFiles.map(a => ({ type: "image", source: { type: "base64", media_type: a.mediaType, data: a.base64 } })),
+              { type: "text", text: `You are Alfred, business assistant for a pressure-washing/trash-can-cleaning company. These ${imageFiles.length} screenshots contain job/order info — texts, a spreadsheet, a scheduling app, handwritten notes, anything. Extract EVERY separate job/order visible across ALL the images. For each one list: customer full name, phone number, address, the service/order details, the date and time (resolve relative wording like "today"/"tomorrow" against ${today()}), which employee (if any) is named as assigned, and the dollar amount. If a field isn't visible for a job, write "not given" for it rather than guessing. Number each job. In a final section, explicitly call out any two jobs that name the SAME employee at the same or overlapping date/time. Be thorough — do not skip any job visible in any image.${caption ? `\n\nThe owner typed this along with the screenshots — it's a real instruction, factor it in (e.g. who to assign, what to do): "${caption}"` : ""}` }
+            ]
+          }],
+          maxTokens: 3000,
+        }, 45000, "Screenshot analysis");
+        const extracted = (result.text || "").trim();
+        if (!extracted) {
+          appendMessage({ id: uid(), role: "alfred", content: "Couldn't find any job/order info in those screenshots.", timestamp: Date.now() });
+          return;
+        }
+        await send(`Here's what I found in the ${imageFiles.length} screenshots I just sent you:\n\n${extracted}\n\nThese are new jobs to add to the CRM.${caption ? ` I also said: "${caption}" — do that.` : ""} Check for any scheduling conflicts or unclear ordering and ask me before creating anything — otherwise go ahead: create the customers and jobs, assign the employees, and set the price for each.`);
+        return;
+      }
+
+      const a = attachments[0];
+      const isPdf = a.isPdf;
+      // FEATURE — upload to the SAME public bucket customer documents
+      // already live in (DocumentVault.tsx), so a later "attach this to
+      // [client]" can actually save it — fire-and-forget alongside the
+      // vision analysis below; if it fails, attach_file_to_customer will
+      // just report no file is available rather than blocking the chat.
+      (async () => {
+        try {
+          const path = `_alfred-inbound/${ownerId}/${uid()}-${a.file.name}`;
+          const { error: upErr } = await (supabase as any).storage.from("customer-docs").upload(path, a.file, { contentType: a.file.type || "application/octet-stream", upsert: true });
+          if (upErr) { console.warn("[Alfred] file upload for attach-to-customer failed:", upErr.message); return; }
+          const { data: pub } = (supabase as any).storage.from("customer-docs").getPublicUrl(path);
+          if (pub?.publicUrl) lastAttachedFileRef.current = { url: pub.publicUrl, fileName: a.file.name };
+        } catch (e: any) { console.warn("[Alfred] file upload threw:", e?.message); }
+      })();
+      const result: any = await callVisionModel({
+        messages: [{
+          role: "user",
+          content: [
+            isPdf
+              ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: a.base64 } }
+              : { type: "image", source: { type: "base64", media_type: a.mediaType, data: a.base64 } },
+            { type: "text", text: "You are Alfred, business assistant for a pressure-washing/trash-can-cleaning company. Analyze this file. If it's a receipt or invoice: extract vendor name, date (YYYY-MM-DD), total amount, and category (fuel/supplies/equipment/food/other). Format as: RECEIPT: [vendor] | [date] | $[amount] | [category]. If it's a job photo: describe what you see and whether it's before/after. If it's a work order, job order, contract, or any other document with real content (a commercial customer's order, scope of work, instructions, etc.): transcribe the FULL relevant content clearly and completely — customer/company name, address, phone/email if present, every service/scope item, dates, prices, and special instructions — so this can be summarized or acted on later without re-reading the file. Do not just describe it briefly in this case; the owner may ask you to schedule or assign work from it." }
+          ]
+        }],
+        maxTokens: 1500,
+      }, 30000, "File analysis", { pdf: isPdf });
+      const reply = result.text || "Could not analyze the file.";
+      const parts = reply.match(/RECEIPT: (.+?) \| (.+?) \| \$?([\d.,]+) \| (.+)/i);
+      if (parts) {
+        const [, vendor, date, amountStr, category] = parts;
+        const amount = Number(amountStr.replace(/,/g, ""));
+        appendMessage({
+          id: uid(), role: "alfred",
+          content: `📋 Receipt detected: ${vendor.trim()} · $${amount} · ${category.trim().toLowerCase()}${date.trim() ? " · " + date.trim() : ""}`,
+          timestamp: Date.now(),
+          pendingExpense: { vendor: vendor.trim(), date: date.trim(), amount, category: category.trim().toLowerCase(), receiptDataUrl: isPdf ? undefined : a.dataUrl },
+        } as any);
+      } else {
+        recentFileContextRef.current = { fileName: a.file.name, extractedText: reply, attachedAt: Date.now(), turnsUsed: 0 };
+        // BUG FIX — a typed caption alongside a single attachment never had
+        // anywhere to go before (the vision call fired before Send even
+        // existed as a concept) — thread it into the tool-calling
+        // conversation same as the bulk-import path already does, instead
+        // of silently dropping it.
+        if (caption) {
+          await send(`${reply}\n\n(The above is what I just found in the file I attached.) ${caption}`);
+        } else {
+          appendMessage({ id: uid(), role: "alfred", content: reply, timestamp: Date.now() });
+        }
+      }
+    } catch (err: any) {
+      appendMessage({ id: uid(), role: "alfred", content: "Couldn't analyze " + (attachments.length > 1 ? "those screenshots" : "that file") + " — " + (err?.message || "unknown error") + ".", timestamp: Date.now() });
+    } finally {
+      setAttachAnalyzing(false);
+    }
+  };
+
+  // Composer's real entry point — routes to the attachment pipeline above
+  // when something's staged, otherwise the plain text send(). Used by the
+  // Send button, Enter key, suggested-prompt chips, and voice auto-send.
+  const sendMessage = async (overrideText?: string) => {
+    if (pendingAttachments.length > 0) {
+      const attachments = pendingAttachments;
+      const caption = (overrideText ?? input).trim();
+      setPendingAttachments([]);
+      setInput("");
+      setShowSlash(false);
+      await sendWithAttachments(caption, attachments);
+    } else {
+      await send(overrideText);
+    }
+  };
+
   // FEATURE — "a real continuous hands-free conversation loop." Each turn
   // is its own SpeechRecognition instance with continuous:false — the
   // browser's own endpointing (it waits for a natural pause) decides when
@@ -5570,7 +5743,7 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
               <div className="grid grid-cols-2 md:grid-cols-3 gap-2 w-full max-w-2xl">
                 {suggestions.map((s, i) => {
                   const Icon = s.icon;
-                  return <button key={i} onClick={() => send(s.prompt)} className="p-3 bg-black/40 hover:bg-red-950/20 border border-red-900/30 hover:border-red-600/40 rounded-xl text-left transition group">
+                  return <button key={i} onClick={() => sendMessage(s.prompt)} className="p-3 bg-black/40 hover:bg-red-950/20 border border-red-900/30 hover:border-red-600/40 rounded-xl text-left transition group">
                     <Icon size={14} className="text-red-400 mb-1.5 group-hover:scale-110 transition" />
                     <div className="text-xs font-medium">{s.title}</div>
                     <div className="text-[10px] text-white/40 font-mono mt-0.5">{s.prompt}</div>
@@ -5683,6 +5856,35 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
                 ))}
               </div>
             )}
+            {/* BUG FIX (user report) — "attach it, see that there's an
+                attachment, press X to unattach... never send until you
+                press send." Staged locally by the paperclip's file input
+                (pendingAttachments) — nothing is sent to Alfred until
+                sendMessage() actually runs on a real Send press. */}
+            {pendingAttachments.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-2 px-0.5">
+                {pendingAttachments.map(a => (
+                  <div key={a.id} className="relative flex-shrink-0">
+                    {a.isPdf ? (
+                      <div className="w-14 h-14 rounded-lg border border-red-900/40 bg-black/60 flex flex-col items-center justify-center gap-0.5 px-1 overflow-hidden">
+                        <FileText size={16} className="text-red-400 flex-shrink-0" />
+                        <span className="text-[8px] text-white/50 truncate w-full text-center">{a.file.name}</span>
+                      </div>
+                    ) : (
+                      <img src={a.dataUrl} alt={a.file.name} className="w-14 h-14 object-cover rounded-lg border border-red-900/40" />
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setPendingAttachments(prev => prev.filter(p => p.id !== a.id))}
+                      title="Remove attachment"
+                      className="absolute -top-1.5 -right-1.5 w-[18px] h-[18px] rounded-full bg-red-700 hover:bg-red-600 text-white flex items-center justify-center border border-black/70"
+                    >
+                      <X size={10} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
             {/* BUG FIX (user report) — "move the buttons... too cramped."
                 Down from 3 voice controls to 1 (see the unified mic button
                 below) plus a tighter gap reclaims real width for the
@@ -5767,209 +5969,33 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
                   const filesList = Array.from(e.target.files || []);
                   if (filesList.length === 0) return;
                   e.target.value = "";
-                  // FEATURE — "Alfred can receive screenshots... a few
-                  // screenshots containing addresses, phone numbers, order
-                  // details, time, assigned employees, dollar amounts...
-                  // extract the information, assign employees, set the
-                  // cost... ask clarifying questions." Selecting 2+ image
-                  // files at once (vs. the single-file receipt/photo path
-                  // below, left untouched) routes here instead: one Claude
-                  // vision call reads every screenshot and extracts a plain
-                  // numbered list of every job it can find, which is then
-                  // handed to the NORMAL send()/tool-calling conversation —
-                  // NOT a separate code path — as if the owner had typed it.
-                  // That's deliberate: create_customer/schedule_job already
-                  // dedupe customers and support inline employee assignment,
-                  // and the model's own reasoning (guided by the BULK JOB
-                  // IMPORT rules in the system prompt below) already handles
-                  // conflict detection, asking clarifying questions, and
-                  // taking the owner's follow-up corrections in plain text —
-                  // exactly like every other multi-turn tool conversation
-                  // Alfred already has. Building a separate structured-data/
-                  // confirm-button pipeline would just duplicate that.
-                  if (filesList.length > 1) {
-                    // BUG FIX (user report) — "I attached screenshots... please
-                    // assign my employee Luke Knight to them... Alfred just
-                    // sat there spinning and spinning and never responded."
-                    // Root cause: this whole branch fired IMMEDIATELY on
-                    // attaching, completely ignoring whatever the owner had
-                    // just typed in the composer alongside the attachment —
-                    // their real instruction was silently dropped, never sent
-                    // anywhere. Worse, if they then pressed Send themselves,
-                    // send() below no-ops while `loading` is already true
-                    // (this vision call in progress) with zero feedback — the
-                    // exact "spinning forever, no error" symptom. Capture
-                    // whatever's typed right now and actually use it: fed into
-                    // the vision prompt AND preserved verbatim in the final
-                    // send() call, and the box is cleared immediately so it's
-                    // obvious the text was picked up, not silently eaten.
-                    const ownerCaption = input.trim();
-                    setInput("");
-                    const visionModel = pickVisionModel();
-                    if (!visionModel) {
-                      appendMessage({ id: uid(), role: "user", content: `📎 ${filesList.length} screenshots`, timestamp: Date.now() });
-                      appendMessage({ id: uid(), role: "alfred", content: "Reading screenshots needs an API key for Claude, GPT-4o, Gemini, or OpenRouter — add one in Settings → AI Models.", timestamp: Date.now() });
-                      return;
-                    }
-                    const allImageFiles = filesList.filter(f => f.type.startsWith("image/"));
-                    if (allImageFiles.length === 0) {
-                      appendMessage({ id: uid(), role: "alfred", content: "Bulk import works with image screenshots — attach one PDF at a time instead.", timestamp: Date.now() });
-                      return;
-                    }
-                    // BUG FIX — "make it so up to 10 screenshots." No cap
-                    // existed at all — a huge multi-select would burn a lot of
-                    // vision tokens in one call and risk hitting the model's
-                    // own request size limit. Cap at 10, keep the rest for a
-                    // follow-up message rather than silently dropping them
-                    // with no explanation (see CLAUDE.md's "no silent caps").
-                    const imageFiles = allImageFiles.slice(0, 10);
-                    const droppedCount = allImageFiles.length - imageFiles.length;
-                    if (droppedCount > 0) toast(`Only the first 10 screenshots were used — send the other ${droppedCount} in a follow-up message.`, "yellow");
-                    const readAsBase64 = (file: File) => new Promise<{ dataUrl: string; base64: string; mediaType: string }>((resolve, reject) => {
-                      const rr = new FileReader();
-                      rr.onload = ev => { const dataUrl = ev.target!.result as string; resolve({ dataUrl, base64: dataUrl.split(",")[1], mediaType: file.type || "image/jpeg" }); };
-                      rr.onerror = reject;
-                      rr.readAsDataURL(file);
-                    });
-                    const msgId = uid();
-                    setAttachAnalyzing(true);
-                    try {
-                      // BUG FIX (user report) — "when I attach screenshots...
-                      // it should show that there's an attachment." Used to
-                      // post a text-only "(analyzing...)" bubble first and
-                      // only patch the thumbnails in afterward once the
-                      // (fast, local) file reads finished — a real gap,
-                      // however brief, where the message existed with no
-                      // visible sign of what was actually attached. Reading
-                      // the files BEFORE posting anything means the very
-                      // first render of this message already carries its
-                      // thumbnails.
-                      const loaded = await Promise.all(imageFiles.map(readAsBase64));
-                      appendMessage({ id: msgId, role: "user", content: `📎 ${imageFiles.length} screenshots`, imagePreviews: loaded.map(l => l.dataUrl), timestamp: Date.now() } as any);
-                      const result: any = await withTimeout<any>((callModel as any)({
-                        modelId: visionModel.modelId,
-                        apiKey: visionModel.apiKey,
-                        messages: [{
-                          role: "user",
-                          content: [
-                            ...loaded.map(l => ({ type: "image", source: { type: "base64", media_type: l.mediaType, data: l.base64 } })),
-                            { type: "text", text: `You are Alfred, business assistant for a pressure-washing/trash-can-cleaning company. These ${imageFiles.length} screenshots contain job/order info — texts, a spreadsheet, a scheduling app, handwritten notes, anything. Extract EVERY separate job/order visible across ALL the images. For each one list: customer full name, phone number, address, the service/order details, the date and time (resolve relative wording like "today"/"tomorrow" against ${today()}), which employee (if any) is named as assigned, and the dollar amount. If a field isn't visible for a job, write "not given" for it rather than guessing. Number each job. In a final section, explicitly call out any two jobs that name the SAME employee at the same or overlapping date/time. Be thorough — do not skip any job visible in any image.${ownerCaption ? `\n\nThe owner typed this along with the screenshots — it's a real instruction, factor it in (e.g. who to assign, what to do): "${ownerCaption}"` : ""}` }
-                          ]
-                        }],
-                        maxTokens: 3000,
-                      }), 45000, "Screenshot analysis");
-                      const extracted = (result.text || "").trim();
-                      if (!extracted) {
-                        appendMessage({ id: uid(), role: "alfred", content: "Couldn't find any job/order info in those screenshots.", timestamp: Date.now() });
-                        return;
-                      }
-                      await send(`Here's what I found in the ${imageFiles.length} screenshots I just sent you:\n\n${extracted}\n\nThese are new jobs to add to the CRM.${ownerCaption ? ` I also said: "${ownerCaption}" — do that.` : ""} Check for any scheduling conflicts or unclear ordering and ask me before creating anything — otherwise go ahead: create the customers and jobs, assign the employees, and set the price for each.`);
-                    } catch (err: any) {
-                      appendMessage({ id: uid(), role: "alfred", content: "Couldn't analyze those screenshots — " + (err?.message || "unknown error") + ".", timestamp: Date.now() });
-                    } finally { setAttachAnalyzing(false); }
-                    return;
+                  // BUG FIX (user report) — "it still sends the file...
+                  // before I send the message... should never send until
+                  // you actually press send." Attaching now ONLY stages a
+                  // local preview here (read + add to pendingAttachments) —
+                  // no model call, no appendMessage, nothing goes to Alfred
+                  // until sendMessage() actually runs, which happens on a
+                  // real Send press. See sendWithAttachments (near send())
+                  // for the actual analysis, moved there unchanged.
+                  const room = 10 - pendingAttachments.length;
+                  if (room <= 0) { toast("Up to 10 attachments per message.", "yellow"); return; }
+                  const toRead = filesList.slice(0, room);
+                  if (filesList.length > toRead.length) toast(`Only ${toRead.length} more attachment${toRead.length !== 1 ? "s" : ""} fit — up to 10 per message.`, "yellow");
+                  const readOne = (file: File) => new Promise<{ id: string; file: File; dataUrl: string; base64: string; mediaType: string; isPdf: boolean }>((resolve, reject) => {
+                    const rr = new FileReader();
+                    rr.onload = ev => {
+                      const dataUrl = ev.target!.result as string;
+                      resolve({ id: uid(), file, dataUrl, base64: dataUrl.split(",")[1], mediaType: file.type || "image/jpeg", isPdf: file.type === "application/pdf" });
+                    };
+                    rr.onerror = reject;
+                    rr.readAsDataURL(file);
+                  });
+                  try {
+                    const loaded = await Promise.all(toRead.map(readOne));
+                    setPendingAttachments(prev => [...prev, ...loaded]);
+                  } catch {
+                    toast("Couldn't read that file — try again.", "red");
                   }
-                  const file = filesList[0];
-                  // BUG FIX — this whole feature was silently broken end to
-                  // end: (1) the analysis call hit api.anthropic.com directly
-                  // with NO api-key header at all, so it always 401'd, (2)
-                  // the image it attached to the message was never actually
-                  // rendered in the chat, and (3) the follow-up "say yes log
-                  // it" was a dead end — nothing in the send pipeline ever
-                  // recognized that phrase, so no expense was ever created no
-                  // matter what the owner typed back. Fixed all three: route
-                  // through the same callModel() every other Alfred call
-                  // uses (real auth), render the attached image, and offer a
-                  // real clickable "Log to Expenses" button instead of a
-                  // phrase to guess.
-                  const isPdf = file.type === "application/pdf";
-                  // PDFs still need a provider that can actually read a PDF
-                  // block server-side — Claude and Gemini both translate it
-                  // (see call-model.ts), OpenAI-compatible providers degrade
-                  // it to a text note instead ("can't read PDFs directly").
-                  // Prefer Claude/Gemini specifically for a PDF so it's read
-                  // properly instead of just explained as unreadable.
-                  const keys = (settings.modelKeys || {}) as Record<string, string>;
-                  const visionModel = isPdf
-                    ? (keys.claude ? { modelId: "claude", apiKey: keys.claude } : keys.gemini ? { modelId: "gemini", apiKey: keys.gemini } : pickVisionModel())
-                    : pickVisionModel();
-                  if (!visionModel) {
-                    appendMessage({ id: uid(), role: "user", content: "📎 " + file.name, timestamp: Date.now() });
-                    appendMessage({ id: uid(), role: "alfred", content: "Reading " + (isPdf ? "PDFs" : "photos/receipts") + " needs an API key for Claude, GPT-4o, Gemini, or OpenRouter — add one in Settings → AI Models.", timestamp: Date.now() });
-                    return;
-                  }
-                  const r = new FileReader();
-                  r.onload = async ev => {
-                    const dataUrl = ev.target!.result as string;
-                    const base64 = dataUrl.split(",")[1];
-                    const mediaType = file.type || "image/jpeg";
-                    appendMessage({ id: uid(), role: "user", content: "📎 " + file.name + " (analyzing...)", imagePreview: isPdf ? undefined : dataUrl, timestamp: Date.now() });
-                    setAttachAnalyzing(true);
-                    // FEATURE — upload to the SAME public bucket customer
-                    // documents already live in (DocumentVault.tsx), so a
-                    // later "attach this to [client]" can actually save it —
-                    // fire-and-forget alongside the vision analysis below;
-                    // if it fails, attach_file_to_customer will just report
-                    // no file is available rather than blocking the chat.
-                    (async () => {
-                      try {
-                        // Owner-id-prefixed path — required by the storage
-                        // RLS policy scoping this staging folder per
-                        // business (see the storage security migration).
-                        const path = `_alfred-inbound/${ownerId}/${uid()}-${file.name}`;
-                        const { error: upErr } = await (supabase as any).storage.from("customer-docs").upload(path, file, { contentType: file.type || "application/octet-stream", upsert: true });
-                        if (upErr) { console.warn("[Alfred] file upload for attach-to-customer failed:", upErr.message); return; }
-                        const { data: pub } = (supabase as any).storage.from("customer-docs").getPublicUrl(path);
-                        if (pub?.publicUrl) lastAttachedFileRef.current = { url: pub.publicUrl, fileName: file.name };
-                      } catch (e: any) { console.warn("[Alfred] file upload threw:", e?.message); }
-                    })();
-                    try {
-                      // FEATURE — "a huge job order, five paragraphs long,
-                      // inside a PDF — summarize it, then schedule it and
-                      // assign employees" / "upload this PDF to this
-                      // customer's vault." Broadened past receipt-only: for
-                      // a work order / job order / contract / any other
-                      // document, this now asks for the FULL relevant
-                      // content (not just "describe briefly"), stashed in
-                      // recentFileContextRef so a follow-up instruction in
-                      // this same conversation — summarize it, schedule it,
-                      // whatever — has real content to act on. The receipt
-                      // detection/pendingExpense flow below is completely
-                      // unchanged for an actual receipt.
-                      const result: any = await withTimeout<any>((callModel as any)({
-                        modelId: visionModel.modelId,
-                        apiKey: visionModel.apiKey,
-                        messages: [{
-                          role: "user",
-                          content: [
-                            isPdf
-                              ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }
-                              : { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
-                            { type: "text", text: "You are Alfred, business assistant for a pressure-washing/trash-can-cleaning company. Analyze this file. If it's a receipt or invoice: extract vendor name, date (YYYY-MM-DD), total amount, and category (fuel/supplies/equipment/food/other). Format as: RECEIPT: [vendor] | [date] | $[amount] | [category]. If it's a job photo: describe what you see and whether it's before/after. If it's a work order, job order, contract, or any other document with real content (a commercial customer's order, scope of work, instructions, etc.): transcribe the FULL relevant content clearly and completely — customer/company name, address, phone/email if present, every service/scope item, dates, prices, and special instructions — so this can be summarized or acted on later without re-reading the file. Do not just describe it briefly in this case; the owner may ask you to schedule or assign work from it." }
-                          ]
-                        }],
-                        maxTokens: 1500,
-                      }), 30000, "File analysis");
-                      const reply = result.text || "Could not analyze the file.";
-                      const parts = reply.match(/RECEIPT: (.+?) \| (.+?) \| \$?([\d.,]+) \| (.+)/i);
-                      if (parts) {
-                        const [, vendor, date, amountStr, category] = parts;
-                        const amount = Number(amountStr.replace(/,/g, ""));
-                        appendMessage({
-                          id: uid(), role: "alfred",
-                          content: `📋 Receipt detected: ${vendor.trim()} · $${amount} · ${category.trim().toLowerCase()}${date.trim() ? " · " + date.trim() : ""}`,
-                          timestamp: Date.now(),
-                          pendingExpense: { vendor: vendor.trim(), date: date.trim(), amount, category: category.trim().toLowerCase(), receiptDataUrl: isPdf ? undefined : dataUrl },
-                        } as any);
-                      } else {
-                        recentFileContextRef.current = { fileName: file.name, extractedText: reply, attachedAt: Date.now(), turnsUsed: 0 };
-                        appendMessage({ id: uid(), role: "alfred", content: reply, timestamp: Date.now() });
-                      }
-                    } catch (err: any) {
-                      appendMessage({ id: uid(), role: "alfred", content: "Couldn't analyze that file — " + (err?.message || "unknown error") + ".", timestamp: Date.now() });
-                    } finally { setAttachAnalyzing(false); }
-                  };
-                  r.readAsDataURL(file);
                 }} />
               </div>
               {/* FEATURE (user report) — "only one button for the whole note
@@ -6008,7 +6034,7 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
                         dense
                         holdToRecord
                         label="Dictate (STT)"
-                        onTranscript={(text, autoSend) => { setVoiceMenuOpen(false); if (autoSend) send(text); else setInput(prev => prev + (prev ? " " : "") + text); }}
+                        onTranscript={(text, autoSend) => { setVoiceMenuOpen(false); if (autoSend) sendMessage(text); else setInput(prev => prev + (prev ? " " : "") + text); }}
                         apiKey={settings?.openAiKey || settings?.openaiKey || ""}
                       />
                       <div className="border-t border-red-900/20">
@@ -6017,7 +6043,7 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
                           dense
                           holdToRecord
                           label="Voice Note"
-                          onTranscript={(text, autoSend) => { setVoiceMenuOpen(false); if (autoSend) send(text); else setInput(prev => prev + (prev ? " " : "") + text); }}
+                          onTranscript={(text, autoSend) => { setVoiceMenuOpen(false); if (autoSend) sendMessage(text); else setInput(prev => prev + (prev ? " " : "") + text); }}
                           apiKey={settings?.openAiKey || settings?.openaiKey || ""}
                         />
                       </div>
@@ -6037,7 +6063,7 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
                 placeholder="Message Alfred..."
                 value={input}
                 onChange={onInputChange}
-                onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+                onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
                 onInput={e => { const t = e.target as HTMLTextAreaElement; t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 320) + "px"; }}
                 className="flex-1 bg-transparent px-3 py-2.5 text-sm text-white placeholder-white/30 focus:outline-none resize-none min-h-[52px] max-h-[320px]"
               />
@@ -6051,7 +6077,7 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
                   <Square size={14} fill="currentColor" />
                 </button>
               ) : (
-                <button onClick={() => send()} disabled={!input.trim()} className={"p-2.5 rounded-xl transition " + (!input.trim() ? "bg-white/5 text-white/30" : "bg-gradient-to-br from-red-600 to-red-800 text-white hover:scale-105")}>
+                <button onClick={() => sendMessage()} disabled={!input.trim() && pendingAttachments.length === 0} className={"p-2.5 rounded-xl transition " + (!input.trim() && pendingAttachments.length === 0 ? "bg-white/5 text-white/30" : "bg-gradient-to-br from-red-600 to-red-800 text-white hover:scale-105")}>
                   <Send size={14} />
                 </button>
               )}
