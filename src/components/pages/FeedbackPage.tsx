@@ -99,7 +99,16 @@ export function FeedbackPage({ userEmail, userName, isAdmin, toast, publicMode =
     setSubmitting(true);
     try {
       const row = { id: uid(), title: newTitle.trim(), description: newDesc.trim(), type: newType, status: "submitted", submitted_by_email: userEmail || "", submitted_by_name: userName || "" };
-      const { error } = await (supabase as any).from("feedback_items").insert(row);
+      // BUG FIX (user report — "added feedback, it didn't save") — this had
+      // no withTimeout, unlike every other critical write in this app (see
+      // CLAUDE.md) — supabase-js refreshing a stale session internally
+      // before this insert can hang under the same real-world flaky-
+      // connection conditions documented elsewhere in this codebase
+      // (AlfredPage's ITEM 23, lib/messaging.ts's twilioSend). Without a
+      // timeout, that hang left `submitting` stuck true forever with the
+      // button just silently "Submitting…" — no error, nothing saved,
+      // nothing to explain why.
+      const { error } = await withTimeout<any>((supabase as any).from("feedback_items").insert(row), 15000, "Submit feedback");
       if (error) throw new Error(error.message);
       toast?.("Submitted ✓", "green");
       setNewTitle(""); setNewDesc(""); setShowNew(false);
