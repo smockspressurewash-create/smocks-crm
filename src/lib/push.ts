@@ -118,12 +118,30 @@ export const sendPushNotification = async (opts: {
       const { data } = await withTimeout(supabase.auth.getSession(), 8000, "Get session");
       accessToken = data?.session?.access_token;
     } catch { /* fall through — server will reject with no valid session */ }
-    await fetch("/api/send-push", {
+    // BUG FIX (user report — "no native notifications at all, on Android")
+    // — fetch() only rejects on a genuine network failure, never on a
+    // non-2xx HTTP response, so a real server-side failure here (most
+    // commonly: VAPID_PRIVATE_KEY or SUPABASE_SERVICE_ROLE_KEY never set as
+    // a Cloudflare Pages environment variable — see functions/api/send-
+    // push.ts's own setup comment) was completely invisible — not even a
+    // console.warn, on either the sender's or the recipient's device, in
+    // EVERY call site that ever calls this function. Every push in the
+    // whole app could be silently failing 100% of the time with zero trace
+    // anywhere. Now actually reads the response and logs the real reason.
+    const res = await fetch("/api/send-push", {
       method: "POST",
       headers: { "Content-Type": "application/json", ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
       body: JSON.stringify(opts),
     });
+    const data = await res.json().catch(() => ({} as any));
+    if (!res.ok) {
+      console.error("[Push] send-push failed (" + res.status + "):", data?.error || "unknown error — check Cloudflare Pages env vars VAPID_PRIVATE_KEY / VAPID_SUBJECT / SUPABASE_SERVICE_ROLE_KEY are set");
+    } else if (data?.sent === 0 && data?.total === 0) {
+      console.warn("[Push] no registered devices for this target — the recipient never completed the 'turn on notifications' opt-in prompt on this device.");
+    } else {
+      console.log("[Push] sent:", data?.sent, "/", data?.total);
+    }
   } catch (e: any) {
-    console.warn("[Push] send failed:", e?.message);
+    console.warn("[Push] send threw:", e?.message);
   }
 };

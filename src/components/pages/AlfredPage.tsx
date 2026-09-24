@@ -26,6 +26,7 @@ import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Exp
 import { twilioSend, sendEmail, emailShell, emailButton, logOutboundSmsToInbox, getFreshOwnerGoogleToken } from "../../lib/messaging";
 import { fetchCalendarEvents, createGCalEvent, updateGCalEvent, deleteGCalEvent } from "../../lib/googleApi";
 import { seedWeather } from "../../lib/weather";
+import { sendPushNotification } from "../../lib/push";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES, automationFromTemplate } from "../../lib/seed";
 import { callModel, MODELS, parseRateLimitError } from "../../lib/api";
 import { supabase, getStoredGoogleConnection } from "../../lib/supabase";
@@ -301,6 +302,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // as the screenshot preview purge below, just for extracted text instead
   // of image bytes.
   const recentFileContextRef = useRef<{ fileName: string; extractedText: string; attachedAt: number; turnsUsed: number } | null>(null);
+
+  // FEATURE — mobile attach menu (Photo/Video vs Document), see the
+  // composer's paperclip button below for the full reasoning.
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false);
+  const mainAttachInputRef = useRef<HTMLInputElement>(null);
 
   // FIX 2 — Alfred conversations sync with Supabase. Previously lived in
   // App.tsx keyed off the owner's session resolving, which meant it ran (or
@@ -4761,6 +4767,23 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
       const alfredMsgId = uid();
       appendMessage({ id: alfredMsgId, role: "alfred", content: displayText, timestamp: Date.now(), toolTraces, modelUsed, failoverChain });
 
+      // FEATURE — "if I message Alfred and go out of the app, and Alfred
+      // responds while I'm not in it, it should give a notification... if I
+      // click on it it takes me to the chat." isActivePage (already passed
+      // in — true only while the owner is actually looking at THIS page,
+      // not just this browser tab) plus document.hidden (tab backgrounded/
+      // minimized/screen off) together cover both ways of "not in it."
+      // Never fires during a live voice call — the owner is right there.
+      if (!voiceModeOpenRef.current && ownerId && (!isActivePage || document.hidden)) {
+        sendPushNotification({
+          ownerId,
+          title: "Alfred replied",
+          body: displayText.replace(/\n+/g, " ").slice(0, 140),
+          url: "/#/alfred",
+          tag: "alfred-reply",
+        }).catch(() => {});
+      }
+
       // TTS — read Alfred's response aloud when enabled, or always in Voice
       // Mode (a hands-free conversation with no toggle to check). Refactored
       // into the shared speakAloud() helper (free browser voice, picks a
@@ -5565,9 +5588,82 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
               </div>
             )}
             <div className="flex items-end gap-2 bg-black/60 border border-red-900/40 rounded-2xl p-2 focus-within:border-red-500/60 transition">
-              {/* Image/PDF/receipt upload */}
-              <label className="flex-shrink-0 cursor-pointer p-2 rounded-xl text-white/40 hover:text-white/70 hover:bg-white/5 transition" title="Attach a photo, receipt, or PDF — or select up to 10 screenshots to bulk-import jobs">
-                <input type="file" accept="image/*,application/pdf" multiple className="hidden" onChange={async e => {
+              {/* BUG FIX (user report) — "on mobile it should also give the
+                  option for photos, not just camera and files." The single
+                  file input below (accept="image/*,application/pdf") mixes
+                  image and non-image types, which on several real Android
+                  builds drops the dedicated "Photos" gallery shortcut from
+                  the native picker down to just Camera + generic Files.
+                  Splitting into two menu items — one accept="image/*,
+                  video/*" alone (gets the real Photos picker), one
+                  accept="application/pdf" alone — fixes that on every
+                  platform, without touching the existing, just-fixed attach
+                  handler at all: the photo/video input forwards its
+                  FileList into the SAME original hidden input via a
+                  DataTransfer (the standard vanilla-JS way to hand a
+                  FileList to another real <input>) and fires its change
+                  event, so all the actual logic below runs completely
+                  unchanged regardless of which menu item was used. */}
+              <div className="relative flex-shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setAttachMenuOpen(o => !o)}
+                  title="Attach a photo, video, receipt, or PDF"
+                  className="p-2 rounded-xl text-white/40 hover:text-white/70 hover:bg-white/5 transition"
+                >
+                  <Paperclip size={16} />
+                </button>
+                {attachMenuOpen && (
+                  <>
+                    <div className="fixed inset-0 z-10" onClick={() => setAttachMenuOpen(false)} />
+                    <div className="absolute bottom-full mb-2 left-0 w-52 bg-black/95 border border-red-900/40 rounded-xl shadow-2xl overflow-hidden z-20 backdrop-blur">
+                      <label className="w-full flex items-center gap-2.5 px-3 py-2.5 text-xs text-white/80 hover:bg-red-950/40 cursor-pointer border-b border-red-900/20">
+                        <ImageIcon size={14} className="text-red-400" />
+                        Photo or video
+                        <input
+                          type="file"
+                          accept="image/*,video/*"
+                          multiple
+                          className="hidden"
+                          onChange={e => {
+                            setAttachMenuOpen(false);
+                            const files = e.target.files;
+                            const target = mainAttachInputRef.current;
+                            if (files && files.length > 0 && target) {
+                              const dt = new DataTransfer();
+                              Array.from(files).forEach(f => dt.items.add(f));
+                              target.files = dt.files;
+                              target.dispatchEvent(new Event("change", { bubbles: true }));
+                            }
+                            e.target.value = "";
+                          }}
+                        />
+                      </label>
+                      <label className="w-full flex items-center gap-2.5 px-3 py-2.5 text-xs text-white/80 hover:bg-red-950/40 cursor-pointer">
+                        <FileText size={14} className="text-red-400" />
+                        Document (PDF)
+                        <input
+                          type="file"
+                          accept="application/pdf"
+                          className="hidden"
+                          onChange={e => {
+                            setAttachMenuOpen(false);
+                            const files = e.target.files;
+                            const target = mainAttachInputRef.current;
+                            if (files && files.length > 0 && target) {
+                              const dt = new DataTransfer();
+                              Array.from(files).forEach(f => dt.items.add(f));
+                              target.files = dt.files;
+                              target.dispatchEvent(new Event("change", { bubbles: true }));
+                            }
+                            e.target.value = "";
+                          }}
+                        />
+                      </label>
+                    </div>
+                  </>
+                )}
+                <input ref={mainAttachInputRef} type="file" accept="image/*,application/pdf" multiple className="hidden" onChange={async e => {
                   const filesList = Array.from(e.target.files || []);
                   if (filesList.length === 0) return;
                   e.target.value = "";
@@ -5758,8 +5854,7 @@ NAME MATCHING: if a tool result comes back with "error": "Customer not found" or
                   };
                   r.readAsDataURL(file);
                 }} />
-                <Paperclip size={16} />
-              </label>
+              </div>
               {/* Voice input — two modes: "dictate" lands the transcript in
                   the text box to review/edit before sending, "note" sends
                   automatically once the recording stops. Click the small
