@@ -207,6 +207,8 @@ export function CustomerMapView({ customers = [], apiKey, geocodingKey, onViewCu
         <div className="text-xs text-yellow-200 bg-yellow-950/20 border border-yellow-700/40 rounded-xl p-3">
           {detailedError?.includes("referer")
             ? `No pins loaded — your Google Maps key has a website/referrer restriction, which Google does not allow for the Geocoding API ("${detailedError}"). Add a separate Geocoding Key with no referrer restriction in Settings → Integrations → Google Maps.`
+            : /not authorized/i.test(detailedError || "")
+            ? `No pins loaded — this key doesn't have the Geocoding API enabled ("${detailedError}"). Fix: in Google Cloud Console → APIs & Services → Library, search "Geocoding API" and click Enable for this project, then reopen this page. This is separate from the Maps JavaScript/Places APIs the rest of the app uses — each Google Maps API has to be enabled individually per project.`
             : detailedError
             ? `No pins loaded — Google's exact reason: "${detailedError}"`
             : lastErrorStatus === "REQUEST_DENIED"

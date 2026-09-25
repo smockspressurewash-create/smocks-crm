@@ -1776,95 +1776,145 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     return null;
   };
 
-  // FEATURE (user report) — "if I send a message and Alfred says it did
-  // something... it asks 'Hey, can you undo that?'... confirm... and then
-  // undoes it, regardless of whether it created a new customer, scheduled
-  // new jobs, etc." Tracks the last reversible action Alfred actually took
-  // in THIS conversation so a plain "undo that" (after the model confirms
-  // with the owner first — see the UNDO REQUESTS system-prompt rule below)
-  // can really reverse it: delete the row it created, or restore the field
-  // it changed. Deliberately scoped to what's cleanly reversible — a sent
-  // SMS/email can't be unsent, so those tools are never listed here.
-  const lastActionsRef = useRef<Array<{ label: string; undo: () => Promise<{ success: boolean; message: string }> }>>([]);
+  // BUG FIX (user report) — "the system is reporting customer not found...
+  // Mission abort." Root cause: create_customer deliberately never calls
+  // setCustomers() (it relies on the ~3s cross-device Supabase poll — see
+  // that case's own comment), so a same-turn "create these customers, then
+  // schedule jobs for them" chain had schedule_job/create_estimate/
+  // create_invoice looking the brand-new customer up in the STALE local
+  // `customers` array, which genuinely doesn't have it yet — exact same
+  // staleness findJobFresh above already exists to fix for jobs, just never
+  // applied to customer lookups. Falls back to a direct Supabase read (by
+  // id, or by name if no id) when the local array comes up empty.
+  const findCustomerFresh = async (opts: { customerId?: string; customerName?: string }): Promise<any> => {
+    if (opts.customerId) {
+      const local = customers.find((x: any) => x.id === opts.customerId);
+      if (local) return local;
+      try {
+        const { data } = await withTimeout<any>(
+          (supabase as any).from("customers").select("*").eq("id", opts.customerId).maybeSingle(),
+          8000, "Fresh customer lookup"
+        );
+        if (data) return data;
+      } catch { /* fall through to customerName below, or the caller's not-found handling */ }
+    }
+    if (opts.customerName) {
+      const wanted = opts.customerName.trim().toLowerCase();
+      const localMatch = customers.find((x: any) => (x.firstName + " " + x.lastName).trim().toLowerCase() === wanted);
+      if (localMatch) return localMatch;
+      try {
+        // No case-insensitive "firstName+lastName" match server-side without
+        // a computed column — pull the most recently created customers and
+        // match client-side, which is exactly the set a same-turn-created
+        // customer would be in.
+        const { data } = await withTimeout<any>(
+          (supabase as any).from("customers").select("*").order("createdAt", { ascending: false }).limit(50),
+          8000, "Fresh customer lookup"
+        );
+        const match = (data || []).find((x: any) => (x.firstName + " " + x.lastName).trim().toLowerCase() === wanted);
+        if (match) return match;
+      } catch { /* nothing found either way */ }
+    }
+    return null;
+  };
+
+  // FEATURE (user report) — "Alfred should remember what it did last... a
+  // day later — or even five minutes later — 'undo that' / 'what did you
+  // do' / 'delete those' / 'change them,' it should know what I'm
+  // referring to." UNDO_HANDLERS is payload-driven (not closure-driven) so
+  // an action can be reconstructed and reversed from a plain JSON payload
+  // — either the in-memory lastActionsRef (this session) or a row read
+  // back from alfred_actions_log (migration 0099, any session, any day)
+  // once this one is gone. Deliberately scoped to what's cleanly reversible
+  // — a sent SMS/email can't be unsent, so those tools are never listed.
+  const lastActionsRef = useRef<Array<{ id: string; label: string; toolName: string; payload: any }>>([]);
   const UNDO_HANDLERS: Record<string, {
     label: (result: any) => string;
     before?: (inputs: any) => any;
-    undo: (result: any, inputs: any, before: any) => Promise<{ success: boolean; message: string }>;
+    payload: (result: any, inputs: any, before: any) => Record<string, any>;
+    undo: (payload: Record<string, any>) => Promise<{ success: boolean; message: string }>;
   }> = {
     create_customer: {
       label: (result) => `creating the customer ${result?.customer?.firstName || ""} ${result?.customer?.lastName || ""}`.trim(),
-      undo: async (result) => {
-        if (!result?.customer?.id || result?.note) return { success: false, message: "That customer already existed before this — nothing to delete." };
-        const { data, error } = await (supabase as any).from("customers").delete().eq("id", result.customer.id).select("id");
-        if (error || !Array.isArray(data) || data.length === 0) return { success: false, message: "Couldn't delete the customer — " + (error?.message || "no matching row") };
-        setCustomers((prev: any[]) => prev.filter((x: any) => x.id !== result.customer.id));
-        return { success: true, message: `Deleted customer ${result.customer.firstName} ${result.customer.lastName}.` };
+      payload: (result) => ({ customerId: result?.customer?.id, reused: !!result?.note, firstName: result?.customer?.firstName, lastName: result?.customer?.lastName }),
+      undo: async (p) => {
+        if (!p.customerId || p.reused) return { success: false, message: "That customer already existed before this — nothing to delete." };
+        const { data, error } = await (supabase as any).from("customers").delete().eq("id", p.customerId).select("id");
+        if (error || !Array.isArray(data) || data.length === 0) return { success: false, message: "Couldn't delete the customer — " + (error?.message || "no matching row, likely already deleted") };
+        setCustomers((prev: any[]) => prev.filter((x: any) => x.id !== p.customerId));
+        return { success: true, message: `Deleted customer ${p.firstName} ${p.lastName}.` };
       },
     },
     schedule_job: {
       label: (result) => `scheduling the job for ${result?.customer || "that customer"}${result?.date ? " on " + result.date : ""}`,
-      undo: async (result) => {
-        if (!result?.jobId) return { success: false, message: "No job id was recorded for that action." };
-        const { data, error } = await (supabase as any).from("jobs").delete().eq("id", result.jobId).select("id");
-        if (error || !Array.isArray(data) || data.length === 0) return { success: false, message: "Couldn't delete the job — " + (error?.message || "no matching row") };
-        setJobs((prev: any[]) => prev.filter((x: any) => x.id !== result.jobId));
+      payload: (result) => ({ jobId: result?.jobId }),
+      undo: async (p) => {
+        if (!p.jobId) return { success: false, message: "No job id was recorded for that action." };
+        const { data, error } = await (supabase as any).from("jobs").delete().eq("id", p.jobId).select("id");
+        if (error || !Array.isArray(data) || data.length === 0) return { success: false, message: "Couldn't delete the job — " + (error?.message || "no matching row, likely already deleted") };
+        setJobs((prev: any[]) => prev.filter((x: any) => x.id !== p.jobId));
         return { success: true, message: "Deleted that job." };
       },
     },
     create_estimate: {
       label: (result) => `creating the estimate for ${result?.customer || "that customer"}`,
-      undo: async (result) => {
-        if (!result?.estimateId) return { success: false, message: "No estimate id was recorded for that action." };
-        const { data, error } = await (supabase as any).from("estimates").delete().eq("id", result.estimateId).select("id");
-        if (error || !Array.isArray(data) || data.length === 0) return { success: false, message: "Couldn't delete the estimate — " + (error?.message || "no matching row") };
-        setEstimates((prev: any[]) => prev.filter((x: any) => x.id !== result.estimateId));
+      payload: (result) => ({ estimateId: result?.estimateId }),
+      undo: async (p) => {
+        if (!p.estimateId) return { success: false, message: "No estimate id was recorded for that action." };
+        const { data, error } = await (supabase as any).from("estimates").delete().eq("id", p.estimateId).select("id");
+        if (error || !Array.isArray(data) || data.length === 0) return { success: false, message: "Couldn't delete the estimate — " + (error?.message || "no matching row, likely already deleted") };
+        setEstimates((prev: any[]) => prev.filter((x: any) => x.id !== p.estimateId));
         return { success: true, message: "Deleted that estimate." };
       },
     },
     create_invoice: {
       label: (result) => `creating the invoice for ${result?.customer || "that customer"}`,
-      undo: async (result) => {
-        if (!result?.invoiceId) return { success: false, message: "No invoice id was recorded for that action." };
-        const { data, error } = await (supabase as any).from("estimates").delete().eq("id", result.invoiceId).select("id");
-        if (error || !Array.isArray(data) || data.length === 0) return { success: false, message: "Couldn't delete the invoice — " + (error?.message || "no matching row") };
-        setEstimates((prev: any[]) => prev.filter((x: any) => x.id !== result.invoiceId));
+      payload: (result) => ({ invoiceId: result?.invoiceId }),
+      undo: async (p) => {
+        if (!p.invoiceId) return { success: false, message: "No invoice id was recorded for that action." };
+        const { data, error } = await (supabase as any).from("estimates").delete().eq("id", p.invoiceId).select("id");
+        if (error || !Array.isArray(data) || data.length === 0) return { success: false, message: "Couldn't delete the invoice — " + (error?.message || "no matching row, likely already deleted") };
+        setEstimates((prev: any[]) => prev.filter((x: any) => x.id !== p.invoiceId));
         return { success: true, message: "Deleted that invoice." };
       },
     },
     assign_employee: {
       label: (result) => `assigning ${result?.employee || "that employee"} to the job`,
-      undo: async (result) => {
-        if (!result?.jobId || !result?.employeeId) return { success: false, message: "No job/employee id was recorded for that action." };
-        const j = await findJobFresh({ jobId: result.jobId });
+      payload: (result) => ({ jobId: result?.jobId, employeeId: result?.employeeId, employee: result?.employee }),
+      undo: async (p) => {
+        if (!p.jobId || !p.employeeId) return { success: false, message: "No job/employee id was recorded for that action." };
+        const j = await findJobFresh({ jobId: p.jobId });
         if (!j) return { success: false, message: "Couldn't find that job anymore." };
-        const newCrew = (j.crew || []).filter((id: string) => id !== result.employeeId);
+        const newCrew = (j.crew || []).filter((id: string) => id !== p.employeeId);
         const newCrewAssignedAt = { ...(j.crewAssignedAt || {}) };
-        delete newCrewAssignedAt[result.employeeId];
-        const { error } = await (supabase as any).from("jobs").update({ crew: newCrew, crewAssignedAt: newCrewAssignedAt }).eq("id", result.jobId).select("id");
+        delete newCrewAssignedAt[p.employeeId];
+        const { error } = await (supabase as any).from("jobs").update({ crew: newCrew, crewAssignedAt: newCrewAssignedAt }).eq("id", p.jobId).select("id");
         if (error) return { success: false, message: "Couldn't revert the assignment — " + error.message };
-        setJobs((prev: any[]) => prev.map((x: any) => x.id === result.jobId ? { ...x, crew: newCrew, crewAssignedAt: newCrewAssignedAt } : x));
-        return { success: true, message: `Removed ${result.employee || "that employee"} from the job.` };
+        setJobs((prev: any[]) => prev.map((x: any) => x.id === p.jobId ? { ...x, crew: newCrew, crewAssignedAt: newCrewAssignedAt } : x));
+        return { success: true, message: `Removed ${p.employee || "that employee"} from the job.` };
       },
     },
     reschedule_job: {
       label: (result) => `rescheduling the job to ${result?.newDate || "that date"}`,
       before: (inputs) => { const j = jobs.find((x: any) => x.id === inputs.jobId); return j ? { scheduledDate: j.scheduledDate, scheduledTime: j.scheduledTime } : null; },
-      undo: async (result, _inputs, before) => {
-        if (!before || !result?.jobId) return { success: false, message: "The previous date wasn't captured, so this can't be safely reverted." };
-        const { error } = await (supabase as any).from("jobs").update(before).eq("id", result.jobId).select("id");
+      payload: (result, _inputs, before) => ({ jobId: result?.jobId, before }),
+      undo: async (p) => {
+        if (!p.before || !p.jobId) return { success: false, message: "The previous date wasn't captured, so this can't be safely reverted." };
+        const { error } = await (supabase as any).from("jobs").update(p.before).eq("id", p.jobId).select("id");
         if (error) return { success: false, message: "Couldn't revert the reschedule — " + error.message };
-        setJobs((prev: any[]) => prev.map((x: any) => x.id === result.jobId ? { ...x, ...before } : x));
-        return { success: true, message: `Moved the job back to ${before.scheduledDate}${before.scheduledTime ? " at " + before.scheduledTime : ""}.` };
+        setJobs((prev: any[]) => prev.map((x: any) => x.id === p.jobId ? { ...x, ...p.before } : x));
+        return { success: true, message: `Moved the job back to ${p.before.scheduledDate}${p.before.scheduledTime ? " at " + p.before.scheduledTime : ""}.` };
       },
     },
     cancel_job: {
       label: () => `cancelling that job`,
       before: (inputs) => { const j = jobs.find((x: any) => x.id === inputs.jobId); return j ? { status: j.status } : null; },
-      undo: async (result, _inputs, before) => {
-        if (!before || !result?.jobId) return { success: false, message: "The previous status wasn't captured, so this can't be safely reverted." };
-        const { error } = await (supabase as any).from("jobs").update({ status: before.status }).eq("id", result.jobId).select("id");
+      payload: (result, _inputs, before) => ({ jobId: result?.jobId, before }),
+      undo: async (p) => {
+        if (!p.before || !p.jobId) return { success: false, message: "The previous status wasn't captured, so this can't be safely reverted." };
+        const { error } = await (supabase as any).from("jobs").update({ status: p.before.status }).eq("id", p.jobId).select("id");
         if (error) return { success: false, message: "Couldn't un-cancel the job — " + error.message };
-        setJobs((prev: any[]) => prev.map((x: any) => x.id === result.jobId ? { ...x, status: before.status } : x));
+        setJobs((prev: any[]) => prev.map((x: any) => x.id === p.jobId ? { ...x, status: p.before.status } : x));
         return { success: true, message: "Un-cancelled that job." };
       },
     },
@@ -1908,11 +1958,21 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     } catch (err: any) {
       __result = { error: err?.message || String(err) };
     }
-    // Undo — a successful reversible action gets pushed onto the stack so
-    // a later confirmed "undo that" (see undo_last_action) can reverse it.
+    // Undo — a successful reversible action is recorded so a later
+    // confirmed "undo that" (see undo_last_action) can reverse it. Kept
+    // in-memory for a fast same-session undo AND persisted to
+    // alfred_actions_log (migration 0099) so "undo that" / "what did you
+    // do" still works after a reload, a new tab, or the next day.
     if (__undoHandler && __result && !__result.error && __result.success) {
-      lastActionsRef.current.push({ label: __undoHandler.label(__result), undo: () => __undoHandler.undo(__result, inputs, __before) });
-      if (lastActionsRef.current.length > 8) lastActionsRef.current.shift();
+      const __payload = __undoHandler.payload(__result, inputs, __before);
+      const __label = __undoHandler.label(__result);
+      const __actionId = uid();
+      lastActionsRef.current.push({ id: __actionId, label: __label, toolName: name, payload: __payload });
+      if (lastActionsRef.current.length > 20) lastActionsRef.current.shift();
+      (supabase as any).from("alfred_actions_log").insert({
+        id: __actionId, owner_id: ownerId, tool_name: name, label: __label, undo_kind: name, undo_payload: __payload, created_at: new Date().toISOString(),
+      }).then((r: any) => { if (r?.error) console.warn("[AlfredTool] action-log insert failed (undo will still work this session):", r.error.message); })
+        .catch((e: any) => console.warn("[AlfredTool] action-log insert threw:", e?.message));
     }
     const __ms = Date.now() - __t0;
     if (__result && __result.error) {
@@ -1939,7 +1999,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           return { count: results.length, customers: results };
         }
         case "get_customer_details": {
-          const c = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).trim().toLowerCase() === (inputs.name || "").trim().toLowerCase());
+          const c = await findCustomerFresh({ customerId: inputs.customerId, customerName: inputs.name });
           if (!c) {
             const suggestions = suggestNames(inputs.name || "", customers, x => `${x.firstName} ${x.lastName}`);
             return suggestions.length
@@ -1959,7 +2019,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         case "attach_file_to_customer": {
           const pending = lastAttachedFileRef.current;
           if (!pending) return { error: "No file has been uploaded in this conversation yet — use the paperclip button to attach one first." };
-          const c = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).trim().toLowerCase() === (inputs.name || "").trim().toLowerCase());
+          const c = await findCustomerFresh({ customerId: inputs.customerId, customerName: inputs.name });
           if (!c) {
             const suggestions = suggestNames(inputs.name || "", customers, x => `${x.firstName} ${x.lastName}`);
             return suggestions.length
@@ -1977,7 +2037,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           return { success: true, savedTo: `${c.firstName} ${c.lastName}`, fileName: pending.fileName };
         }
         case "get_customer_documents": {
-          const c = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).trim().toLowerCase() === (inputs.name || "").trim().toLowerCase());
+          const c = await findCustomerFresh({ customerId: inputs.customerId, customerName: inputs.name });
           if (!c) {
             const suggestions = suggestNames(inputs.name || "", customers, x => `${x.firstName} ${x.lastName}`);
             return suggestions.length
@@ -1989,7 +2049,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           return { success: true, name: `${c.firstName} ${c.lastName}`, documents: docs.map((d: any) => ({ name: d.name, category: d.category, uploadedAt: d.uploadedAt, textable: !!d.url })) };
         }
         case "text_me_document": {
-          const c = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).trim().toLowerCase() === (inputs.name || "").trim().toLowerCase());
+          const c = await findCustomerFresh({ customerId: inputs.customerId, customerName: inputs.name });
           if (!c) {
             const suggestions = suggestNames(inputs.name || "", customers, x => `${x.firstName} ${x.lastName}`);
             return suggestions.length
@@ -2019,7 +2079,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         // Never invents a file — only ever lists/sends what's actually on
         // that customer's real records.
         case "send_me_files": {
-          const c = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).trim().toLowerCase() === (inputs.name || "").trim().toLowerCase());
+          const c = await findCustomerFresh({ customerId: inputs.customerId, customerName: inputs.name });
           if (!c) {
             const suggestions = suggestNames(inputs.name || "", customers, x => `${x.firstName} ${x.lastName}`);
             return suggestions.length
@@ -2054,7 +2114,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           return { success: true, sentCount: files.length, via };
         }
         case "get_customer_card_info": {
-          const c = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).trim().toLowerCase() === (inputs.name || "").trim().toLowerCase());
+          const c = await findCustomerFresh({ customerId: inputs.customerId, customerName: inputs.name });
           if (!c) {
             const suggestions = suggestNames(inputs.name || "", customers, x => `${x.firstName} ${x.lastName}`);
             return suggestions.length
@@ -2174,7 +2234,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           return { success: true, customer: saved };
         }
         case "create_estimate": {
-          const c = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).trim().toLowerCase() === (inputs.customerName || "").trim().toLowerCase());
+          const c = await findCustomerFresh({ customerId: inputs.customerId, customerName: inputs.customerName });
           if (!c) {
             const suggestions = suggestNames(inputs.customerName || "", customers, x => `${x.firstName} ${x.lastName}`);
             return suggestions.length
@@ -2220,7 +2280,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             } catch { /* fall through to not-found below */ }
           }
           if (!est) {
-            const byName = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).trim().toLowerCase() === (inputs.customerName || "").trim().toLowerCase());
+            const byName = await findCustomerFresh({ customerId: inputs.customerId, customerName: inputs.customerName });
             if (byName) {
               sc = byName;
               est = estimates.filter(x => x.customerId === byName.id && x.status === "pending").sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""))[0] || null;
@@ -2275,8 +2335,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           // against the model's ("springfield hoa") would never match. This
           // silently fell through to "Customer not found" for exactly this
           // kind of customer name.
-          const wantedName = (inputs.customerName || "").trim().toLowerCase();
-          const c = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).trim().toLowerCase() === wantedName);
+          const c = await findCustomerFresh({ customerId: inputs.customerId, customerName: inputs.customerName });
           console.log("[AlfredTool schedule_job] customer lookup — searched for:", inputs.customerName || inputs.customerId, "→ found:", c ? c.id + " (" + c.firstName + " " + c.lastName + ")" : "NONE");
           if (!c) {
             const suggestions = suggestNames(inputs.customerName || "", customers, x => `${x.firstName} ${x.lastName}`);
@@ -2805,7 +2864,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         // "create_invoice then send_estimate" mirrors "create_estimate then
         // send_estimate" exactly.
         case "create_invoice": {
-          const c = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).trim().toLowerCase() === (inputs.customerName || "").trim().toLowerCase());
+          const c = await findCustomerFresh({ customerId: inputs.customerId, customerName: inputs.customerName });
           if (!c) {
             const suggestions = suggestNames(inputs.customerName || "", customers, x => `${x.firstName} ${x.lastName}`);
             return suggestions.length
@@ -3418,7 +3477,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           // skipped and it STILL reported {success:true} and toasted
           // "sent" — a genuine claims-to-but-doesn't bug, not just a missing
           // feature.
-          const c = customers.find(x => x.id === inputs.customerId || (x.firstName + " " + x.lastName).trim().toLowerCase() === (inputs.customerName || "").trim().toLowerCase());
+          const c = await findCustomerFresh({ customerId: inputs.customerId, customerName: inputs.customerName });
           if (!c) {
             const suggestions = suggestNames(inputs.customerName || "", customers, x => `${x.firstName} ${x.lastName}`);
             return suggestions.length
@@ -3495,17 +3554,76 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (filtered.length === 0) return { success: true, memories: [], summary: q ? `Nothing saved matching "${inputs.search}".` : "Nothing saved yet." };
           return { success: true, count: filtered.length, memories: filtered.slice(0, 30).map((m: any) => ({ text: m.text, category: m.category })) };
         }
+        // BUG FIX (user report) — "Alfred should remember what it did last.
+        // If a day later — or even five minutes later — I say 'undo that'
+        // or 'delete those,' it should know what I'm referring to." Was
+        // in-memory only (lastActionsRef), so a reload/new tab/next day
+        // lost the stack entirely. Now falls back to alfred_actions_log
+        // (migration 0099) when the in-memory list is empty — a genuinely
+        // durable "what did you do" that survives across sessions.
         case "undo_last_action": {
-          const entry = lastActionsRef.current[lastActionsRef.current.length - 1];
-          if (!entry) return { error: "Nothing to undo — there's no reversible action recorded in this conversation." };
-          // Pop before running it — if the undo itself throws, don't leave
-          // a broken entry sitting on the stack for a second attempt to
-          // "undo" whatever partial state the failed reversal left behind.
-          lastActionsRef.current = lastActionsRef.current.slice(0, -1);
-          const r = await entry.undo();
-          if (!r.success) return { error: r.message };
-          toast(r.message);
-          return { success: true, message: r.message, undone: entry.label };
+          const count = Math.max(1, Math.min(10, Number(inputs.count) || 1));
+          let entries: Array<{ id: string; label: string; toolName: string; payload: any }> = lastActionsRef.current.slice(-count).reverse();
+          let fromMemory = entries.length > 0;
+          if (entries.length < count) {
+            try {
+              const { data } = await withTimeout<any>(
+                (supabase as any).from("alfred_actions_log").select("*").eq("owner_id", ownerId).is("undone_at", null).order("created_at", { ascending: false }).limit(count - entries.length),
+                8000, "Recent actions lookup"
+              );
+              const fetched = (data || []).map((row: any) => ({ id: row.id, label: row.label, toolName: row.undo_kind, payload: row.undo_payload || {} }));
+              // Skip any row already represented in-memory (same id) to
+              // avoid double-processing it.
+              const memIds = new Set(entries.map(e => e.id));
+              entries = [...entries, ...fetched.filter((e: any) => !memIds.has(e.id))];
+            } catch { /* fall through with whatever we already have from memory */ }
+          }
+          if (entries.length === 0) return { error: "Nothing to undo — no reversible action found for this business, in this conversation or recent history." };
+          // Remove from the in-memory stack before running — if an undo
+          // throws, don't leave it sitting there for a confused second
+          // attempt against whatever partial state the failure left.
+          const entryIds = new Set(entries.map(e => e.id));
+          lastActionsRef.current = lastActionsRef.current.filter(e => !entryIds.has(e.id));
+          const results: Array<{ label: string; success: boolean; message: string }> = [];
+          for (const entry of entries) {
+            const handler = UNDO_HANDLERS[entry.toolName];
+            const r = handler ? await handler.undo(entry.payload) : { success: false, message: `No undo handler for "${entry.toolName}" (may be from an old app version).` };
+            results.push({ label: entry.label, success: r.success, message: r.message });
+            // Mark it done in the durable log either way — a failed undo
+            // (e.g. already deleted) shouldn't keep surfacing as "undoable"
+            // on the next attempt.
+            (supabase as any).from("alfred_actions_log").update({ undone_at: new Date().toISOString() }).eq("id", entry.id).then(() => {}).catch(() => {});
+          }
+          const succeeded = results.filter(r => r.success);
+          const failed = results.filter(r => !r.success);
+          if (succeeded.length) toast(succeeded.length === 1 ? succeeded[0].message : `Undid ${succeeded.length} action(s).`);
+          if (succeeded.length === 0) return { error: "Couldn't undo: " + failed.map(f => f.message).join("; ") };
+          return {
+            success: true,
+            undoneCount: succeeded.length,
+            undone: succeeded.map(r => r.label),
+            ...(failed.length ? { partialFailures: failed.map(f => `${f.label}: ${f.message}`) } : {}),
+            note: fromMemory ? undefined : "This was recovered from action history (not the current conversation) — double-check with the owner that this is really what they meant if it's at all ambiguous.",
+          };
+        }
+        // FEATURE (user report) — "if I message it a day later and say
+        // 'what did you do,' it should know what I'm referring to." Reads
+        // the same durable alfred_actions_log undo_last_action uses, so the
+        // model can answer "what did you do" honestly instead of guessing
+        // from conversation memory alone (which resets across sessions).
+        case "list_recent_actions": {
+          const limit = Math.max(1, Math.min(30, Number(inputs.limit) || 15));
+          try {
+            const { data, error } = await withTimeout<any>(
+              (supabase as any).from("alfred_actions_log").select("label,created_at,undone_at").eq("owner_id", ownerId).order("created_at", { ascending: false }).limit(limit),
+              8000, "Recent actions list"
+            );
+            if (error) return { error: "Couldn't read action history — " + error.message };
+            if (!data || data.length === 0) return { success: true, actions: [], note: "No reversible actions recorded yet." };
+            return { success: true, actions: data.map((r: any) => ({ label: r.label, at: r.created_at, alreadyUndone: !!r.undone_at })) };
+          } catch (e: any) {
+            return { error: "Couldn't read action history — " + (e?.message || "unknown error") };
+          }
         }
         case "set_vacation_mode": {
           if (inputs.active === false) {
@@ -4511,8 +4629,13 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     },
     {
       name: "undo_last_action",
-      description: "Reverses the single most recent reversible action YOU (Alfred) took in this conversation — creating a customer, scheduling a job, creating an estimate/invoice, assigning crew, rescheduling, or cancelling a job. ALWAYS confirm first: restate exactly what you're about to undo in plain English ('Wait — you want me to undo scheduling the pressure washing job for Sarah Miller on 2026-09-30?') and wait for a clear yes before calling this. Only call it after that confirmation. If there's nothing undoable, it returns an error saying so — tell the user plainly rather than pretending something was undone.",
-      input_schema: { type: "object", properties: {} }
+      description: "Reverses the most recent reversible action(s) YOU (Alfred) took — creating a customer, scheduling a job, creating an estimate/invoice, assigning crew, rescheduling, or cancelling a job. Works across sessions too — even if it was 5 minutes or a day ago, in this conversation or a different one, as long as it hasn't been undone already. Pass count > 1 to undo a whole batch (e.g. 'undo those 5 jobs you just created' -> count: 5) — use list_recent_actions first if you're not sure how many that is. ALWAYS confirm first: restate exactly what you're about to undo in plain English ('Wait — you want me to undo scheduling the pressure washing job for Sarah Miller on 2026-09-30?', or for a batch, name the count and what they are) and wait for a clear yes before calling this. If there's nothing undoable, it returns an error saying so — tell the user plainly rather than pretending something was undone.",
+      input_schema: { type: "object", properties: { count: { type: "number", description: "How many of the most recent reversible actions to undo, most recent first. Defaults to 1." } } }
+    },
+    {
+      name: "list_recent_actions",
+      description: "Lists the most recent reversible actions Alfred has taken (creating customers/jobs/estimates/invoices, assigning crew, rescheduling, cancelling), each with when it happened and whether it's already been undone. Use this when the owner asks 'what did you do' / 'what did you just do' / 'what have you done recently', or when they say 'undo those'/'delete those' and you need to figure out exactly how many/which ones before confirming with them.",
+      input_schema: { type: "object", properties: { limit: { type: "number", description: "Max number of recent actions to return. Defaults to 15." } } }
     }
   ];
 
@@ -4765,7 +4888,7 @@ CUSTOMER TEXTING — PER-CUSTOMER SETTINGS ARE REAL, NOT ADVISORY: a customer's 
 
 NAME MATCHING: if a tool result comes back with "error": "Customer not found" or "Employee not found" and includes a "suggestions" array, ask the user "Do you mean [name], or [name]?" using those exact suggested names — never ask a generic clarifying question like "who do you mean?" when real candidate names are available.
 
-UNDO REQUESTS: if the owner says "undo that", "undo it", "can you undo that", "undo the last thing", or similar — right after you (Alfred) just reported doing something (created a customer, scheduled a job, created an estimate/invoice, assigned crew, rescheduled, or cancelled a job) — do NOT call undo_last_action immediately. First confirm exactly what you're about to reverse in plain English ("Wait — you want me to undo scheduling that job for Sarah on 2026-09-30?") and wait for a clear yes. Only once they confirm, call undo_last_action. If they say no, or clarify they meant something else, don't call it. undo_last_action only reverses the ONE most recent reversible action from THIS conversation — if the owner asks to undo something from much earlier or a different chat, tell them that's outside what you can automatically reverse and ask what they'd like changed instead.`;
+UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change them back", "what did you do", "what did you just do", or similar — this works across sessions, not just the current conversation: an action from 5 minutes ago or from yesterday is still undoable as long as nothing since has already reversed it. "What did you do" / "what have you done recently" → USE list_recent_actions and answer from its real results, don't guess from memory of this conversation alone (a new session has no memory of an earlier one, but the action history does). "Undo that" for a single recent thing, or "undo those"/"delete those" for a batch (e.g. several jobs just created from screenshots) — if you're not sure exactly what "those" refers to or how many, call list_recent_actions first to see what's actually there. Either way, do NOT call undo_last_action immediately: first confirm exactly what you're about to reverse in plain English ("Wait — you want me to undo scheduling that job for Sarah on 2026-09-30?", or for a batch, name the count and what they are — "Wait — you want me to undo all 5 jobs you just had me create from those screenshots?"). Only once they confirm, call undo_last_action (pass count for a batch). If they say no, or clarify they meant something else, don't call it.`;
       const baseSystemPrompt = getPersonality(activePersonality).systemPrompt + dateContext + memoryContext + crossChannelContext + voiceSandboxContext + businessContext + workOrderStyleContext + vacationContext + googleStatus + voiceModeContext + fileContext;
       const systemPrompt = baseSystemPrompt + toolHint;
       // BUG FIX (root cause, not another pattern-match) — a non-tool-capable
