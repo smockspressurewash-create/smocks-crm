@@ -204,16 +204,31 @@ export function CustomerMapView({ customers = [], apiKey, geocodingKey, onViewCu
         </div>
       )}
       {!geocoding && pins.length === 0 && (lastErrorStatus === "REQUEST_DENIED" || lastErrorStatus === "OVER_QUERY_LIMIT") && (
-        <div className="text-xs text-yellow-200 bg-yellow-950/20 border border-yellow-700/40 rounded-xl p-3">
-          {detailedError?.includes("referer")
-            ? `No pins loaded — your Google Maps key has a website/referrer restriction, which Google does not allow for the Geocoding API ("${detailedError}"). Add a separate Geocoding Key with no referrer restriction in Settings → Integrations → Google Maps.`
-            : /not authorized/i.test(detailedError || "")
-            ? `No pins loaded — this key doesn't have the Geocoding API enabled ("${detailedError}"). Fix: in Google Cloud Console → APIs & Services → Library, search "Geocoding API" and click Enable for this project, then reopen this page. This is separate from the Maps JavaScript/Places APIs the rest of the app uses — each Google Maps API has to be enabled individually per project.`
-            : detailedError
-            ? `No pins loaded — Google's exact reason: "${detailedError}"`
-            : lastErrorStatus === "REQUEST_DENIED"
-            ? "No pins loaded because Google rejected every geocode request (REQUEST_DENIED) — the Maps API key in Settings → Integrations most likely doesn't have the Geocoding API enabled, or has a referrer restriction (Geocoding doesn't allow those — add a separate Geocoding Key). Check Settings → Integrations → Google Maps."
-            : "No pins loaded — Google's geocoding rate limit was hit immediately (OVER_QUERY_LIMIT). Check the API key's quota/billing in the Google Cloud Console."}
+        <div className="text-xs text-yellow-200 bg-yellow-950/20 border border-yellow-700/40 rounded-xl p-3 space-y-1.5">
+          <div>
+            {detailedError?.includes("referer")
+              ? `No pins loaded — your Google Maps key has a website/referrer restriction, which Google does not allow for the Geocoding API ("${detailedError}"). Add a separate Geocoding Key with no referrer restriction in Settings → Integrations → Google Maps.`
+              : /not authorized/i.test(detailedError || "")
+              ? `No pins loaded — this key doesn't have the Geocoding API enabled ("${detailedError}"). Fix: in Google Cloud Console → APIs & Services → Library, search "Geocoding API" and click Enable for this project, then reopen this page. This is separate from the Maps JavaScript/Places APIs the rest of the app uses — each Google Maps API has to be enabled individually per project.`
+              : detailedError
+              ? `No pins loaded — Google's exact reason: "${detailedError}"`
+              : lastErrorStatus === "REQUEST_DENIED"
+              ? "No pins loaded because Google rejected every geocode request (REQUEST_DENIED) — the Maps API key in Settings → Integrations most likely doesn't have the Geocoding API enabled, or has a referrer restriction (Geocoding doesn't allow those — add a separate Geocoding Key). Check Settings → Integrations → Google Maps."
+              : "No pins loaded — Google's geocoding rate limit was hit immediately (OVER_QUERY_LIMIT). Check the API key's quota/billing in the Google Cloud Console."}
+          </div>
+          {/* BUG FIX (user report) — "I already enabled that API, I don't
+              know why it's still having a problem." Enabling the API on the
+              WRONG project/key (e.g. the main referrer-restricted Maps key's
+              project, when a separate unrestricted Geocoding Key is set and
+              actually being used, or vice versa) looks identical to the
+              owner as "I enabled it and it still fails." Showing exactly
+              which key is actually making this request — safely, just its
+              last 4 characters — lets them confirm in Cloud Console they
+              enabled Geocoding API + billing on the RIGHT one instead of
+              guessing. */}
+          <div className="text-yellow-200/50 font-mono text-[10px]">
+            Key in use for this request: ...{geoKey.length > 4 ? geoKey.slice(-4) : geoKey} ({geocodingKey ? "your separate Geocoding Key" : "your main Maps key — no separate Geocoding Key is set"}). Confirm in Google Cloud Console that THIS key's project has Geocoding API enabled with billing active, and that this exact key has no website/referrer restriction.
+          </div>
         </div>
       )}
       <LiveMap apiKey={apiKey} pins={visiblePins} heightClassName="h-[70vh] min-h-[420px]" />

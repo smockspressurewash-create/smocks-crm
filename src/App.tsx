@@ -2077,7 +2077,15 @@ export function App() {
     // the Alfred case since this is real financial data, not generic stats.
     if (!hasCrmSession || page === "client") return;
     const snapshot: Record<string, { viewed?: string; paid?: string; failed?: string; refunded?: string; disputed?: string; status?: string }> = {};
-    const newEvents: { id: string; text: string; at: number; customerId?: string }[] = [];
+    // BUG FIX (user report) — "when someone declines an estimate and I
+    // click on it, it takes me to my invoices page." Every event here used
+    // to hardcode page:"invoices" regardless of whether the underlying row
+    // was actually invoiced yet — a still-pending quote getting viewed/
+    // declined/accepted sent the owner to Invoices, where it doesn't even
+    // live. invoiced/openId now travel with each event so the click can go
+    // to the right page (estimates vs invoices) AND highlight the exact
+    // record, not just land on a list.
+    const newEvents: { id: string; text: string; at: number; customerId?: string; invoiced: boolean; openId: string }[] = [];
     for (const e of estimates as any[]) {
       const cur = { viewed: e.clientViewedAt, paid: e.paidAt, failed: e.paymentFailedAt, refunded: e.refundedAt, disputed: e.disputedAt, status: e.status };
       snapshot[e.id] = cur;
@@ -2095,11 +2103,11 @@ export function App() {
       // stripe-webhook.ts now writes refundedAt/disputedAt for charge.refunded
       // and charge.dispute.created events (previously unhandled entirely —
       // neither was visible to the owner at all before this).
-      if (cur.disputed && cur.disputed !== prev.disputed) newEvents.push({ id: e.id + ":disputed", text: `🚨 DISPUTE opened by ${custName} on ${fmt(e.total)} — respond in your Stripe dashboard`, at: Date.now(), customerId: e.customerId });
-      else if (cur.refunded && cur.refunded !== prev.refunded) newEvents.push({ id: e.id + ":refunded", text: `↩️ ${fmt(e.total)} refunded to ${custName}`, at: Date.now(), customerId: e.customerId });
-      else if (cur.paid && !prev.paid) newEvents.push({ id: e.id + ":paid", text: `💰 ${custName} paid invoice ${fmt(e.total)}`, at: Date.now(), customerId: e.customerId });
-      else if (cur.failed && cur.failed !== prev.failed) newEvents.push({ id: e.id + ":failed", text: `⚠️ ${custName}'s payment failed on ${fmt(e.total)}`, at: Date.now(), customerId: e.customerId });
-      else if (cur.viewed && !prev.viewed) newEvents.push({ id: e.id + ":viewed", text: `👀 ${custName} opened ${(e as any).invoiced ? "invoice" : "estimate"} ${fmt(e.total)}`, at: Date.now(), customerId: e.customerId });
+      if (cur.disputed && cur.disputed !== prev.disputed) newEvents.push({ id: e.id + ":disputed", text: `🚨 DISPUTE opened by ${custName} on ${fmt(e.total)} — respond in your Stripe dashboard`, at: Date.now(), customerId: e.customerId, invoiced: !!(e as any).invoiced, openId: e.id });
+      else if (cur.refunded && cur.refunded !== prev.refunded) newEvents.push({ id: e.id + ":refunded", text: `↩️ ${fmt(e.total)} refunded to ${custName}`, at: Date.now(), customerId: e.customerId, invoiced: !!(e as any).invoiced, openId: e.id });
+      else if (cur.paid && !prev.paid) newEvents.push({ id: e.id + ":paid", text: `💰 ${custName} paid invoice ${fmt(e.total)}`, at: Date.now(), customerId: e.customerId, invoiced: !!(e as any).invoiced, openId: e.id });
+      else if (cur.failed && cur.failed !== prev.failed) newEvents.push({ id: e.id + ":failed", text: `⚠️ ${custName}'s payment failed on ${fmt(e.total)}`, at: Date.now(), customerId: e.customerId, invoiced: !!(e as any).invoiced, openId: e.id });
+      else if (cur.viewed && !prev.viewed) newEvents.push({ id: e.id + ":viewed", text: `👀 ${custName} opened ${(e as any).invoiced ? "invoice" : "quote"} ${fmt(e.total)}`, at: Date.now(), customerId: e.customerId, invoiced: !!(e as any).invoiced, openId: e.id });
       else if (cur.status === "rejected" && prev.status !== "rejected") {
         // BUG FIX — "if a customer rejects a quote, make sure we can see
         // [the reason] as an owner." The customer-facing decline form
@@ -2109,18 +2117,18 @@ export function App() {
         // ClientPortal fires at decline time, not the persistent bell/
         // Notifications page record.
         const reasonSuffix = (e as any).declineReason ? ` — "${(e as any).declineReason}"` : (e as any).declineReasonCategory ? ` — ${(e as any).declineReasonCategory}` : "";
-        newEvents.push({ id: e.id + ":rejected", text: `❌ ${custName} declined estimate ${fmt(e.total)}${reasonSuffix}`, at: Date.now(), customerId: e.customerId });
+        newEvents.push({ id: e.id + ":rejected", text: `❌ ${custName} declined quote ${fmt(e.total)}${reasonSuffix}`, at: Date.now(), customerId: e.customerId, invoiced: !!(e as any).invoiced, openId: e.id });
       }
       // FIX 17 — accepting a quote previously only fired the toast the CLIENT's
       // own browser showed itself (worthless to the owner, a different
       // session entirely) — nothing told the owner a quote was accepted.
-      else if (cur.status === "approved" && prev.status !== "approved" && !(e as any).invoiced) newEvents.push({ id: e.id + ":approved", text: `✅ ${custName} accepted the quote for ${fmt(e.total)}`, at: Date.now(), customerId: e.customerId });
+      else if (cur.status === "approved" && prev.status !== "approved" && !(e as any).invoiced) newEvents.push({ id: e.id + ":approved", text: `✅ ${custName} accepted the quote for ${fmt(e.total)}`, at: Date.now(), customerId: e.customerId, invoiced: !!(e as any).invoiced, openId: e.id });
     }
     invoiceActivityRef.current = snapshot;
     if (!invoiceActivitySeededRef.current) { invoiceActivitySeededRef.current = true; return; }
     if (newEvents.length) {
       newEvents.forEach(ev => toast(ev.text, (ev.text.startsWith("⚠️") || ev.text.startsWith("❌")) ? "red" : "green"));
-      setNotifications((prev: AppNotification[]) => [...newEvents.map(ev => ({ ...ev, read: false, category: "invoice" as const, page: "invoices" })), ...prev].slice(0, NOTIFICATIONS_CAP));
+      setNotifications((prev: AppNotification[]) => [...newEvents.map(ev => ({ ...ev, read: false, category: "invoice" as const, page: ev.invoiced ? "invoices" : "estimates", openType: ev.invoiced ? "invoice" : "estimate", openId: ev.openId })), ...prev].slice(0, NOTIFICATIONS_CAP));
       // FEATURE — "customer detail Timeline tab: ensure all events are
       // logged and viewable." Timeline was entirely manual (only the
       // owner's own typed notes) — every real invoice/estimate lifecycle
@@ -5871,7 +5879,7 @@ export function App() {
             { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
             { id: "jobs", label: "Jobs", icon: Briefcase },
             { id: "customers", label: "Customers", icon: Users },
-            { id: "estimates", label: "Estimates", icon: FileText },
+            { id: "estimates", label: "Quotes", icon: FileText },
             { id: "feedback", label: "Feedback", icon: MessageSquare },
           ].map(item => {
             const Icon = item.icon;

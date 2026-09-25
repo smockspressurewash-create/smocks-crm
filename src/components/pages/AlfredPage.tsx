@@ -1244,7 +1244,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         const tax = amount * ((Number(settings.taxRate) || 6) / 100);
         const newEst = { id: uid(), customerId: cMatch.id, lineItems: [{ id: uid(), description: service, quantity: 1, unitPrice: amount }], subtotal: amount, discount: 0, depositRequired: 0, tax, total: amount + tax, status: "pending", createdAt: today(), validUntil: daysFromNow(30), viewed: false, notes: "Created by Alfred", terms: settings.terms || "Payment due upon completion." };
         setEstimates(prev => [...prev, newEst]);
-        toast("Alfred created estimate for " + cMatch.firstName + " — " + fmt(amount + tax));
+        toast("Alfred created quote for " + cMatch.firstName + " — " + fmt(amount + tax));
         onNav("estimates");
         return "✅ ESTIMATE CREATED\n\nCustomer: " + cMatch.firstName + " " + cMatch.lastName + "\nService: " + service + "\nAmount: " + fmt(amount) + " + tax = " + fmt(amount + tax) + "\n\nOpening Estimates now. Send it from there. Alfred out.";
       }
@@ -2262,7 +2262,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             return { error: "Failed to create estimate — " + (saveErrorE?.message || "Supabase write did not return a row") };
           }
           // No local setEstimates call — see create_customer above.
-          toast("Alfred created estimate #" + savedE.id.toUpperCase() + " · " + fmt(total));
+          toast("Alfred created quote #" + savedE.id.toUpperCase() + " · " + fmt(total));
           if (onSpotlight) triggerSpotlight({ page: "estimates", type: "estimate", id: savedE.id }); else setTimeout(() => onNav("estimates"), 1200);
           return { success: true, estimateId: savedE.id, total, customer: c.firstName + " " + c.lastName };
         }
@@ -2324,7 +2324,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             .then((r: any) => { if (r?.error || !Array.isArray(r?.data) || r.data.length === 0) console.warn("[AlfredTool send_estimate] sentAt write failed:", r?.error?.message || "matched 0 rows"); })
             .catch((e: any) => console.warn("[AlfredTool send_estimate] sentAt write threw:", e?.message));
           setEstimates((prev: any[]) => prev.map(x => x.id === est.id ? { ...x, sentAt, sendChannel: channel } : x));
-          toast("Alfred sent the estimate to " + sc.firstName + (errs.length ? " (partial)" : ""));
+          toast("Alfred sent the quote to " + sc.firstName + (errs.length ? " (partial)" : ""));
           return { success: true, estimateId: est.id, customer: sc.firstName + " " + sc.lastName, sentEmail, sentSms, warnings: errs.length ? errs : undefined };
         }
         case "schedule_job": {

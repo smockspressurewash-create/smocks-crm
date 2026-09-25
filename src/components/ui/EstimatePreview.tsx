@@ -51,7 +51,7 @@ export function EstimatePreview({ estimate: e, customers = [], settings = {} as 
   const depositBalanceAmt = Math.max(0, e.total - depositAmt);
 
   return (
-    <Modal open={!!e} onClose={onClose} title={"Estimate #" + e.id.toUpperCase()} maxW="max-w-2xl">
+    <Modal open={!!e} onClose={onClose} title={"Quote #" + e.id.toUpperCase()} maxW="max-w-2xl">
       {/* Always-visible floating close button — guarantees a tap target on
           mobile even if the Modal's own header X scrolls out of view. */}
       <button
@@ -126,7 +126,7 @@ export function EstimatePreview({ estimate: e, customers = [], settings = {} as 
         </div>
       </div>
       <div className="mt-5 flex gap-2 flex-wrap">
-        {e.status === "pending" && <GBtn onClick={() => onApprove(e.id)} className="flex-1"><CheckCircle size={14} className="inline mr-1.5" />Approve Estimate</GBtn>}
+        {e.status === "pending" && <GBtn onClick={() => onApprove(e.id)} className="flex-1"><CheckCircle size={14} className="inline mr-1.5" />Approve Quote</GBtn>}
         {/* FEATURE 6 — owner can manually mark a deposit paid (cash/check
             collected outside the CRM), separate from the client actually
             paying online via Stripe in ClientPortal. */}

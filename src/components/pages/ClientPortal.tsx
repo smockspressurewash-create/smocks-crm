@@ -289,9 +289,9 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
     // the job was done got the same "estimate" wording as a fresh quote,
     // which is confusing/wrong once money is actually being requested.
     const isInvoice = !!(e as any).invoiced;
-    const kind = isInvoice ? "INVOICE" : "ESTIMATE";
+    const kind = isInvoice ? "INVOICE" : "QUOTE";
     if (settings?.twilioSid && settings?.myPhone && c) {
-      const msg = `👀 ${kind} VIEWED\n\n` + c.firstName + " " + c.lastName + ` just opened their ${isInvoice ? "invoice" : "estimate"} for ` + fmt(e.total) + `.\n\nNow's a great time to follow up if they don't ${isInvoice ? "pay" : "sign"} in 30 min. — Alfred`;
+      const msg = `👀 ${kind} VIEWED\n\n` + c.firstName + " " + c.lastName + ` just opened their ${isInvoice ? "invoice" : "quote"} for ` + fmt(e.total) + `.\n\nNow's a great time to follow up if they don't ${isInvoice ? "pay" : "sign"} in 30 min. — Alfred`;
       twilioSend(settings, settings.myPhone, msg).catch(() => {});
     }
     // ISSUE 21 (round 4) — this page is unauthenticated (a customer, not the
@@ -307,7 +307,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           title: "Alfred Notifications",
-          message: `👀 ${kind} VIEWED\n\n` + c.firstName + " " + c.lastName + ` just opened their ${isInvoice ? "invoice" : "estimate"} for ` + fmt(e.total) + `.\n\nNow's a great time to follow up if they don't ${isInvoice ? "pay" : "sign"} in 30 min.`,
+          message: `👀 ${kind} VIEWED\n\n` + c.firstName + " " + c.lastName + ` just opened their ${isInvoice ? "invoice" : "quote"} for ` + fmt(e.total) + `.\n\nNow's a great time to follow up if they don't ${isInvoice ? "pay" : "sign"} in 30 min.`,
           estimateId: e.id,
         }),
       }).catch(() => {});
@@ -462,8 +462,8 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
   // real, visible message instead of a silent crash.
   if (e && !c) {
     return (
-      <Modal open onClose={onClose} title="Can't load this estimate">
-        <div className="text-sm text-white/70 py-4 text-center">This estimate's customer record couldn't be found — it may have been deleted. Close this and try a different one.</div>
+      <Modal open onClose={onClose} title="Can't load this quote">
+        <div className="text-sm text-white/70 py-4 text-center">This quote's customer record couldn't be found — it may have been deleted. Close this and try a different one.</div>
       </Modal>
     );
   }
@@ -553,7 +553,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                 </div>
               )}
             </div>
-            <GBtn variant="ghost" onClick={() => setShowAccount(false)} className="w-full">← Back to Estimate</GBtn>
+            <GBtn variant="ghost" onClick={() => setShowAccount(false)} className="w-full">← Back to Quote</GBtn>
           </div>
         ) : (
         <>
@@ -699,7 +699,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
               {(!e.status || e.status === "pending") && (
                 declining ? (
                   <Glass className="p-4 !bg-black/40 space-y-3">
-                    <div className="text-sm font-medium">Decline this estimate?</div>
+                    <div className="text-sm font-medium">Decline this quote?</div>
                     <div className="text-xs text-white/50">Mind telling us why? It helps us follow up correctly.</div>
                     <div className="grid grid-cols-2 gap-2">
                       {DECLINE_REASONS.map(r => (
@@ -730,7 +730,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                   </Glass>
                 ) : (
                   <button onClick={() => setDeclining(true)} className="w-full py-2.5 text-sm text-white/40 hover:text-red-400 transition">
-                    Decline this estimate
+                    Decline this quote
                   </button>
                 )
               )}
@@ -747,7 +747,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
               <div className="w-16 h-16 rounded-full bg-red-950/40 border border-red-700/50 flex items-center justify-center mx-auto">
                 <span className="text-2xl">✕</span>
               </div>
-              <div className="text-lg font-bold text-white">Estimate declined</div>
+              <div className="text-lg font-bold text-white">Quote declined</div>
               <div className="text-sm text-white/50 max-w-xs mx-auto">We've let {settings?.companyName || "the company"} know. Changed your mind?</div>
               <button onClick={() => setStep("view")} className="text-sm text-red-400 hover:text-red-300 font-semibold underline underline-offset-4">
                 ← Look at it again
@@ -875,7 +875,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                 />
                 <span className="text-[13px] text-white/70 leading-relaxed">
                   {(!hasRemainingBalance && !e?.invoiced && !isDepositMandatory)
-                    ? <>I accept this estimate for {fmt(effectiveTotal)}{payType === "deposit" || payType === "full" ? ` and, if I choose to pay now, authorize ${companyName} to charge my payment method today` : ""}. </>
+                    ? <>I accept this quote for {fmt(effectiveTotal)}{payType === "deposit" || payType === "full" ? ` and, if I choose to pay now, authorize ${companyName} to charge my payment method today` : ""}. </>
                     : <>I authorize {companyName} to charge {fmt(totalWithTip)} to my payment method today{payType === "deposit" ? `, with the remaining balance of ${fmt(depositBalanceAmt)} due after service is completed` : ""}. </>}
                   I understand any charge is non-refundable once service has been rendered, and that {companyName} may retain job photos/videos as service records for up to {(settings as any)?.mediaRetentionDays || 30} days. If I provided a phone number, I may receive text updates about this service (message/data rates may apply — reply STOP at any time to opt out, HELP for help; see {companyName}'s{" "}
                   <a href={"#/terms?co=" + encodeURIComponent(companyName)} target="_blank" rel="noopener noreferrer" className="underline text-red-300">Terms</a> and{" "}
@@ -1005,7 +1005,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                 amount={totalWithTip}
                 invoiceId={e?.id}
                 tipCents={Math.round((Number(tip) || 0) * 100)}
-                description={`${companyName} — ${e?.lineItems?.[0]?.description || "Estimate"} #${e?.id || ""}`}
+                description={`${companyName} — ${e?.lineItems?.[0]?.description || "Quote"} #${e?.id || ""}`}
                 onSuccess={(paymentIntentId) => { setShowStripeModal(false); handleApprove(paymentIntentId, "now", "stripe"); }}
               />
               <SquarePaymentModal
@@ -1016,7 +1016,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                 amount={totalWithTip}
                 invoiceId={e?.id}
                 tipCents={Math.round((Number(tip) || 0) * 100)}
-                description={`${companyName} — ${e?.lineItems?.[0]?.description || "Estimate"} #${e?.id || ""}`}
+                description={`${companyName} — ${e?.lineItems?.[0]?.description || "Quote"} #${e?.id || ""}`}
                 onSuccess={(paymentId) => { setShowSquareModal(false); handleApprove(paymentId, "now", "square"); }}
               />
             </div>
@@ -1030,7 +1030,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
               </div>
               <div>
                 <div className="text-2xl font-bold text-green-400">You're all set, {c.firstName}!</div>
-                <div className="text-white/60 text-sm mt-2">Your estimate has been approved and signed.</div>
+                <div className="text-white/60 text-sm mt-2">Your quote has been approved and signed.</div>
               </div>
               <Glass className="p-4 !bg-green-950/20 !border-green-700/30 text-left">
                 <div className="text-xs text-white/60 mb-1">What happens next?</div>
@@ -1044,7 +1044,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
               {/* Download signed PDF */}
               <button onClick={() => {
                 const companyName = settings?.companyName || "Crew Boss";
-                const html = `<!DOCTYPE html><html><head><title>Signed Estimate</title><style>
+                const html = `<!DOCTYPE html><html><head><title>Signed Quote</title><style>
                   body{font-family:Arial,sans-serif;padding:40px;max-width:700px;margin:auto;color:#111}
                   h1{color:#dc2626;margin-bottom:4px}
                   .header{display:flex;justify-content:space-between;margin-bottom:24px;padding-bottom:16px;border-bottom:2px solid #dc2626}
@@ -1080,7 +1080,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                 const w = window.open("", "_blank");
                 if (w) { w.document.write(html); w.document.close(); }
               }} className="w-full flex items-center justify-center gap-2 py-3 bg-green-900/30 border border-green-700/40 text-green-300 rounded-xl hover:bg-green-900/50 transition text-sm font-medium">
-                <Download size={16} /> Download Signed Estimate PDF
+                <Download size={16} /> Download Signed Quote PDF
               </button>
               {/* Receipt PDF */}
               <button onClick={() => {

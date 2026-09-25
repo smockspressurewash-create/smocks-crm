@@ -90,6 +90,18 @@ const DECLINE_REASON_LABELS: Record<string, string> = {
 
 export function EstimatesPage({ estimates = [], setEstimates, customers = [], services = [], settings = {} as AppSettings, toast, onPortal = () => {}, estimateTemplates = [], setEstimateTemplates = () => {}, setJobs = () => {}, onNav = () => {}, autoOpenNew = false, onAutoOpenNewConsumed, presetCustomerId = "", ownerId = "", highlightId = null, pushUndo = (_desc: string, _fn: () => void, _redoFn?: () => void) => {}, markRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[]) => {}, unmarkRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[]) => {} }: { estimates?: any[]; setEstimates?: any; customers?: any[]; services?: any[]; settings?: AppSettings; toast?: any; onPortal?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; setJobs?: any; onNav?: any; autoOpenNew?: boolean; onAutoOpenNewConsumed?: () => void; presetCustomerId?: string; ownerId?: string; highlightId?: string | null; pushUndo?: (desc: string, fn: () => void, redoFn?: () => void) => void; markRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void; unmarkRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void }) {
   const [builderOpen, setBuilderOpen] = useState(false);
+  // FEATURE (user report) — "when the owner goes into the estimate/quote
+  // they declined, there should be a button that says 'Send a new
+  // estimate,' allowing them to update the price to be cheaper." Seeds the
+  // builder with the declined quote's line items/discount/deposit/notes so
+  // it's a real starting point to edit down, not a from-scratch redo —
+  // always creates a NEW estimate row, the declined one is left untouched.
+  const [resendDraft, setResendDraft] = useState<{ customerId?: string; lineItems?: any[]; notes?: string; discount?: number; depositRequired?: number } | null>(null);
+  const openResend = (e: any) => {
+    setResendDraft({ customerId: e.customerId, lineItems: e.lineItems, notes: e.notes, discount: e.discount, depositRequired: e.depositRequired });
+    setBuilderOpen(true);
+    if ((e as any).declineReasonCategory === "price") toast?.("Declined for price — this starts from their old quote so you can lower it before sending.", "yellow");
+  };
   // FEATURE — "the popup should be in the CRM with the CRM's UI" — replaces
   // window.confirm() for delete actions with a real branded modal.
   const { confirmAsync, ConfirmDialog } = useConfirm();
@@ -135,11 +147,11 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
     const font = tpl?.font || "Arial";
     const priceLine = hasSelectableOptions(est)
       ? `<p>Your ${est.estimateType === "package" ? "packages" : "service options"} are ready to review — pick what works for you and see your total.</p>`
-      : `<p>Your estimate of <strong>${fmt(est.total)}</strong> is ready to review${(tpl?.layout) ? "" : ""}.</p>`;
+      : `<p>Your quote of <strong>${fmt(est.total)}</strong> is ready to review${(tpl?.layout) ? "" : ""}.</p>`;
     const bodyInner = `
       <div style="font-family:'${font}',sans-serif;color:${textColor}">
         ${tpl?.logoUrl ? `<img src="${tpl.logoUrl}" style="max-height:48px;margin-bottom:12px" />` : ""}
-        <h2 style="margin:0 0 6px;color:${headerColor}">${tpl?.headerText || "Your Estimate"}</h2>
+        <h2 style="margin:0 0 6px;color:${headerColor}">${tpl?.headerText || "Your Quote"}</h2>
         <p>Hi ${escapeHtml(cust.firstName)},</p>
         ${priceLine}
         <p>Valid until ${est.validUntil}.</p>
@@ -154,7 +166,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
     const link = portalUrlFor(est.id);
     const priceText = hasSelectableOptions(est)
       ? `Your ${est.estimateType === "package" ? "packages" : "service options"} from ` + (settings?.companyName || "Crew Boss") + " are ready — pick what works for you."
-      : "Your estimate of " + fmt(est.total) + " from " + (settings?.companyName || "Crew Boss") + " is ready.";
+      : "Your quote of " + fmt(est.total) + " from " + (settings?.companyName || "Crew Boss") + " is ready.";
     return "Hi " + cust.firstName + "! " + priceText + " Review and sign here: " + link + " — questions? Call " + (settings?.companyPhone || "(717) 555-0100");
   };
 
@@ -168,13 +180,13 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
         if (!cust.email) { toast?.("No email on file for " + cust.firstName, "error"); }
         // A hung Gmail fetch with no timeout is exactly what left this button
         // stuck on "Sending…" forever — same fix as invoice sends (FIX 4).
-        else await withTimeout(sendEmail(settings, { to: cust.email, subject: "Your estimate from " + (settings?.companyName || "Crew Boss") + " — " + fmt(sendModalEst.total), body: buildSendHtml(sendModalEst, cust) }), 10000, "Estimate email");
+        else await withTimeout(sendEmail(settings, { to: cust.email, subject: "Your quote from " + (settings?.companyName || "Crew Boss") + " — " + fmt(sendModalEst.total), body: buildSendHtml(sendModalEst, cust) }), 10000, "Quote email");
       }
       if ((sendChannel === "sms" || sendChannel === "both")) {
         if (!cust.phone) { toast?.("No phone on file for " + cust.firstName, "error"); }
         else if (settings?.twilioSid) {
           const smsMsg = buildSendSms(sendModalEst, cust);
-          await withTimeout(twilioSend(settings, cust.phone, smsMsg), 10000, "Estimate SMS");
+          await withTimeout(twilioSend(settings, cust.phone, smsMsg), 10000, "Quote SMS");
           logOutboundSmsToInbox({ contactName: `${cust.firstName} ${cust.lastName}`, contactPhone: cust.phone, customerId: cust.id, body: smsMsg }).catch(() => {});
         }
         else { window.location.href = "sms:" + cust.phone.replace(/\D/g, "") + "?body=" + encodeURIComponent(buildSendSms(sendModalEst, cust)); }
@@ -185,15 +197,15 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
       // as "sending failed" — but a dropped sentAt write means the estimate
       // can keep showing as un-sent with no explanation.
       (supabase as any).from("estimates").update({ sentAt: today(), sendChannel }).eq("id", sendModalEst.id).select("id").then(
-        (r: any) => { if (!Array.isArray(r?.data) || r.data.length === 0) toast?.("Sent, but this estimate may still show as un-sent — the update didn't confirm.", "yellow"); },
-        (e: any) => { console.warn("[SendEstimate] sentAt update failed:", e?.message); toast?.("Sent, but this estimate may still show as un-sent.", "yellow"); }
+        (r: any) => { if (!Array.isArray(r?.data) || r.data.length === 0) toast?.("Sent, but this quote may still show as un-sent — the update didn't confirm.", "yellow"); },
+        (e: any) => { console.warn("[SendEstimate] sentAt update failed:", e?.message); toast?.("Sent, but this quote may still show as un-sent.", "yellow"); }
       );
-      toast?.(`📧 Estimate sent to ${cust.firstName} ✓`, "green");
+      toast?.(`📧 Quote sent to ${cust.firstName} ✓`, "green");
       setSendModalEst(null);
       setSendPreviewOn(false);
     } catch (err: any) {
       console.error("[SendEstimate] — error:", err?.message || err);
-      const msg = err?.message === "Estimate email timed out"
+      const msg = err?.message === "Quote email timed out"
         ? "Send timed out — check your Gmail connection in Settings → Integrations"
         : /expired|reconnect/i.test(err?.message || "")
         ? "Google token expired — reconnect in Settings → Integrations"
@@ -227,7 +239,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
         amount: est.total, status: "scheduled", scheduledDate: "", duration: 2,
         priority: "normal", crew: [], checklist: combinedChecklist, preChecklist: combinedChecklist, photos: [], chemicalsUsed: [],
         equipment: [], tags: ["Needs Scheduling"], commLog: [],
-        notes: "From approved estimate #" + estId.slice(-4).toUpperCase(),
+        notes: "From approved quote #" + estId.slice(-4).toUpperCase(),
         createdAt: today(), estimateId: estId,
         // BUG FIX — missing owner_id violated the owner_id-scoped RLS policy
         // added by the multi-tenant migration, silently rejecting the insert
@@ -301,17 +313,17 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
       const e = estimates.find(x => x.id === id);
       if (!e) return null;
       const c = customers.find(x => x.id === e.customerId);
-      return [e.id, cn(e.customerId), e.status, e.createdAt || "", e.total, e.invoiced ? "invoice" : "estimate"]
+      return [e.id, cn(e.customerId), e.status, e.createdAt || "", e.total, e.invoiced ? "invoice" : "quote"]
         .map(v => `"${String(v ?? "").replace(/"/g, '""')}"`).join(",");
     }).filter(Boolean);
     const csv = "ID,Customer,Status,Created,Total,Type\n" + rows.join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = "estimates-" + today() + ".csv";
+    a.download = "quotes-" + today() + ".csv";
     a.click();
     URL.revokeObjectURL(a.href);
-    toast(`Downloaded ${selected.length} estimate${selected.length !== 1 ? "s" : ""}`);
+    toast(`Downloaded ${selected.length} quote${selected.length !== 1 ? "s" : ""}`);
   };
 
   const duplicate = e => {
@@ -320,32 +332,32 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
     const copy = { ...e, id: uid(), createdAt: today(), validUntil: daysFromNow(30), status: "pending", viewed: false, viewedAt: null };
     setEstimates([copy, ...estimates]);
     (supabase as any).from("estimates").insert(copy)
-      .then((r: any) => { if (r?.error) { console.error("[Duplicate] insert failed:", r.error.message); toast("Duplicated locally, but failed to sync — " + r.error.message, "red"); } else toast("Estimate duplicated"); })
+      .then((r: any) => { if (r?.error) { console.error("[Duplicate] insert failed:", r.error.message); toast("Duplicated locally, but failed to sync — " + r.error.message, "red"); } else toast("Quote duplicated"); })
       .catch((e2: any) => { console.error("[Duplicate] insert threw:", e2?.message); toast("Duplicated locally, but failed to sync — " + (e2?.message || "unknown error"), "red"); });
   };
 
   const exportPDF = e => {
     const c = customers.find(x => x.id === e.customerId);
-    const html = `<!DOCTYPE html><html><head><title>Estimate ${e.id}</title><style>body{font-family:Arial,sans-serif;padding:40px;max-width:700px;margin:auto}h1{color:#e11d48}table{width:100%;border-collapse:collapse;margin:20px 0}th,td{padding:8px;text-align:left;border-bottom:1px solid #ddd}.total{font-size:20px;color:#e11d48;font-weight:bold}</style></head><body><h1>Crew Boss</h1><h2>Estimate #${e.id.toUpperCase()}</h2><p><strong>Bill to:</strong> ${c?.firstName} ${c?.lastName}<br>${c?.address || ''}</p><table><tr><th>Description</th><th>Qty</th><th>Price</th><th>Amount</th></tr>${e.lineItems.map(li => `<tr><td>${li.description}</td><td>${li.quantity}</td><td>${fmt(li.unitPrice)}</td><td>${fmt(li.quantity * li.unitPrice)}</td></tr>`).join('')}</table><p>Subtotal: ${fmt(e.subtotal)}<br>Tax: ${fmt(e.tax)}<br><span class="total">Total: ${fmt(e.total)}</span></p></body></html>`;
+    const html = `<!DOCTYPE html><html><head><title>Quote ${e.id}</title><style>body{font-family:Arial,sans-serif;padding:40px;max-width:700px;margin:auto}h1{color:#e11d48}table{width:100%;border-collapse:collapse;margin:20px 0}th,td{padding:8px;text-align:left;border-bottom:1px solid #ddd}.total{font-size:20px;color:#e11d48;font-weight:bold}</style></head><body><h1>Crew Boss</h1><h2>Quote #${e.id.toUpperCase()}</h2><p><strong>Bill to:</strong> ${c?.firstName} ${c?.lastName}<br>${c?.address || ''}</p><table><tr><th>Description</th><th>Qty</th><th>Price</th><th>Amount</th></tr>${e.lineItems.map(li => `<tr><td>${li.description}</td><td>${li.quantity}</td><td>${fmt(li.unitPrice)}</td><td>${fmt(li.quantity * li.unitPrice)}</td></tr>`).join('')}</table><p>Subtotal: ${fmt(e.subtotal)}<br>Tax: ${fmt(e.tax)}<br><span class="total">Total: ${fmt(e.total)}</span></p></body></html>`;
     const blob = new Blob([html], { type: "text/html" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "estimate-" + e.id + ".html";
+    a.download = "quote-" + e.id + ".html";
     a.click();
     URL.revokeObjectURL(url);
-    toast("Estimate exported (HTML — print to PDF)");
+    toast("Quote exported (HTML — print to PDF)");
   };
 
   const bulkDelete = async () => {
     if (selected.length === 0) return;
-    if (!(await confirmAsync({ message: `Permanently delete ${selected.length} estimate${selected.length !== 1 ? "s" : ""}? This can't be undone.`, confirmLabel: "Delete" }))) return;
+    if (!(await confirmAsync({ message: `Permanently delete ${selected.length} quote${selected.length !== 1 ? "s" : ""}? This can't be undone.`, confirmLabel: "Delete" }))) return;
     const ids = [...selected];
     const deleted = estimates.filter(e => ids.includes(e.id));
     setEstimates(estimates.filter(e => !ids.includes(e.id)));
     markRecentlyDeleted("estimates", ids);
     setSelected([]);
-    pushUndo(`Deleted ${deleted.length} estimate${deleted.length !== 1 ? "s" : ""}`, () => {
+    pushUndo(`Deleted ${deleted.length} quote${deleted.length !== 1 ? "s" : ""}`, () => {
       unmarkRecentlyDeleted("estimates", ids);
       setEstimates((prev: any[]) => [...deleted, ...prev]);
       (supabase as any).from("estimates").insert(deleted).then((r: any) => {
@@ -383,7 +395,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
     setViewing(est);
     if (!est.viewed) {
       setEstimates(prev => prev.map(x => x.id === est.id ? { ...x, viewed: true, viewedAt: today() } : x));
-      toast("📬 Estimate #" + est.id.slice(-4).toUpperCase() + " opened by " + (customers.find(c => c.id === est.customerId)?.firstName || "customer"));
+      toast("📬 Quote #" + est.id.slice(-4).toUpperCase() + " opened by " + (customers.find(c => c.id === est.customerId)?.firstName || "customer"));
     }
   };
 
@@ -454,9 +466,9 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
                 // estimates.
                 const priceLine = hasSelectableOptions(est)
                   ? `Your ${est.estimateType === "package" ? "packages" : "service options"} are ready to review and sign.`
-                  : `Your estimate of <strong>${fmt(est.total)}</strong> is ready to review and sign.`;
-                const estHtml = emailShell(settings as any, "Your Estimate", `<p>Hi ${c.firstName},</p><p>${priceLine}</p><p>Questions? Call ${estCoPhone}.</p>` + emailButton("View & Sign Estimate", portalUrlFor(est.id)));
-                await sendEmail(settings, { to: c.email, subject: "Your estimate from " + estCoName + (hasSelectableOptions(est) ? "" : " — " + fmt(est.total)), body: estHtml }).catch(() => {});
+                  : `Your quote of <strong>${fmt(est.total)}</strong> is ready to review and sign.`;
+                const estHtml = emailShell(settings as any, "Your Quote", `<p>Hi ${c.firstName},</p><p>${priceLine}</p><p>Questions? Call ${estCoPhone}.</p>` + emailButton("View & Sign Quote", portalUrlFor(est.id)));
+                await sendEmail(settings, { to: c.email, subject: "Your quote from " + estCoName + (hasSelectableOptions(est) ? "" : " — " + fmt(est.total)), body: estHtml }).catch(() => {});
                 setEstimates(prev => prev.map(e => e.id === id ? { ...e, sentAt: today() } : e));
                 sent++;
               }
@@ -532,9 +544,19 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
                   </div>
                 )}
               </div>
+              {/* FEATURE (user report) — "there should be a button that says
+                  'Send a new estimate,' allowing them to update the price to
+                  be cheaper." Only on a declined quote — opens the builder
+                  pre-filled with this one's items/discount/deposit so it's
+                  a real edit-and-resend, not a from-scratch redo. */}
+              {e.status === "rejected" && (
+                <button onClick={() => openResend(e)} className="w-full mt-2 py-1.5 rounded-lg bg-green-900/20 border border-green-800/40 text-green-300 hover:bg-green-900/40 text-[11px] font-medium transition flex items-center justify-center gap-1.5">
+                  <RefreshCw size={11} />Send a new quote
+                </button>
+              )}
               <div className="flex gap-1 pt-3 mt-3 border-t border-red-900/20">
                 <button onClick={() => openPreview(e)} className="flex-1 p-1.5 rounded-lg hover:bg-white/10 text-white/60 hover:text-white text-[11px] transition flex items-center justify-center gap-1"><Eye size={11} />View</button>
-                <button onClick={() => { setSendModalEst(e); setSendChannel(e.sendChannel || "email"); setSendTemplateId(e.templateId || ""); setSendPreviewOn(false); }} title="Send estimate to customer" className="flex-1 p-1.5 rounded-lg hover:bg-green-900/30 text-white/60 hover:text-green-400 text-[11px] transition flex items-center justify-center gap-1"><Send size={11} />Send</button>
+                <button onClick={() => { setSendModalEst(e); setSendChannel(e.sendChannel || "email"); setSendTemplateId(e.templateId || ""); setSendPreviewOn(false); }} title="Send quote to customer" className="flex-1 p-1.5 rounded-lg hover:bg-green-900/30 text-white/60 hover:text-green-400 text-[11px] transition flex items-center justify-center gap-1"><Send size={11} />Send</button>
                 <button onClick={() => onPortal(e.id)} className="flex-1 p-1.5 rounded-lg hover:bg-purple-900/30 text-white/60 hover:text-purple-400 text-[11px] transition flex items-center justify-center gap-1" title="Preview exactly what the customer sees — sign, pay, and account history"><Globe size={11} />Preview as Customer</button>
                 <button onClick={() => duplicate(e)} className="p-1.5 rounded-lg hover:bg-white/10 text-white/60 hover:text-white text-[11px] transition flex items-center justify-center"><Copy size={11} /></button>
               </div>
@@ -543,14 +565,15 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
         })}
       </div>
 
-      <EstimateBuilder open={builderOpen} onClose={() => setBuilderOpen(false)} customers={customers} services={services} settings={settings} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} initialCustomerId={presetCustomerId} onSave={est => {
+      <EstimateBuilder open={builderOpen} onClose={() => { setBuilderOpen(false); setResendDraft(null); }} customers={customers} services={services} settings={settings} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} initialCustomerId={presetCustomerId} initialDraft={resendDraft} onSave={est => {
         // BUG FIX — missing owner_id violated the owner_id-scoped RLS policy
         // added by the multi-tenant migration (WITH CHECK owner_id =
         // current_owner_id()), so this insert was silently rejected.
         const estWithOwner = { ...est, owner_id: ownerId };
         setEstimates([...estimates, estWithOwner]);
         setBuilderOpen(false);
-        toast("Estimate created");
+        setResendDraft(null);
+        toast("Quote created");
         // FIX 13 — a brand-new estimate previously only reached Supabase via
         // the 30s app-level bulk autosave. If the owner sends the "Review &
         // Sign" link within that window, the customer's #/estimate/ID page
@@ -561,7 +584,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
           .catch((e: any) => toast("Saved locally, but failed to sync — " + (e?.message || ""), "red"));
         // Auto-add to customer timeline
         const c = customers.find(x => x.id === est.customerId);
-        if (c) setTimeline(prev => ({ ...prev, [c.id]: [{ id: uid(), type: "estimate", note: "Estimate created — " + fmt(est.total), date: today() }, ...(prev[c.id] || [])] }));
+        if (c) setTimeline(prev => ({ ...prev, [c.id]: [{ id: uid(), type: "estimate", note: "Quote created — " + fmt(est.total), date: today() }, ...(prev[c.id] || [])] }));
       }} />
       <EstimatePreview estimate={viewing} customers={customers} settings={settings} onClose={() => setViewing(null)} onApprove={id => {
         setEstimates(estimates.map(x => x.id === id ? { ...x, status: "approved", signedAt: today() } : x));
@@ -587,7 +610,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
         const c = customers.find(x => x.id === est.customerId);
         const combinedChecklist = buildChecklistFromServices(est.lineItems, services);
         const newJob = {
-          id: uid(), customerId: est.customerId, address: c?.address || "", amount: est.total, status: "scheduled", scheduledDate: today(), duration: 3, priority: "normal", checklist: combinedChecklist, preChecklist: combinedChecklist, photos: [], chemicalsUsed: [], crew: [], notes: "From estimate #" + (est.id || "").slice(-4), pipelineStage: "scheduled", createdAt: today(),
+          id: uid(), customerId: est.customerId, address: c?.address || "", amount: est.total, status: "scheduled", scheduledDate: today(), duration: 3, priority: "normal", checklist: combinedChecklist, preChecklist: combinedChecklist, photos: [], chemicalsUsed: [], crew: [], notes: "From quote #" + (est.id || "").slice(-4), pipelineStage: "scheduled", createdAt: today(),
           // BUG FIX — missing owner_id violated the owner_id-scoped RLS
           // policy added by the multi-tenant migration, silently rejecting
           // every job created by scheduling straight from an estimate.
@@ -636,7 +659,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
           createGoogleCalendarEvent(settings, newJob, c).then(ev => { if (ev) toast("📅 Synced to Google Calendar ✓"); });
         }
         setViewing(null);
-        toast("Job scheduled from estimate ✓ — set date in Jobs");
+        toast("Job scheduled from quote ✓ — set date in Jobs");
         onNav("jobs");
       }} onMarkDepositPaid={(id: string, amount: number) => {
         // FEATURE 6 — manual "collected outside the CRM" deposit (cash/check),
@@ -651,7 +674,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
           .catch((e: any) => { console.warn("[Deposit] save threw:", e?.message); toast?.("Marked locally, but failed to sync", "red"); });
       }} />
 
-      <Modal open={!!sendModalEst} onClose={() => { setSendModalEst(null); setSendPreviewOn(false); }} title="Send Estimate" maxW="max-w-md">
+      <Modal open={!!sendModalEst} onClose={() => { setSendModalEst(null); setSendPreviewOn(false); }} title="Send Quote" maxW="max-w-md">
         {sendModalEst && (() => {
           const cust = customers.find((c: any) => c.id === sendModalEst.customerId);
           return (

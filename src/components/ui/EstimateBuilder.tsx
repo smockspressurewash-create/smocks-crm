@@ -43,7 +43,7 @@ import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 import { ChemicalCostCalc } from "./ChemicalCostCalc";
 
-export function EstimateBuilder({ open, onClose, customers = [], services = [], settings = {}, onSave, estimateTemplates = [], setEstimateTemplates = (..._args: any[]) => {}, initialCustomerId = "" }: { open: boolean; onClose: any; customers?: any[]; services?: any[]; settings?: any; onSave: any; estimateTemplates?: any[]; setEstimateTemplates?: any; initialCustomerId?: string }) {
+export function EstimateBuilder({ open, onClose, customers = [], services = [], settings = {}, onSave, estimateTemplates = [], setEstimateTemplates = (..._args: any[]) => {}, initialCustomerId = "", initialDraft = null }: { open: boolean; onClose: any; customers?: any[]; services?: any[]; settings?: any; onSave: any; estimateTemplates?: any[]; setEstimateTemplates?: any; initialCustomerId?: string; initialDraft?: { customerId?: string; lineItems?: any[]; notes?: string; discount?: number; depositRequired?: number } | null }) {
   const [cid, setCid] = useState("");
   const [items, setItems] = useState([]);
   const [vu, setVu] = useState(daysFromNow(30));
@@ -87,12 +87,22 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
       // builder pre-targeted at a specific customer via initialCustomerId,
       // same one-shot pattern as the FAB's autoOpenNew — falls back to the
       // first customer in the list (prior default behavior) when unset.
-      setCid((initialCustomerId && customers.some((c: any) => c.id === initialCustomerId)) ? initialCustomerId : (customers[0]?.id || ""));
-      setItems([{ id: uid(), description: "", quantity: 1, unitPrice: 0 }]);
+      // FEATURE (user report) — "Send a new estimate" button on a declined
+      // quote, letting the owner adjust the price before resending.
+      // initialDraft seeds this same blank-form reset with the declined
+      // quote's line items/discount/deposit/notes instead of empty
+      // defaults, so it's a real starting point to edit down, not a
+      // from-scratch redo. Fresh ids on every line item — this always
+      // creates a NEW estimate row, never mutates the declined one.
+      const draftCustomerId = initialDraft?.customerId || initialCustomerId;
+      setCid((draftCustomerId && customers.some((c: any) => c.id === draftCustomerId)) ? draftCustomerId : (customers[0]?.id || ""));
+      setItems(initialDraft?.lineItems?.length
+        ? initialDraft.lineItems.map((li: any) => ({ id: uid(), description: li.description, quantity: li.quantity, unitPrice: li.unitPrice }))
+        : [{ id: uid(), description: "", quantity: 1, unitPrice: 0 }]);
       setVu(daysFromNow(30));
-      setDiscount(0);
+      setDiscount(Number(initialDraft?.discount) || 0);
       setDiscounts([]);
-      setDepositRequired(0);
+      setDepositRequired(Number(initialDraft?.depositRequired) || 0);
       setDepositType("amount");
       setDepositMandatory(false);
       setIsRecurring(false);
@@ -101,7 +111,7 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
       setRecurringInterval(1);
       setRecurringWeekdays([]);
       setTerms("Payment due upon completion. 3-day cancellation notice requested. Weather reschedules free of charge.");
-      setNotes("");
+      setNotes(initialDraft?.notes || "");
       setSavingTemplate(false);
       setTemplateName("");
       setEstimateType("standard");
@@ -111,7 +121,7 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
         { id: uid(), name: "Premium", description: "", lineItems: [{ id: uid(), description: "", quantity: 1, unitPrice: 0 }] },
       ]);
     }
-  }, [open, customers, initialCustomerId]);
+  }, [open, customers, initialCustomerId, initialDraft]);
 
   const sub = items.reduce((s, i) => s + Number(i.quantity) * Number(i.unitPrice), 0);
   // FEATURE 7 — combined total of every stacked discount + the legacy flat field.

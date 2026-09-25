@@ -349,7 +349,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
       const name = c ? c.firstName + " " + c.lastName : "Customer";
       if (e.status === "approved") events.push({ date: e.signedAt || e.createdAt, text: "✍️ Signed: " + name + " — estimate approved", amount: e.total, icon: FileText });
       else if (e.paidAt) events.push({ date: e.paidAt, text: "💳 Paid: " + name, amount: e.total, icon: DollarSign });
-      else events.push({ date: e.createdAt, text: "📋 Estimate sent: " + name, amount: e.total, icon: FileText });
+      else events.push({ date: e.createdAt, text: "📋 Quote sent: " + name, amount: e.total, icon: FileText });
     });
     // Recent customers
     customers.filter(c => c.createdAt && daysSince(c.createdAt) <= 30).slice(-5).forEach(c => {
