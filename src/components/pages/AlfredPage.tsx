@@ -387,6 +387,31 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // here — the actual analysis + send only happens from sendMessage() once
   // the owner presses Send, and each attachment gets a remove (X) button.
   const [pendingAttachments, setPendingAttachments] = useState<Array<{ id: string; file: File; dataUrl: string; base64: string; mediaType: string; isPdf: boolean }>>([]);
+  // Shared by the normal composer's attach input AND Voice Mode's own attach
+  // button (see the voice-mode panel below) — both just stage into the same
+  // pendingAttachments, no model call here at all.
+  const stageFiles = async (filesList: File[]) => {
+    if (filesList.length === 0) return;
+    const room = 10 - pendingAttachments.length;
+    if (room <= 0) { toast("Up to 10 attachments per message.", "yellow"); return; }
+    const toRead = filesList.slice(0, room);
+    if (filesList.length > toRead.length) toast(`Only ${toRead.length} more attachment${toRead.length !== 1 ? "s" : ""} fit — up to 10 per message.`, "yellow");
+    const readOne = (file: File) => new Promise<{ id: string; file: File; dataUrl: string; base64: string; mediaType: string; isPdf: boolean }>((resolve, reject) => {
+      const rr = new FileReader();
+      rr.onload = ev => {
+        const dataUrl = ev.target!.result as string;
+        resolve({ id: uid(), file, dataUrl, base64: dataUrl.split(",")[1], mediaType: file.type || "image/jpeg", isPdf: file.type === "application/pdf" });
+      };
+      rr.onerror = reject;
+      rr.readAsDataURL(file);
+    });
+    try {
+      const loaded = await Promise.all(toRead.map(readOne));
+      setPendingAttachments(prev => [...prev, ...loaded]);
+    } catch {
+      toast("Couldn't read that file — try again.", "red");
+    }
+  };
 
   // FEATURE — "no button to stop Alfred from responding mid-chat." One
   // AbortController per send() call, aborted by the Stop button — see
@@ -447,6 +472,12 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // it's never more than one render stale regardless of when the actual
   // callback fires.
   const sendRef = useRef<(overrideText?: string) => void>(() => {});
+  // FEATURE (user report) — "while I'm on voice chat with Alfred, let me
+  // manually send messages, photos, or files to give context." Same
+  // stale-closure reasoning as sendRef above — processVoiceTurn calls
+  // through this instead of a closed-over sendMessage so an attach made
+  // moments before a voice turn fires is always the current one.
+  const sendMessageRef = useRef<(overrideText?: string) => void>(() => {});
   // FEATURE — "interrupt Alfred's sentence, tell it to resume what it was
   // saying, hold up, or have a mute button." voiceTurnIdRef is a
   // cancellation token: every genuinely NEW turn (a normal reply, or a
@@ -485,6 +516,15 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // CRM pages).
   const [voiceModeMounted, setVoiceModeMounted] = useState(false);
   const [voiceModeMinimized, setVoiceModeMinimized] = useState(false);
+  // FEATURE (user report) — "while I'm on voice chat with Alfred, let me
+  // manually send messages, photos, or files to give context." Voice Mode
+  // portals independently of the normal composer (it has to survive
+  // navigating to other CRM pages — see mountEl's own comment), so it needs
+  // its own attach input/menu and a small text field, both feeding the SAME
+  // pendingAttachments/sendMessage pipeline the normal composer uses.
+  const [voiceAttachMenuOpen, setVoiceAttachMenuOpen] = useState(false);
+  const [voiceTextOpen, setVoiceTextOpen] = useState(false);
+  const [voiceManualText, setVoiceManualText] = useState("");
   const voiceModeMinimizedRef = useRef(false);
   useEffect(() => { voiceModeMinimizedRef.current = voiceModeMinimized; }, [voiceModeMinimized]);
   // FEATURE — "drag it, hold it in, almost like a FAB button, and move it
@@ -5293,6 +5333,7 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "can you undo that", "u
       await send(overrideText);
     }
   };
+  useEffect(() => { sendMessageRef.current = sendMessage; }); // no deps — always the latest, see sendMessageRef's comment
 
   // FEATURE — "a real continuous hands-free conversation loop." Each turn
   // is its own SpeechRecognition instance with continuous:false — the
@@ -5315,7 +5356,13 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "can you undo that", "u
     const thisTurnCallback = () => { if (voiceModeKeepGoingRef.current && voiceTurnIdRef.current === turnId) startVoiceListeningTurn(); };
     ttsEndCallbackRef.current = thisTurnCallback;
     setVoiceModeState("thinking");
-    sendRef.current(text);
+    // BUG FIX (user report) — "while I'm on voice chat, let me manually
+    // send messages, photos, or files to give context." Routes through
+    // sendMessageRef (not sendRef) so a photo/file attached from the Voice
+    // Mode panel (see the attach button below) is picked up automatically
+    // on the NEXT turn — spoken ("also look at these screenshots") or
+    // manually sent — exactly like the normal text composer already does.
+    sendMessageRef.current(text);
     // Safety net — if send() ever returns without reaching its TTS block
     // (a thrown/caught error, a recognized slash command's early return,
     // any future code path that skips it) ttsEndCallbackRef would never
@@ -5323,6 +5370,17 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "can you undo that", "u
     setTimeout(() => {
       if (ttsEndCallbackRef.current === thisTurnCallback) { ttsEndCallbackRef.current = null; thisTurnCallback(); }
     }, 45000);
+  };
+  // A manual text/attachment send while the recognizer is still actively
+  // listening for speech would otherwise let it fire its own onend a moment
+  // later (empty transcript) and re-arm "listening" mid-way through the
+  // manual turn's own thinking/speaking state — stop it first so only the
+  // manual turn is driving the state machine.
+  const sendVoiceManualText = () => {
+    try { voiceModeRecognitionRef.current?.stop(); } catch { /* already stopped */ }
+    processVoiceTurn(voiceManualText.trim());
+    setVoiceManualText("");
+    setVoiceTextOpen(false);
   };
   const startVoiceListeningTurn = () => {
     if (!voiceModeKeepGoingRef.current || !VoiceRecognitionCtor || voiceMutedRef.current) return;
@@ -6153,35 +6211,14 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "can you undo that", "u
                 )}
                 <input ref={mainAttachInputRef} type="file" accept="image/*,application/pdf" multiple className="hidden" onChange={async e => {
                   const filesList = Array.from(e.target.files || []);
-                  if (filesList.length === 0) return;
                   e.target.value = "";
                   // BUG FIX (user report) — "it still sends the file...
                   // before I send the message... should never send until
                   // you actually press send." Attaching now ONLY stages a
-                  // local preview here (read + add to pendingAttachments) —
-                  // no model call, no appendMessage, nothing goes to Alfred
-                  // until sendMessage() actually runs, which happens on a
-                  // real Send press. See sendWithAttachments (near send())
-                  // for the actual analysis, moved there unchanged.
-                  const room = 10 - pendingAttachments.length;
-                  if (room <= 0) { toast("Up to 10 attachments per message.", "yellow"); return; }
-                  const toRead = filesList.slice(0, room);
-                  if (filesList.length > toRead.length) toast(`Only ${toRead.length} more attachment${toRead.length !== 1 ? "s" : ""} fit — up to 10 per message.`, "yellow");
-                  const readOne = (file: File) => new Promise<{ id: string; file: File; dataUrl: string; base64: string; mediaType: string; isPdf: boolean }>((resolve, reject) => {
-                    const rr = new FileReader();
-                    rr.onload = ev => {
-                      const dataUrl = ev.target!.result as string;
-                      resolve({ id: uid(), file, dataUrl, base64: dataUrl.split(",")[1], mediaType: file.type || "image/jpeg", isPdf: file.type === "application/pdf" });
-                    };
-                    rr.onerror = reject;
-                    rr.readAsDataURL(file);
-                  });
-                  try {
-                    const loaded = await Promise.all(toRead.map(readOne));
-                    setPendingAttachments(prev => [...prev, ...loaded]);
-                  } catch {
-                    toast("Couldn't read that file — try again.", "red");
-                  }
+                  // local preview (see stageFiles) — no model call, no
+                  // appendMessage, nothing goes to Alfred until
+                  // sendMessage() actually runs, on a real Send press.
+                  await stageFiles(filesList);
                 }} />
               </div>
               {/* FEATURE (user report) — "only one button for the whole note
@@ -6497,25 +6534,133 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "can you undo that", "u
               )}
             </div>
 
+            {/* BUG FIX (user report) — "let me manually send messages,
+                photos, or files while talking to it to give context." Staged
+                attachments show right here, same X-to-remove as the normal
+                composer — the NEXT turn (spoken or typed) picks them up
+                automatically (see processVoiceTurn). */}
+            {pendingAttachments.length > 0 && (
+              <div className="w-full flex flex-wrap gap-2 mb-2 px-1">
+                {pendingAttachments.map(a => (
+                  <div key={a.id} className="relative flex-shrink-0">
+                    {a.isPdf ? (
+                      <div className="w-12 h-12 rounded-lg border border-white/15 bg-black/60 flex flex-col items-center justify-center gap-0.5 px-1 overflow-hidden">
+                        <FileText size={13} className="text-red-400 flex-shrink-0" />
+                        <span className="text-[7px] text-white/50 truncate w-full text-center">{a.file.name}</span>
+                      </div>
+                    ) : (
+                      <img src={a.dataUrl} alt={a.file.name} className="w-12 h-12 object-cover rounded-lg border border-white/15" />
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setPendingAttachments(prev => prev.filter(p => p.id !== a.id))}
+                      title="Remove attachment"
+                      className="absolute -top-1.5 -right-1.5 w-[16px] h-[16px] rounded-full bg-red-700 hover:bg-red-600 text-white flex items-center justify-center border border-black/70"
+                    >
+                      <X size={9} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Manual text entry — for typing instead of speaking (a quiet
+                room, a precise instruction, or just alongside an attachment
+                with nothing to say out loud). Reuses processVoiceTurn so it
+                fully participates in the same thinking/speaking state
+                machine a spoken turn does. */}
+            {voiceTextOpen && (
+              <div className="w-full flex items-center gap-1.5 mb-2">
+                <input
+                  autoFocus
+                  value={voiceManualText}
+                  onChange={e => setVoiceManualText(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === "Enter" && (voiceManualText.trim() || pendingAttachments.length > 0)) {
+                      e.preventDefault();
+                      sendVoiceManualText();
+                    }
+                  }}
+                  placeholder="Type instead of talking…"
+                  className="flex-1 bg-white/[0.06] border border-white/15 rounded-full px-3.5 py-2 text-xs text-white placeholder-white/30 focus:outline-none focus:border-red-500/50"
+                />
+                <button
+                  onClick={sendVoiceManualText}
+                  disabled={!voiceManualText.trim() && pendingAttachments.length === 0}
+                  className={"w-9 h-9 flex-shrink-0 rounded-full flex items-center justify-center transition " + (!voiceManualText.trim() && pendingAttachments.length === 0 ? "bg-white/5 text-white/30" : "bg-gradient-to-br from-red-600 to-red-800 text-white")}
+                >
+                  <Send size={14} />
+                </button>
+              </div>
+            )}
+
             {/* Controls — one unified glass dock instead of loose floating
                 buttons, End Call as the visually distinct centerpiece. */}
-            <div className="flex items-center gap-1.5 mt-5 p-1.5 rounded-full bg-black/30 border border-white/10 backdrop-blur-md">
+            <div className="flex items-center gap-1 mt-5 p-1.5 rounded-full bg-black/30 border border-white/10 backdrop-blur-md flex-wrap justify-center">
               <button
                 onClick={toggleVoiceMute}
                 title={voiceMuted ? "Unmute microphone" : "Mute microphone"}
-                className={"w-11 h-11 rounded-full flex items-center justify-center transition " + (voiceMuted ? "bg-red-600/25 text-red-300" : "text-white/60 hover:text-white hover:bg-white/10")}
+                className={"w-10 h-10 rounded-full flex items-center justify-center transition " + (voiceMuted ? "bg-red-600/25 text-red-300" : "text-white/60 hover:text-white hover:bg-white/10")}
               >
-                {voiceMuted ? <MicOff size={17} /> : <Mic size={17} />}
+                {voiceMuted ? <MicOff size={16} /> : <Mic size={16} />}
               </button>
               {(voiceModeState === "speaking" || voiceModeState === "paused") && (
                 <button
                   onClick={toggleVoicePause}
                   title={voiceModeState === "paused" ? "Resume" : "Pause (hold up)"}
-                  className="w-11 h-11 rounded-full flex items-center justify-center text-white/60 hover:text-white hover:bg-white/10 transition"
+                  className="w-10 h-10 rounded-full flex items-center justify-center text-white/60 hover:text-white hover:bg-white/10 transition"
                 >
-                  {voiceModeState === "paused" ? <Play size={17} /> : <Pause size={17} />}
+                  {voiceModeState === "paused" ? <Play size={16} /> : <Pause size={16} />}
                 </button>
               )}
+              {/* FEATURE (user report) — "let me manually send messages,
+                  photos, or files while talking to it." Same Photo/Video vs
+                  PDF split the normal composer uses (see its own comment on
+                  why — the mobile native picker), staged via the shared
+                  stageFiles() helper. */}
+              <div className="relative flex-shrink-0">
+                <button
+                  onClick={() => setVoiceAttachMenuOpen(o => !o)}
+                  title="Attach a photo, screenshot, or file"
+                  className="w-10 h-10 rounded-full flex items-center justify-center text-white/60 hover:text-white hover:bg-white/10 transition"
+                >
+                  <Paperclip size={16} />
+                </button>
+                {voiceAttachMenuOpen && (
+                  <>
+                    <div className="fixed inset-0 z-10" onClick={() => setVoiceAttachMenuOpen(false)} />
+                    <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-48 bg-black/95 border border-white/15 rounded-xl shadow-2xl overflow-hidden z-20 backdrop-blur">
+                      <label className="w-full flex items-center gap-2.5 px-3 py-2.5 text-xs text-white/80 hover:bg-white/10 cursor-pointer border-b border-white/10">
+                        <ImageIcon size={13} className="text-red-400" />
+                        Photo or video
+                        <input type="file" accept="image/*,video/*" multiple className="hidden" onChange={async e => {
+                          setVoiceAttachMenuOpen(false);
+                          const filesList = Array.from(e.target.files || []);
+                          e.target.value = "";
+                          await stageFiles(filesList);
+                        }} />
+                      </label>
+                      <label className="w-full flex items-center gap-2.5 px-3 py-2.5 text-xs text-white/80 hover:bg-white/10 cursor-pointer">
+                        <FileText size={13} className="text-red-400" />
+                        Document (PDF)
+                        <input type="file" accept="application/pdf" className="hidden" onChange={async e => {
+                          setVoiceAttachMenuOpen(false);
+                          const filesList = Array.from(e.target.files || []);
+                          e.target.value = "";
+                          await stageFiles(filesList);
+                        }} />
+                      </label>
+                    </div>
+                  </>
+                )}
+              </div>
+              <button
+                onClick={() => setVoiceTextOpen(o => !o)}
+                title="Type a message instead of talking"
+                className={"w-10 h-10 rounded-full flex items-center justify-center transition " + (voiceTextOpen ? "bg-red-600/25 text-red-300" : "text-white/60 hover:text-white hover:bg-white/10")}
+              >
+                <Edit size={15} />
+              </button>
               <button
                 onClick={closeVoiceMode}
                 className="flex items-center gap-2 px-6 py-3 rounded-full bg-gradient-to-br from-red-500 to-red-700 hover:from-red-400 hover:to-red-600 text-white font-semibold text-sm shadow-lg shadow-red-950/50 transition mx-1"
@@ -6530,9 +6675,9 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "can you undo that", "u
               <button
                 onClick={() => setVoiceModeMinimized(true)}
                 title="Minimize — keep talking while you look around"
-                className="w-11 h-11 rounded-full flex items-center justify-center text-white/60 hover:text-white hover:bg-white/10 transition"
+                className="w-10 h-10 rounded-full flex items-center justify-center text-white/60 hover:text-white hover:bg-white/10 transition"
               >
-                <ChevronDown size={19} />
+                <ChevronDown size={18} />
               </button>
             </div>
           </div>
