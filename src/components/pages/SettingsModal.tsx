@@ -92,7 +92,7 @@ const isValidHttpsUrl = (value: string): boolean => {
   }
 };
 
-export function SettingsModal({ open, onClose, settings, setSettings, jobs = [], setJobs = (() => {}) as any, customers = [], estimates = [], campaigns = [], services, setServices, emailTemplates, setEmailTemplates, smsTemplates, setSmsTemplates, estimateTemplates = [], setEstimateTemplates = (() => {}) as any, modelStatus = {}, setModelStatus = (() => {}) as any, employees = [], toast, onSignOut, restrictToProfile = false, onAddManager, markRecentlyDeleted, initialSection }: { open?: any; onClose?: any; settings?: any; setSettings?: any; jobs?: any[]; setJobs?: any; customers?: any[]; estimates?: any[]; campaigns?: any[]; services?: any; setServices?: any; emailTemplates?: any; setEmailTemplates?: any; smsTemplates?: any; setSmsTemplates?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; modelStatus?: any; setModelStatus?: any; employees?: any[]; toast?: any; onSignOut?: () => void; restrictToProfile?: boolean; onAddManager?: () => void; markRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void; initialSection?: string }) {
+export function SettingsModal({ open, onClose, settings, setSettings, jobs = [], setJobs = (() => {}) as any, customers = [], estimates = [], campaigns = [], services, setServices, emailTemplates, setEmailTemplates, smsTemplates, setSmsTemplates, estimateTemplates = [], setEstimateTemplates = (() => {}) as any, modelStatus = {}, setModelStatus = (() => {}) as any, employees = [], toast, onSignOut, signingOut = false, restrictToProfile = false, onAddManager, markRecentlyDeleted, initialSection }: { open?: any; onClose?: any; settings?: any; setSettings?: any; jobs?: any[]; setJobs?: any; customers?: any[]; estimates?: any[]; campaigns?: any[]; services?: any; setServices?: any; emailTemplates?: any; setEmailTemplates?: any; smsTemplates?: any; setSmsTemplates?: any; estimateTemplates?: any[]; setEstimateTemplates?: any; modelStatus?: any; setModelStatus?: any; employees?: any[]; toast?: any; onSignOut?: () => void; signingOut?: boolean; restrictToProfile?: boolean; onAddManager?: () => void; markRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void; initialSection?: string }) {
   const [f, setF] = useState(settings);
   const [sec, setSec] = useState("profile");
   // BUG FIX — "Settings always opens to API keys instead of my profile."
@@ -725,9 +725,11 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
               <div className="pt-2 border-t border-red-900/30">
                 <button
                   onClick={onSignOut}
-                  className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-red-950/30 border border-red-700/40 text-red-400 hover:bg-red-950/50 hover:text-red-300 transition text-sm font-medium"
+                  disabled={signingOut}
+                  className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-red-950/30 border border-red-700/40 text-red-400 hover:bg-red-950/50 hover:text-red-300 transition text-sm font-medium disabled:opacity-60"
                 >
-                  <Lock size={14} />Sign Out of CrewBoss
+                  {signingOut ? <div className="w-3.5 h-3.5 border-2 border-red-500/30 border-t-red-400 rounded-full animate-spin" /> : <Lock size={14} />}
+                  {signingOut ? "Signing out…" : "Sign Out of CrewBoss"}
                 </button>
               </div>
             )}

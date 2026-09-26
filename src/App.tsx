@@ -5079,28 +5079,45 @@ export function App() {
         );
         return;
       }
+      // BUG FIX (user report) — "signing in... takes forever... sometimes
+      // doesn't even work." Neither signUp nor signInWithPassword had a
+      // timeout (per CLAUDE.md's own documented Supabase-auth hang-on-
+      // flaky-connection note) OR a try/catch — a dropped connection made
+      // this throw instead of resolving with a normal {error}, which
+      // skipped the setOwnerLoginLoading(false) below entirely and left
+      // the button stuck on "Please wait…" forever, with no way out but
+      // reloading the page. Wrapped in withTimeout + try/finally now, so a
+      // bad connection fails clearly within 20s instead of hanging.
       setOwnerLoginLoading(true); setOwnerLoginError("");
       let isRegistering = false;
-      if (ownerLoginMode === "register") {
-        if (ownerPassword.length < 6) { setOwnerLoginError("Password must be at least 6 characters"); setOwnerLoginLoading(false); return; }
-        const { error: signUpErr } = await supabase.auth.signUp({
-          email: ownerEmail.trim(),
-          password: ownerPassword,
-          options: { data: { role: "owner", fullName: ownerFullName.trim(), companyName: ownerCompanyName.trim() || "My Company" } },
-        });
-        if (signUpErr) { setOwnerLoginError(signUpErr.message); setOwnerLoginLoading(false); return; }
-        if (ownerCompanyName.trim()) {
-          setSettings((prev: any) => ({ ...prev, companyName: ownerCompanyName.trim() }));
+      let data: any = null;
+      try {
+        if (ownerLoginMode === "register") {
+          if (ownerPassword.length < 6) { setOwnerLoginError("Password must be at least 6 characters"); return; }
+          const { error: signUpErr } = await withTimeout(supabase.auth.signUp({
+            email: ownerEmail.trim(),
+            password: ownerPassword,
+            options: { data: { role: "owner", fullName: ownerFullName.trim(), companyName: ownerCompanyName.trim() || "My Company" } },
+          }), 20000, "Create account");
+          if (signUpErr) { setOwnerLoginError(signUpErr.message); return; }
+          if (ownerCompanyName.trim()) {
+            setSettings((prev: any) => ({ ...prev, companyName: ownerCompanyName.trim() }));
+          }
+          if (ownerFullName.trim()) {
+            setSettings((prev: any) => ({ ...prev, ownerName: ownerFullName.trim() }));
+          }
+          setSettings((prev: any) => ({ ...prev, onboardingComplete: false }));
+          isRegistering = true;
         }
-        if (ownerFullName.trim()) {
-          setSettings((prev: any) => ({ ...prev, ownerName: ownerFullName.trim() }));
-        }
-        setSettings((prev: any) => ({ ...prev, onboardingComplete: false }));
-        isRegistering = true;
+        const { data: signInData, error } = await withTimeout<any>(supabase.auth.signInWithPassword({ email: ownerEmail.trim(), password: ownerPassword }), 20000, "Sign in");
+        data = signInData;
+        if (error) { setOwnerLoginError(error.message); return; }
+      } catch (e: any) {
+        setOwnerLoginError(/timed out/i.test(e?.message || "") ? "That's taking too long — check your connection and try again." : (e?.message || "Sign-in failed — check your connection and try again."));
+        return;
+      } finally {
+        setOwnerLoginLoading(false);
       }
-      const { data, error } = await supabase.auth.signInWithPassword({ email: ownerEmail.trim(), password: ownerPassword });
-      setOwnerLoginLoading(false);
-      if (error) { setOwnerLoginError(error.message); return; }
       // FEATURE — "let people sign up and pay for CrewBoss" / "it should
       // ask them to pay first, then create an account." Two mutually
       // exclusive paths for a brand-new registration: if this account was
@@ -5158,12 +5175,17 @@ export function App() {
     const handleForgotPassword = async () => {
       if (!ownerEmail.trim()) { setOwnerLoginError("Enter your email first, then tap \"Forgot password?\""); toast("Enter your email first", "yellow"); return; }
       setOwnerLoginLoading(true); setOwnerLoginError("");
-      const { error } = await supabase.auth.resetPasswordForEmail(ownerEmail.trim(), {
-        redirectTo: window.location.origin + window.location.pathname + "#/reset-password",
-      });
-      setOwnerLoginLoading(false);
-      if (error) console.error("[Forgot Password] — error:", error.message);
-      toast(error ? "Couldn't send reset email — " + error.message : "Check your email for the reset link ✓", error ? "red" : "green");
+      try {
+        const { error } = await withTimeout(supabase.auth.resetPasswordForEmail(ownerEmail.trim(), {
+          redirectTo: window.location.origin + window.location.pathname + "#/reset-password",
+        }), 20000, "Send reset email");
+        if (error) console.error("[Forgot Password] — error:", error.message);
+        toast(error ? "Couldn't send reset email — " + error.message : "Check your email for the reset link ✓", error ? "red" : "green");
+      } catch (e: any) {
+        toast("Couldn't send reset email — " + (e?.message || "check your connection and try again"), "red");
+      } finally {
+        setOwnerLoginLoading(false);
+      }
     };
     return (
       <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center p-6 overflow-y-auto overflow-x-hidden">
@@ -5320,9 +5342,12 @@ export function App() {
                 <button
                   onClick={handleOwnerLogin}
                   disabled={ownerLoginLoading || (ownerLoginMode === "register" && pendingCheckoutSession?.status === "verifying")}
-                  className="w-full min-h-[52px] py-4 rounded-2xl bg-gradient-to-r from-red-600 to-red-800 text-white font-semibold text-base hover:from-red-500 hover:to-red-700 active:scale-95 transition-all disabled:opacity-50"
+                  className="w-full min-h-[52px] py-4 rounded-2xl bg-gradient-to-r from-red-600 to-red-800 text-white font-semibold text-base hover:from-red-500 hover:to-red-700 active:scale-95 transition-all disabled:opacity-50 flex items-center justify-center gap-2.5"
                 >
-                  {ownerLoginLoading ? "Please wait…" : ownerLoginMode === "login" ? "Sign In" : "Create Owner Account"}
+                  {/* BUG FIX (user report) — "add a loader or animation
+                      saying something like signing in." Was text-only. */}
+                  {ownerLoginLoading && <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin flex-shrink-0" />}
+                  {ownerLoginLoading ? (ownerLoginMode === "login" ? "Signing in…" : "Creating account…") : ownerLoginMode === "login" ? "Sign In" : "Create Owner Account"}
                 </button>
               </div>
             )}
@@ -5542,10 +5567,18 @@ export function App() {
             </button>
           </div>
           <button
-            onClick={() => { handleSignOut(); setSidebarOpen(false); }}
-            className="w-full flex items-center justify-center gap-1.5 p-2 rounded-xl text-xs text-red-500/60 hover:text-red-400 hover:bg-red-950/20 transition"
+            onClick={handleSignOut}
+            disabled={signingOut}
+            className="w-full flex items-center justify-center gap-1.5 p-2 rounded-xl text-xs text-red-500/60 hover:text-red-400 hover:bg-red-950/20 transition disabled:opacity-60"
           >
-            <Lock size={13} />Sign Out
+            {/* BUG FIX (user report) — "when I press sign out... it should
+                have a spinning animation." Closing the sidebar the instant
+                this was clicked also hid the button (and any feedback on
+                it) before sign-out even finished — left open now so the
+                spinner is actually visible; the sidebar closes on its own
+                once handleSignOut's own state reset runs. */}
+            {signingOut ? <div className="w-3.5 h-3.5 border-2 border-red-500/30 border-t-red-400 rounded-full animate-spin" /> : <Lock size={13} />}
+            {signingOut ? "Signing out…" : "Sign Out"}
           </button>
         </div>
       </aside>
@@ -5736,9 +5769,11 @@ export function App() {
                     </button>
                     <button
                       onClick={handleSignOut}
-                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-red-400 hover:text-red-300 hover:bg-red-950/30 transition text-left"
+                      disabled={signingOut}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm text-red-400 hover:text-red-300 hover:bg-red-950/30 transition text-left disabled:opacity-60"
                     >
-                      <Lock size={14} />Sign Out
+                      {signingOut ? <div className="w-3.5 h-3.5 border-2 border-red-500/30 border-t-red-400 rounded-full animate-spin flex-shrink-0" /> : <Lock size={14} />}
+                      {signingOut ? "Signing out…" : "Sign Out"}
                     </button>
                   </div>
                 </div>
@@ -5949,6 +5984,7 @@ export function App() {
         employees={employees}
         toast={toast}
         onSignOut={handleSignOut}
+        signingOut={signingOut}
         restrictToProfile={crmRole === "manager"}
         onAddManager={() => { setSettingsOpen(false); setAutoOpenManagerInvite(true); setPage("employees"); }}
       />

@@ -3260,7 +3260,7 @@ function OwnerTeamPortal({ jobs, employees, customers, onClose, googleMapsKey, t
             active on this browser. An employee sharing the device needs a way to reach
             their own login instead of being stuck looking at the owner's team preview. */}
         <button
-          onClick={async () => { await supabase.auth.signOut({ scope: "local" }); }}
+          onClick={async () => { try { await withTimeout(supabase.auth.signOut({ scope: "local" }), 6000, "Sign out"); } catch { /* local hash change below still gets them to login either way */ } window.location.hash = "/portal"; }}
           className="text-[10px] text-white/40 hover:text-white/70 underline whitespace-nowrap"
         >
           Not you? Sign in
@@ -5336,7 +5336,16 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     }
   };
 
+  // BUG FIX (user report) — "signing in and signing out... takes forever,
+  // I have to keep pressing it... it should have a spinning animation."
+  // doSignOut itself already had a timeout — what it never had was any
+  // visible loading state, so nothing stopped a second/third tap while the
+  // first was still in flight, and there was no feedback that anything was
+  // happening at all.
+  const [signingOut, setSigningOut] = useState(false);
   const doSignOut = async () => {
+    if (signingOut) return;
+    setSigningOut(true);
     // scope: "local" — sign out only this device. The default ("global")
     // revokes the refresh token everywhere, which would also sign this
     // employee out of any other device/browser they're logged into.
@@ -5352,9 +5361,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       await withTimeout(supabase.auth.signOut({ scope: "local" }), 6000, "Sign out");
     } catch (e: any) {
       console.warn("[SignOut] server call timed out/failed — signing out locally anyway:", e?.message);
+    } finally {
+      setEmpSession(null);
+      window.location.hash = "/portal";
+      setSigningOut(false);
     }
-    setEmpSession(null);
-    window.location.hash = "/portal";
   };
 
   const doRetryLink = async () => {
@@ -5938,8 +5949,22 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   };
 
   const doLogin = async () => {
+    // BUG FIX (user report) — "signing in and signing out... takes
+    // forever... sometimes doesn't even work." No timeout and no
+    // try/catch here — a dropped connection made signInWithPassword throw
+    // instead of resolving with a normal {error}, skipping
+    // setLoginLoading(false) entirely and leaving the button stuck on
+    // "Please wait…" forever with no way out but reloading.
     setLoginLoading(true); setLoginError("");
-    const { data, error } = await supabase.auth.signInWithPassword({ email: loginEmail, password: loginPwd });
+    let data: any, error: any;
+    try {
+      const res = await withTimeout<any>(supabase.auth.signInWithPassword({ email: loginEmail, password: loginPwd }), 20000, "Sign in");
+      data = res.data; error = res.error;
+    } catch (e: any) {
+      setLoginLoading(false);
+      setLoginError(/timed out/i.test(e?.message || "") ? "That's taking too long — check your connection and try again." : (e?.message || "Sign-in failed — check your connection and try again."));
+      return;
+    }
     setLoginLoading(false);
     if (error) { setLoginError(error.message); return; }
 
@@ -6041,16 +6066,28 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       setLoginError(`This invite was sent to ${inviteRecord.email}. Please use that email address.`);
       return;
     }
+    // BUG FIX (user report) — same "takes forever / sometimes doesn't even
+    // work" root cause as doLogin: no timeout, no try/catch, so a dropped
+    // connection left this stuck on "Please wait…" forever instead of
+    // failing with a clear message.
     setLoginLoading(true); setLoginError("");
     const authRole = inviteRecord?.role?.toLowerCase().includes("manager") ? "manager" : "technician";
-    const { error } = await supabase.auth.signUp({
-      email: loginEmail, password: loginPwd,
-      options: { data: { role: authRole, firstName: loginFirst, lastName: loginLast } },
-    });
-    if (error) { setLoginLoading(false); setLoginError(error.message); return; }
-    // Auto sign-in after registration
-    const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({ email: loginEmail, password: loginPwd });
-    setLoginLoading(false);
+    let signInData: any, signInErr: any;
+    try {
+      const { error } = await withTimeout(supabase.auth.signUp({
+        email: loginEmail, password: loginPwd,
+        options: { data: { role: authRole, firstName: loginFirst, lastName: loginLast } },
+      }), 20000, "Create account");
+      if (error) { setLoginError(error.message); return; }
+      // Auto sign-in after registration
+      const res = await withTimeout<any>(supabase.auth.signInWithPassword({ email: loginEmail, password: loginPwd }), 20000, "Sign in");
+      signInData = res.data; signInErr = res.error;
+    } catch (e: any) {
+      setLoginError(/timed out/i.test(e?.message || "") ? "That's taking too long — check your connection and try again." : (e?.message || "Sign-up failed — check your connection and try again."));
+      return;
+    } finally {
+      setLoginLoading(false);
+    }
     if (!signInErr && signInData.session) {
       const newUserId = signInData.session.user.id;
 
@@ -6208,8 +6245,11 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             )}
             <GBtn onClick={loginMode === "login" ? doLogin : doRegister}
               disabled={loginLoading || !loginEmail || !loginPwd}
-              className="w-full !justify-center !py-3">
-              {loginLoading ? "Please wait…" : loginMode === "login" ? "Sign In" : "Create Account"}
+              className="w-full !justify-center !py-3 !flex !items-center !gap-2.5">
+              {/* BUG FIX (user report) — "add a loader or animation saying
+                  something like signing in." Was text-only. */}
+              {loginLoading && <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin flex-shrink-0" />}
+              {loginLoading ? (loginMode === "login" ? "Signing in…" : "Creating account…") : loginMode === "login" ? "Sign In" : "Create Account"}
             </GBtn>
             {loginMode === "login" && (
               forgotSent ? (
@@ -6264,8 +6304,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           <GBtn onClick={doRetryLink} disabled={retrying} className="w-full justify-center">
             {retrying ? "Checking…" : "Retry"}
           </GBtn>
-          <GBtn onClick={doSignOut} variant="ghost" className="w-full justify-center">
-            <LogOut size={14} className="inline mr-1.5" />Sign Out
+          <GBtn onClick={doSignOut} disabled={signingOut} variant="ghost" className="w-full justify-center">
+            {signingOut ? <div className="inline-block w-3.5 h-3.5 mr-1.5 border-2 border-white/30 border-t-white rounded-full animate-spin align-middle" /> : <LogOut size={14} className="inline mr-1.5" />}
+            {signingOut ? "Signing out…" : "Sign Out"}
           </GBtn>
         </div>
       </div>
@@ -6968,8 +7009,8 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
           <button onClick={() => setSopOpen(true)} className="p-2 rounded-xl hover:bg-white/10 text-white/40 hover:text-white transition flex-shrink-0" title="SOPs & Instructions">
             <BookOpen size={16} />
           </button>
-          <button onClick={doSignOut} className="p-2 rounded-xl hover:bg-white/10 text-white/40 hover:text-white transition flex-shrink-0" title="Sign out">
-            <LogOut size={16} />
+          <button onClick={doSignOut} disabled={signingOut} className="p-2 rounded-xl hover:bg-white/10 text-white/40 hover:text-white transition flex-shrink-0 disabled:opacity-60" title="Sign out">
+            {signingOut ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <LogOut size={16} />}
           </button>
         </div>
       </header>
