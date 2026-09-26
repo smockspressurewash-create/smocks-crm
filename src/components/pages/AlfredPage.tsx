@@ -419,6 +419,54 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     }
   };
 
+  // FEATURE (user report) — "if I attach files/photos and haven't sent it
+  // yet and it sits there for a while... keep it in local storage... so it
+  // doesn't time out too fast or Alfred can still access it." An unsent
+  // draft (typed text and/or staged attachments) used to vanish on a
+  // reload or fully closing the app — now persisted to localStorage.
+  // File objects themselves can't be serialized, so only the already-read
+  // dataUrl/base64 travels through storage; dataUrlToFile rebuilds a real
+  // File from that on load (still needed for the attach_file_to_customer
+  // upload path). Best-effort — several large photos can exceed a
+  // browser's localStorage quota, in which case this just silently
+  // doesn't persist, same fallback usePersistent's own localStorage calls
+  // already rely on elsewhere in this app.
+  const ALFRED_DRAFT_KEY = "smocks.alfredDraft";
+  const dataUrlToFile = (dataUrl: string, filename: string, mediaType: string): File => {
+    const base64 = dataUrl.split(",")[1] || "";
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return new File([bytes], filename, { type: mediaType });
+  };
+  const [draftReady, setDraftReady] = useState(false);
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(ALFRED_DRAFT_KEY);
+      if (raw) {
+        const draft = JSON.parse(raw);
+        if (draft?.text) setInput(draft.text);
+        if (Array.isArray(draft?.attachments) && draft.attachments.length > 0) {
+          setPendingAttachments(draft.attachments.map((a: any) => ({
+            id: a.id, dataUrl: a.dataUrl, base64: a.base64, mediaType: a.mediaType, isPdf: a.isPdf,
+            file: dataUrlToFile(a.dataUrl, a.fileName, a.mediaType),
+          })));
+        }
+      }
+    } catch { /* corrupt/blocked storage — just start with an empty draft */ }
+    setDraftReady(true); // gates the save-effect below so it never fires with the pre-load empty state and wipes what we just read
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!draftReady) return;
+    try {
+      if (!input.trim() && pendingAttachments.length === 0) { localStorage.removeItem(ALFRED_DRAFT_KEY); return; }
+      localStorage.setItem(ALFRED_DRAFT_KEY, JSON.stringify({
+        text: input,
+        attachments: pendingAttachments.map(a => ({ id: a.id, dataUrl: a.dataUrl, base64: a.base64, mediaType: a.mediaType, isPdf: a.isPdf, fileName: a.file.name })),
+      }));
+    } catch { /* quota exceeded or storage blocked — draft just won't persist this time */ }
+  }, [input, pendingAttachments, draftReady]);
+
   // FEATURE — "no button to stop Alfred from responding mid-chat." One
   // AbortController per send() call, aborted by the Stop button — see
   // send()'s own use of this for how a stop is detected and reported
@@ -983,7 +1031,19 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     const raf = requestAnimationFrame(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; });
     const t = setTimeout(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, 250);
     return () => { cancelAnimationFrame(raf); clearTimeout(t); };
-  }, [chats.length, loading, active?.id]);
+    // BUG FIX (user report) — "whenever I open up an Alfred conversation...
+    // it always needs to open to the bottom, I don't care if I go to a
+    // different part of the CRM and come back." This component stays
+    // mounted while on another CRM page (see mountEl's own comment — it's
+    // only PORTALED away, so Voice Mode survives navigation), but the
+    // portal target (#alfred-mount-point) itself gets torn down and
+    // recreated by App.tsx's page switch, which hands scrollRef a BRAND
+    // NEW DOM node — starting at scrollTop 0 — every time the owner
+    // navigates back. chats.length/active?.id don't change on a same-
+    // conversation return, so this effect never re-ran to correct it.
+    // isActivePage flipping back to true now re-triggers the same
+    // scroll-to-bottom logic above.
+  }, [chats.length, loading, active?.id, isActivePage]);
 
   // Slash command suggestions
   const slashCmds = [
@@ -5429,25 +5489,38 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
         // Each PDF now gets its own single-document read, merged with the
         // screenshot findings into one combined message.
         let combinedFindings = "";
-        if (imageFiles.length > 0) {
-          const result: any = await callVisionModel({
-            messages: [{
-              role: "user",
-              content: [
-                ...imageFiles.map(a => ({ type: "image", source: { type: "base64", media_type: a.mediaType, data: a.base64 } })),
-                { type: "text", text: `You are Alfred, business assistant for a pressure-washing/trash-can-cleaning company. These ${imageFiles.length} screenshots contain job/order info — texts, a spreadsheet, a scheduling app, handwritten notes, anything. Extract EVERY separate job/order visible across ALL the images. For each one list: customer full name, phone number, address, the service/order details, the date and time (resolve relative wording like "today"/"tomorrow" against ${today()}), which employee (if any) is named as assigned, and the dollar amount. If a field isn't visible for a job, write "not given" for it rather than guessing. Number each job. In a final section, explicitly call out any two jobs that name the SAME employee at the same or overlapping date/time. Be thorough — do not skip any job visible in any image.` }
-              ]
-            }],
-            maxTokens: 3000,
-            // BUG FIX (user report) — "Couldn't analyze those screenshots —
-            // Screenshot analysis timed out." Was 45s — genuinely too tight
-            // for a thorough multi-job extraction across several photos,
-            // especially on a slower/free-tier model. Combined with the
-            // retry above (a timeout is now retryable too), this gives a
-            // real chance to actually finish instead of failing outright.
-          }, 75000, "Screenshot analysis");
-          const extracted = (result.text || "").trim();
-          if (extracted) combinedFindings += `From the ${imageFiles.length} screenshot(s):\n${extracted}\n\n`;
+        // BUG FIX (user report) — "Screenshot analysis timed out" kept
+        // happening even after raising the timeout to 75s. Root cause was
+        // the request itself, not just the clock: ALL screenshots went into
+        // ONE call asking for an exhaustive multi-job extraction across
+        // every image at once — a genuinely large, slow request on a
+        // free/slower model, and any single stall failed the WHOLE batch.
+        // One call PER screenshot (same pattern the PDF loop below already
+        // uses) is far smaller and faster each time, so it's much less
+        // likely to hit any timeout, and one slow/failed screenshot no
+        // longer takes the others down with it. Cross-image duplicate/
+        // conflict checking still happens — the tool-calling model gets
+        // the full merged list below and the system prompt's BULK JOB
+        // IMPORT rules already require it to scan the WHOLE batch before
+        // creating anything.
+        for (let i = 0; i < imageFiles.length; i++) {
+          const a = imageFiles[i];
+          try {
+            const result: any = await callVisionModel({
+              messages: [{
+                role: "user",
+                content: [
+                  { type: "image", source: { type: "base64", media_type: a.mediaType, data: a.base64 } },
+                  { type: "text", text: `You are Alfred, business assistant for a pressure-washing/trash-can-cleaning company. This screenshot may contain one or more job/order records — a text, a spreadsheet row, a scheduling app entry, a handwritten note, anything. Extract EVERY separate job/order visible in THIS image. For each one list: customer full name, phone number, address, the service/order details, the date and time (resolve relative wording like "today"/"tomorrow" against ${today()}), which employee (if any) is named as assigned, and the dollar amount. If a field isn't visible, write "not given" rather than guessing. Number each job. Be thorough — do not skip any job visible in this image.` }
+                ]
+              }],
+              maxTokens: 1500,
+            }, 45000, `Screenshot ${i + 1} analysis`);
+            const extracted = (result.text || "").trim();
+            if (extracted) combinedFindings += `From screenshot ${i + 1} (${a.file.name}):\n${extracted}\n\n`;
+          } catch (e: any) {
+            combinedFindings += `Couldn't analyze screenshot ${i + 1} (${a.file.name}) — ${e?.message || "unknown error"}.\n\n`;
+          }
         }
         for (const pdf of pdfFiles) {
           try {
