@@ -783,7 +783,21 @@ export function App() {
             if (step.type && step.id) {
               const attr = SPOTLIGHT_DATA_ATTR[step.type];
               if (attr) {
-                el = document.querySelector<HTMLElement>(`[${attr}="${CSS.escape(step.id)}"]`);
+                // BUG FIX (user report) — "doesn't always highlight the
+                // correct thing." Some create tools (create_customer/
+                // create_estimate/create_invoice) don't update local state
+                // immediately — they rely on the ~3s cross-device Supabase
+                // poll (see those tools' own comments) — so the target row
+                // often doesn't exist in the DOM yet a mere 500ms after
+                // navigating. Retry briefly instead of giving up on the
+                // very first miss (schedule_job's own local setJobs meant
+                // job spotlights usually worked; customer/estimate/invoice
+                // ones frequently didn't, which is exactly the "sometimes"
+                // in the report).
+                for (let attempt = 0; attempt < 8 && !el; attempt++) {
+                  el = document.querySelector<HTMLElement>(`[${attr}="${CSS.escape(step.id)}"]`);
+                  if (!el) await new Promise(r => setTimeout(r, 300));
+                }
                 el?.scrollIntoView({ behavior: "smooth", block: "center" });
               }
             }
@@ -793,7 +807,12 @@ export function App() {
             await new Promise(r => setTimeout(r, 400));
             if (step.type && step.id) {
               setAlfredHighlight({ type: step.type, id: step.id });
-              if (el) positionHighlightFromEl(el);
+              // BUG FIX — a stale highlightBox from the PREVIOUS spotlight
+              // step used to stick around (glowing the wrong spot on
+              // screen) whenever THIS step's element wasn't found —
+              // positionHighlightFromEl only ever ran on a hit, never
+              // cleared on a miss.
+              if (el) positionHighlightFromEl(el); else setHighlightBox(null);
             }
             await new Promise(r => setTimeout(r, 1800));
             setAlfredHighlight(null);
