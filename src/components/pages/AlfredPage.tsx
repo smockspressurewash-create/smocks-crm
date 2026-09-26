@@ -386,6 +386,13 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // (up to 30-45s). Attachment analysis gets its own flag now — the typing
   // indicator still shows for it, but the real Send button stays live.
   const [attachAnalyzing, setAttachAnalyzing] = useState(false);
+  // BUG FIX (user report) — "kept just showing and never responded." A
+  // multi-screenshot analysis genuinely CAN take a while (per-image calls,
+  // each with its own retry, especially on a slower/free provider like
+  // OpenRouter) — but the typing indicator never changed, so a real,
+  // bounded wait LOOKED indistinguishable from a true hang. Real progress
+  // text now updates as each attachment is actually being worked on.
+  const [attachProgressLabel, setAttachProgressLabel] = useState("");
   // BUG FIX (user report) — "it still sends the file... before I send the
   // message... should never send until you actually press send." Attaching
   // used to fire a real vision call and post messages to Alfred the instant
@@ -5517,6 +5524,7 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
         // creating anything.
         for (let i = 0; i < imageFiles.length; i++) {
           const a = imageFiles[i];
+          setAttachProgressLabel(imageFiles.length > 1 ? `Analyzing screenshot ${i + 1} of ${imageFiles.length}…` : "Analyzing screenshot…");
           try {
             const result: any = await callVisionModel({
               messages: [{
@@ -5535,6 +5543,7 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
           }
         }
         for (const pdf of pdfFiles) {
+          setAttachProgressLabel(`Reading ${pdf.file.name}…`);
           try {
             const result: any = await callVisionModel({
               messages: [{
@@ -5556,12 +5565,14 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
           appendMessage({ id: uid(), role: "alfred", content: "Couldn't find any usable info in those attachments.", timestamp: Date.now() });
           return;
         }
+        setAttachProgressLabel("Figuring out what to do with it…");
         await send(`Here's what I found in what I just attached:\n\n${combinedFindings.trim()}\n\nThese may be new jobs to add to the CRM.${caption ? ` I also said: "${caption}" — do that.` : ""} Check for any scheduling conflicts or unclear ordering and ask me before creating anything — otherwise go ahead: create the customers and jobs, assign the employees, and set the price for each.`, { skipVisibleMessage: true });
         return;
       }
 
       const a = attachments[0];
       const isPdf = a.isPdf;
+      setAttachProgressLabel(isPdf ? `Reading ${a.file.name}…` : "Analyzing " + a.file.name + "…");
       // FEATURE — upload to the SAME public bucket customer documents
       // already live in (DocumentVault.tsx), so a later "attach this to
       // [client]" can actually save it — fire-and-forget alongside the
@@ -5616,6 +5627,7 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
       appendMessage({ id: uid(), role: "alfred", content: "Couldn't analyze " + (attachments.length > 1 ? "those screenshots" : "that file") + " — " + (err?.message || "unknown error") + ".", timestamp: Date.now() });
     } finally {
       setAttachAnalyzing(false);
+      setAttachProgressLabel("");
     }
   };
 
@@ -6355,13 +6367,23 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
                   </div>
                 );
               })}
+              {/* BUG FIX (user report) — "kept just showing and never
+                  responded." Multi-screenshot analysis is a real, bounded
+                  wait (each image gets its own call, plus a retry — slower
+                  providers like OpenRouter can genuinely take a while), but
+                  a static, unchanging dots animation for that whole stretch
+                  is indistinguishable from an actual hang. Real progress
+                  text now updates as each attachment is actually worked on. */}
               {(loading || attachAnalyzing) && <div className="flex gap-3">
                 <div className={"flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center bg-gradient-to-br " + cur.color}><CurIcon size={13} /></div>
-                <div className="px-4 py-3 rounded-2xl bg-black/50 border border-red-900/30"><div className="flex gap-1">
-                  <div className="w-2 h-2 bg-red-400 rounded-full animate-bounce" />
-                  <div className="w-2 h-2 bg-red-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-                  <div className="w-2 h-2 bg-red-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
-                </div></div>
+                <div className="px-4 py-3 rounded-2xl bg-black/50 border border-red-900/30 flex items-center gap-2.5">
+                  <div className="flex gap-1">
+                    <div className="w-2 h-2 bg-red-400 rounded-full animate-bounce" />
+                    <div className="w-2 h-2 bg-red-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                    <div className="w-2 h-2 bg-red-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+                  </div>
+                  {attachAnalyzing && attachProgressLabel && <span className="text-xs text-white/50">{attachProgressLabel}</span>}
+                </div>
               </div>}
             </div>
           )}
