@@ -973,12 +973,24 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // in the same render (state hadn't committed yet), so it queues that text
   // here and this effect fires the real send() once `active` reflects the
   // just-created conversation, instead of the message silently vanishing.
-  const pendingFirstSendRef = useRef<string | null>(null);
+  // BUG FIX (user report) — "Alfred sends one message as if I sent it to
+  // him, and the other message as if he sent it to me." When send() has to
+  // create a brand new conversation from scratch it queues the text here
+  // and replays it once `active` exists — but that replay used to always
+  // call plain send(queued), dropping the skipVisibleMessage flag if the
+  // ORIGINAL call was an internal one (e.g. sendWithAttachments feeding
+  // Alfred's own screenshot-extraction text into the model, never meant to
+  // be shown as a real "sent by you" bubble). If that internal call
+  // happened to land on this exact "no active conversation yet" edge —
+  // most likely right when a conversation is still finishing its initial
+  // load/sync — the replay rendered Alfred's own generated text as a
+  // role:"user" message. Queuing the flag alongside the text fixes that.
+  const pendingFirstSendRef = useRef<{ text: string; skipVisibleMessage?: boolean } | null>(null);
   useEffect(() => {
     if (active && pendingFirstSendRef.current) {
       const queued = pendingFirstSendRef.current;
       pendingFirstSendRef.current = null;
-      send(queued);
+      send(queued.text, { skipVisibleMessage: queued.skipVisibleMessage });
     }
   }); // deliberately no deps — runs after every render, guarded by the ref itself
 
@@ -4823,7 +4835,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       setActiveConvId(cid);
       setInput("");
       setShowSlash(false);
-      pendingFirstSendRef.current = text;
+      pendingFirstSendRef.current = { text, skipVisibleMessage: opts?.skipVisibleMessage };
       return;
     }
 
