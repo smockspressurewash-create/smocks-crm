@@ -8568,9 +8568,18 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 ) : (
                   <>
                     <Group label="Active" jobs={activeGrp} />
-                    <Group label="Today" jobs={todayGrp} />
-                    <Group label="This Week" jobs={weekGrp.sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate))} />
-                    <Group label="Upcoming" jobs={upcomingGrp.sort((a, b) => a.scheduledDate.localeCompare(b.scheduledDate))} collapsed={upcomingCollapsed} onToggle={() => setUpcomingCollapsed(c => !c)} />
+                    {/* BUG FIX (user report) — "sort jobs on the employee
+                        portal from soonest to farthest for the day... make
+                        sure there's a Today section... it should show from
+                        soonest to latest." Today had no sort at all (whatever
+                        order myJobs happened to be in); This Week/Upcoming
+                        only sorted by date, so same-day jobs weren't ordered
+                        by time either. Untimed jobs (scheduledTime "") sort
+                        to the end of their day, same convention already used
+                        elsewhere in this file (e.g. findNextJob). */}
+                    <Group label="Today" jobs={[...todayGrp].sort((a, b) => (a.scheduledTime || "23:59").localeCompare(b.scheduledTime || "23:59"))} />
+                    <Group label="This Week" jobs={[...weekGrp].sort((a, b) => (a.scheduledDate + (a.scheduledTime || "23:59")).localeCompare(b.scheduledDate + (b.scheduledTime || "23:59")))} />
+                    <Group label="Upcoming" jobs={[...upcomingGrp].sort((a, b) => (a.scheduledDate + (a.scheduledTime || "23:59")).localeCompare(b.scheduledDate + (b.scheduledTime || "23:59")))} collapsed={upcomingCollapsed} onToggle={() => setUpcomingCollapsed(c => !c)} />
                     <Group label="Past / Completed" jobs={earlierGrp.sort((a, b) => b.scheduledDate.localeCompare(a.scheduledDate))} collapsed={pastCollapsed} onToggle={() => setPastCollapsed(c => !c)} />
                   </>
                 )}
