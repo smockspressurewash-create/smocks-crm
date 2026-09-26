@@ -335,7 +335,13 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   const isRetryableVisionError = (err: any): boolean => {
     const status = err?.status;
     const msg = String(err?.message || "");
-    return status === 503 || status === 529 || status === 429 || /overloaded|high demand|try again later|rate.?limit/i.test(msg);
+    // BUG FIX (user report) — "Couldn't analyze those screenshots —
+    // Screenshot analysis timed out." A timeout wasn't treated as
+    // retryable, so with only one vision-capable key configured (no other
+    // provider to fall back to) a single slow response — analyzing 3
+    // photos with a thorough per-job extraction prompt genuinely can take
+    // a while — was an instant, final failure with zero retry.
+    return status === 503 || status === 529 || status === 429 || /overloaded|high demand|try again later|rate.?limit|timed out/i.test(msg);
   };
   const callVisionModel = async (payload: any, timeoutMs: number, label: string, opts?: { pdf?: boolean }): Promise<any> => {
     const chain = getVisionModelChain(opts);
@@ -5433,7 +5439,13 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
               ]
             }],
             maxTokens: 3000,
-          }, 45000, "Screenshot analysis");
+            // BUG FIX (user report) — "Couldn't analyze those screenshots —
+            // Screenshot analysis timed out." Was 45s — genuinely too tight
+            // for a thorough multi-job extraction across several photos,
+            // especially on a slower/free-tier model. Combined with the
+            // retry above (a timeout is now retryable too), this gives a
+            // real chance to actually finish instead of failing outright.
+          }, 75000, "Screenshot analysis");
           const extracted = (result.text || "").trim();
           if (extracted) combinedFindings += `From the ${imageFiles.length} screenshot(s):\n${extracted}\n\n`;
         }
@@ -5448,7 +5460,7 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
                 ]
               }],
               maxTokens: 1500,
-            }, 30000, "File analysis", { pdf: true });
+            }, 45000, "File analysis", { pdf: true });
             const reply = (result.text || "").trim();
             if (reply) combinedFindings += `From the attached PDF "${pdf.file.name}":\n${reply}\n\n`;
           } catch (e: any) {
@@ -5490,7 +5502,7 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
           ]
         }],
         maxTokens: 1500,
-      }, 30000, "File analysis", { pdf: isPdf });
+      }, 45000, "File analysis", { pdf: isPdf });
       const reply = result.text || "Could not analyze the file.";
       const parts = reply.match(/RECEIPT: (.+?) \| (.+?) \| \$?([\d.,]+) \| (.+)/i);
       if (parts) {
