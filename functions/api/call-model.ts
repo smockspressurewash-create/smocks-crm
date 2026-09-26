@@ -53,7 +53,7 @@ const OPENROUTER_CATALOG_TTL_MS = 30 * 60 * 1000;
 const getOpenRouterFreeModels = async (): Promise<string[]> => {
   if (openRouterFreeModelsCache && Date.now() - openRouterFreeModelsFetchedAt < OPENROUTER_CATALOG_TTL_MS) return openRouterFreeModelsCache;
   try {
-    const res = await fetch("https://openrouter.ai/api/v1/models");
+    const res = await fetchWithTimeout("https://openrouter.ai/api/v1/models", {}, 8000);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const j = await res.json() as { data?: Array<{ id: string; pricing?: { prompt?: string; completion?: string }; supported_parameters?: string[] }> };
     const free = (j.data || [])
@@ -80,7 +80,7 @@ let openRouterFreeVisionModelsFetchedAt = 0;
 const getOpenRouterFreeVisionModels = async (): Promise<string[]> => {
   if (openRouterFreeVisionModelsCache && Date.now() - openRouterFreeVisionModelsFetchedAt < OPENROUTER_CATALOG_TTL_MS) return openRouterFreeVisionModelsCache;
   try {
-    const res = await fetch("https://openrouter.ai/api/v1/models");
+    const res = await fetchWithTimeout("https://openrouter.ai/api/v1/models", {}, 8000);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const j = await res.json() as { data?: Array<{ id: string; pricing?: { prompt?: string; completion?: string }; architecture?: { input_modalities?: string[] } }> };
     const free = (j.data || [])
@@ -111,8 +111,33 @@ const extractErrorMessage = (text: string, status: number): string => {
   return text.slice(0, 200) || `Request failed (${status})`;
 };
 
-const safeFetch = async (url: string, opts: RequestInit): Promise<any> => {
-  const res = await fetch(url, opts);
+// BUG FIX (user report — "I sent 2 screenshots, he said 'analyzing
+// screenshot 1 of 2' and never did anything else, just sat there.") None
+// of this file's outbound fetches (to Anthropic/OpenAI/Google/OpenRouter,
+// or OpenRouter's own /models catalog) ever had a timeout — a free
+// OpenRouter vision model silently hanging (common; free-tier models are
+// flaky) meant this Worker just sat awaiting a response with nothing to
+// ever move it along. The CLIENT'S OWN AbortController (see AlfredPage.tsx's
+// callVisionModel) does eventually kill ITS fetch to this endpoint, but
+// that only ends the browser's wait — it does nothing to stop THIS
+// function's separate, already-in-flight fetch to the actual provider,
+// which is the one really stuck. Give every outbound call here its own
+// bounded timeout so a dead provider fails fast instead of hanging.
+const fetchWithTimeout = async (url: string, opts: RequestInit, timeoutMs: number): Promise<Response> => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...opts, signal: controller.signal });
+  } catch (err: any) {
+    if (err?.name === "AbortError") throw new Error(`Request to ${new URL(url).hostname} timed out.`);
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+const safeFetch = async (url: string, opts: RequestInit, timeoutMs = 25000): Promise<any> => {
+  const res = await fetchWithTimeout(url, opts, timeoutMs);
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     const err: any = new Error(`HTTP ${res.status}: ${extractErrorMessage(text, res.status)}`);
@@ -275,24 +300,45 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         // instead so the owner knows to try a different provider for
         // this one request, rather than getting a confidently wrong answer.
         if (visionModels.length === 0) return json({ error: "No free vision-capable model is currently available on OpenRouter. Try again shortly, or use Claude/GPT-4o/Gemini in Settings → AI Models for image analysis." }, 400);
-        modelCandidates = visionModels.slice(0, 8);
+        // BUG FIX (user report — "sent 2 screenshots, he said 'analyzing
+        // screenshot 1 of 2' and just sat there") — 8 candidates were
+        // fetched here specifically so a dead free vision model could fall
+        // back to another one, but the loop below only ever fell back on a
+        // 404 ("model doesn't exist"). Free OpenRouter vision models
+        // routinely fail in every OTHER way instead — overloaded, 500,
+        // 503, or simply hanging — so in practice this fallback list was
+        // almost never actually used: the very first candidate dying any
+        // way but a 404 threw immediately and the request just sat there
+        // (from the browser's view) until the full per-attempt timeout
+        // elapsed. Capped at 3 (not 8) with a short per-candidate timeout
+        // below so working through all of them still fits well inside the
+        // client's own 45s abort budget (see AlfredPage.tsx's
+        // callVisionModel) instead of racing it.
+        modelCandidates = visionModels.slice(0, 3);
       } else {
         const live = await getOpenRouterFreeModels();
         modelCandidates = Array.from(new Set([...live, ...OPENROUTER_FREE_FALLBACKS])).slice(0, 8);
       }
     } else modelCandidates = [def.modelId];
 
+    const isVisionRequest = def.provider === "openrouter" && hasImageBlock(body.messages);
+    const perCandidateTimeoutMs = isVisionRequest ? 12000 : 20000;
     let data: any;
     let lastErr: unknown;
     for (const candidateModel of modelCandidates) {
       const openAiBody = JSON.stringify({ model: candidateModel, max_tokens: maxTokens, messages: openAiMessages, ...(openAiTools ? { tools: openAiTools } : {}) });
       try {
-        data = await safeFetch(def.endpoint, { method: "POST", headers: openAiHeaders, body: openAiBody });
+        data = await safeFetch(def.endpoint, { method: "POST", headers: openAiHeaders, body: openAiBody }, perCandidateTimeoutMs);
         lastErr = undefined;
         break;
       } catch (err: any) {
-        if (err?.status === 404 && modelCandidates.length > 1) { lastErr = err; continue; }
-        throw err;
+        lastErr = err;
+        // Auth/billing errors won't differ across candidates (same API
+        // key) — no point burning the timeout budget retrying those.
+        // Everything else (404, overloaded, 500/503, timed out) is exactly
+        // the kind of per-model flakiness this fallback list exists for.
+        if ((err?.status === 401 || err?.status === 402 || err?.status === 403) || modelCandidates.length <= 1) throw err;
+        continue;
       }
     }
     if (!data) throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));

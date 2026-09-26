@@ -365,8 +365,16 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       // One same-provider retry on a transient overload/rate-limit before
       // moving on to the next configured provider — covers the common case
       // of only one vision-capable key being set, where there's nothing
-      // else to fail over to.
-      for (let attempt = 0; attempt < 2; attempt++) {
+      // else to fail over to. BUG FIX (user report — "sent 2 screenshots,
+      // he said 'analyzing screenshot 1 of 2' and just sat there") —
+      // OpenRouter doesn't need this client-side retry at all: call-
+      // model.ts now already tries up to 3 different free vision models
+      // server-side on ANY failure before giving up (see its own comment),
+      // so retrying the whole thing again from here just doubles an
+      // already-bounded wait for no benefit. Only retry client-side for
+      // providers with no server-side fallback of their own.
+      const maxAttempts = cand.modelId === "openrouter" ? 1 : 2;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
         // BUG FIX (user report) — "the stop button still does not work."
         // Screenshot/file analysis (this function) is the single slowest
         // part of any attach turn, and pressing Stop during it did nothing:
@@ -390,7 +398,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           if (opts?.externalSignal?.aborted) throw Object.assign(new Error("Stopped."), { name: "AbortError" });
           const normalizedErr = (err?.name === "AbortError" || controller.signal.aborted) ? new Error(label + " timed out") : err;
           lastErr = normalizedErr;
-          if (attempt === 0 && isRetryableVisionError(normalizedErr)) {
+          if (attempt < maxAttempts - 1 && isRetryableVisionError(normalizedErr)) {
             await new Promise(r => setTimeout(r, 1500));
             continue;
           }
@@ -429,6 +437,23 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // bounded wait LOOKED indistinguishable from a true hang. Real progress
   // text now updates as each attachment is actually being worked on.
   const [attachProgressLabel, setAttachProgressLabel] = useState("");
+  // FEATURE (user request) — "make it so he says different messages and it
+  // changes every 5 seconds or so." A plain reply (loading, no attachment
+  // involved) showed nothing but static bouncing dots the whole time — no
+  // sense of activity at all. Rotates a random playful status word next to
+  // the dots for the general "thinking" case; attachAnalyzing keeps its own
+  // specific progress text (e.g. "Analyzing screenshot 1 of 2…") when one is
+  // set, since that's more useful than a random word.
+  const THINKING_WORDS = ["Dabbling", "Splunkering", "Noodling", "Percolating", "Rummaging", "Marinating", "Sifting", "Untangling", "Sketching", "Puzzling", "Wrangling", "Deciphering", "Sleuthing", "Contemplating", "Assembling", "Pondering", "Scheming", "Tinkering", "Calibrating", "Investigating", "Doodling", "Conjuring", "Mulling", "Brewing", "Wrestling"];
+  const [thinkingWord, setThinkingWord] = useState(THINKING_WORDS[0]);
+  useEffect(() => {
+    if (!loading && !attachAnalyzing) return;
+    setThinkingWord(w => { let next = w; while (next === w) next = THINKING_WORDS[Math.floor(Math.random() * THINKING_WORDS.length)]; return next; });
+    const id = setInterval(() => {
+      setThinkingWord(w => { let next = w; while (next === w) next = THINKING_WORDS[Math.floor(Math.random() * THINKING_WORDS.length)]; return next; });
+    }, 5000);
+    return () => clearInterval(id);
+  }, [loading, attachAnalyzing]); // eslint-disable-line react-hooks/exhaustive-deps
   // BUG FIX (user report) — "it still sends the file... before I send the
   // message... should never send until you actually press send." Attaching
   // used to fire a real vision call and post messages to Alfred the instant
@@ -6460,12 +6485,16 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
               {(loading || attachAnalyzing) && <div className="flex gap-3">
                 <div className={"flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center bg-gradient-to-br " + cur.color}><CurIcon size={13} /></div>
                 <div className="px-4 py-3 rounded-2xl bg-black/50 border border-red-900/30 flex items-center gap-2.5">
+                  {/* BUG FIX (user request) — "make the animation... a lot
+                      faster." Tailwind's default animate-bounce cycle is 1s;
+                      0.5s reads as noticeably livelier without looking
+                      frantic. */}
                   <div className="flex gap-1">
-                    <div className="w-2 h-2 bg-red-400 rounded-full animate-bounce" />
-                    <div className="w-2 h-2 bg-red-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-                    <div className="w-2 h-2 bg-red-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+                    <div className="w-2 h-2 bg-red-400 rounded-full animate-bounce" style={{ animationDuration: "0.5s" }} />
+                    <div className="w-2 h-2 bg-red-400 rounded-full animate-bounce" style={{ animationDuration: "0.5s", animationDelay: "100ms" }} />
+                    <div className="w-2 h-2 bg-red-400 rounded-full animate-bounce" style={{ animationDuration: "0.5s", animationDelay: "200ms" }} />
                   </div>
-                  {attachAnalyzing && attachProgressLabel && <span className="text-xs text-white/50">{attachProgressLabel}</span>}
+                  <span className="text-xs text-white/50">{attachAnalyzing && attachProgressLabel ? attachProgressLabel : `${thinkingWord}…`}</span>
                 </div>
               </div>}
             </div>
