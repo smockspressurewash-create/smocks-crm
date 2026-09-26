@@ -343,7 +343,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     // a while — was an instant, final failure with zero retry.
     return status === 503 || status === 529 || status === 429 || /overloaded|high demand|try again later|rate.?limit|timed out/i.test(msg);
   };
-  const callVisionModel = async (payload: any, timeoutMs: number, label: string, opts?: { pdf?: boolean }): Promise<any> => {
+  const callVisionModel = async (payload: any, timeoutMs: number, label: string, opts?: { pdf?: boolean; externalSignal?: AbortSignal }): Promise<any> => {
     // BUG FIX (user report) — "it's not working... it's something wrong on
     // our end." withTimeout is a plain Promise.race: when the timer wins,
     // it makes THIS function move on, but it never actually cancels the
@@ -367,7 +367,19 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       // of only one vision-capable key being set, where there's nothing
       // else to fail over to.
       for (let attempt = 0; attempt < 2; attempt++) {
+        // BUG FIX (user report) — "the stop button still does not work."
+        // Screenshot/file analysis (this function) is the single slowest
+        // part of any attach turn, and pressing Stop during it did nothing:
+        // this AbortController was only ever wired to the timeout timer, not
+        // to the owner's Stop button. externalSignal is that button's real
+        // signal (see sendWithAttachments) — check it up front, and mirror
+        // any abort onto this attempt's own controller so an in-flight fetch
+        // is actually cancelled immediately, not just abandoned to run out
+        // the clock.
+        if (opts?.externalSignal?.aborted) throw Object.assign(new Error("Stopped."), { name: "AbortError" });
         const controller = new AbortController();
+        const onExternalAbort = () => controller.abort();
+        opts?.externalSignal?.addEventListener("abort", onExternalAbort);
         const timer = setTimeout(() => controller.abort(), timeoutMs);
         try {
           const result = await (callModel as any)({ ...payload, modelId: cand.modelId, apiKey: cand.apiKey, signal: controller.signal });
@@ -375,6 +387,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           return result;
         } catch (err: any) {
           clearTimeout(timer);
+          if (opts?.externalSignal?.aborted) throw Object.assign(new Error("Stopped."), { name: "AbortError" });
           const normalizedErr = (err?.name === "AbortError" || controller.signal.aborted) ? new Error(label + " timed out") : err;
           lastErr = normalizedErr;
           if (attempt === 0 && isRetryableVisionError(normalizedErr)) {
@@ -382,6 +395,8 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             continue;
           }
           break;
+        } finally {
+          opts?.externalSignal?.removeEventListener("abort", onExternalAbort);
         }
       }
     }
@@ -808,15 +823,28 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             if (typeof v === "string" && v) { const t = new Date(v).getTime(); return Number.isNaN(t) ? 0 : t; }
             return 0;
           };
-          // BUG FIX — if the server row for a conversation has messages:[]
-          // (upsert failed silently or messages JSONB wasn't stored), the merge
-          // previously overwrote the local copy (which had real messages) with
-          // the empty server version, making check-in / new chats appear blank.
-          // Keep the local messages if the server copy has none.
+          // BUG FIX (user report) — "messages are getting deleted, I'm
+          // pretty sure it's ones I send with photos." Root cause: this
+          // fetch runs on a 5s(ish) poll, but a new message only gets
+          // upserted to Supabase after a 1200ms debounce — and a
+          // screenshot/photo turn (vision analysis, tool calls) easily
+          // takes longer than that between the user's message landing
+          // locally and the debounced save actually completing. If the
+          // poll's SELECT lands in that window, the server row is real
+          // (not empty) but simply hasn't caught up yet — the old check
+          // only guarded against an EMPTY server `messages`, so a
+          // server copy that was merely behind by a few messages still
+          // won overwrote the local copy outright, silently erasing
+          // whatever was appended since the last successful save. Keep
+          // the local messages whenever local has MORE of them than the
+          // server does — that's the signal a save is still in flight,
+          // not that another device legitimately has less history.
           const merged = fromServer.map(serverConv => {
             const localConv = (prev || []).find((c: any) => c.id === serverConv.id);
-            if (localConv && (!serverConv.messages?.length) && localConv.messages?.length > 0) {
-              return { ...serverConv, messages: localConv.messages };
+            const localLen = localConv?.messages?.length || 0;
+            const serverLen = serverConv.messages?.length || 0;
+            if (localConv && localLen > serverLen) {
+              return { ...serverConv, messages: localConv.messages, updatedAt: localConv.updatedAt };
             }
             return serverConv;
           });
@@ -1083,7 +1111,18 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     // conversation return, so this effect never re-ran to correct it.
     // isActivePage flipping back to true now re-triggers the same
     // scroll-to-bottom logic above.
-  }, [chats.length, loading, active?.id, isActivePage]);
+    // BUG FIX (user report — "on mobile it doesn't open to the bottom")
+    // — the chat UI itself only renders once mountEl (the portal target,
+    // looked up in its own effect after mount) is non-null; see the
+    // `{mountEl && createPortal(...)}` guard below. On a fresh load,
+    // THIS effect's first run fires before that portal exists, so
+    // scrollRef.current is still null and the early-return above skips
+    // it — nothing re-triggers it once the DOM node actually shows up,
+    // since none of the other deps change on that second render. Mobile
+    // hit this far more than desktop simply because the extra render
+    // tick is more likely to land after this effect already ran. Adding
+    // mountEl re-fires this effect the moment the real node exists.
+  }, [chats.length, loading, active?.id, isActivePage, mountEl]);
 
   // Slash command suggestions
   const slashCmds = [
@@ -5511,6 +5550,15 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
       timestamp: Date.now(),
     } as any);
     setAttachAnalyzing(true);
+    // BUG FIX (user report) — "the stop button still does not work." The
+    // composer's Stop button only ever aborted currentAbortControllerRef,
+    // which was created inside send() — but screenshot/file analysis
+    // (this function) runs BEFORE send() and is the slowest, most likely
+    // part to get stuck. Claim the same shared ref here too, so Stop works
+    // during attachment analysis as well, not just the later tool-calling
+    // reply.
+    const attachAbort = new AbortController();
+    currentAbortControllerRef.current = attachAbort;
     try {
       if (attachments.length > 1) {
         // FEATURE — "Alfred can receive screenshots... extract the
@@ -5543,7 +5591,9 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
         // the full merged list below and the system prompt's BULK JOB
         // IMPORT rules already require it to scan the WHOLE batch before
         // creating anything.
+        let stoppedByUser = false;
         for (let i = 0; i < imageFiles.length; i++) {
+          if (attachAbort.signal.aborted) { stoppedByUser = true; break; }
           const a = imageFiles[i];
           setAttachProgressLabel(imageFiles.length > 1 ? `Analyzing screenshot ${i + 1} of ${imageFiles.length}…` : "Analyzing screenshot…");
           try {
@@ -5556,14 +5606,16 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
                 ]
               }],
               maxTokens: 1500,
-            }, 45000, `Screenshot ${i + 1} analysis`);
+            }, 45000, `Screenshot ${i + 1} analysis`, { externalSignal: attachAbort.signal });
             const extracted = (result.text || "").trim();
             if (extracted) combinedFindings += `From screenshot ${i + 1} (${a.file.name}):\n${extracted}\n\n`;
           } catch (e: any) {
+            if (attachAbort.signal.aborted) { stoppedByUser = true; break; }
             combinedFindings += `Couldn't analyze screenshot ${i + 1} (${a.file.name}) — ${e?.message || "unknown error"}.\n\n`;
           }
         }
         for (const pdf of pdfFiles) {
+          if (stoppedByUser || attachAbort.signal.aborted) { stoppedByUser = true; break; }
           setAttachProgressLabel(`Reading ${pdf.file.name}…`);
           try {
             const result: any = await callVisionModel({
@@ -5575,12 +5627,17 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
                 ]
               }],
               maxTokens: 1500,
-            }, 45000, "File analysis", { pdf: true });
+            }, 45000, "File analysis", { pdf: true, externalSignal: attachAbort.signal });
             const reply = (result.text || "").trim();
             if (reply) combinedFindings += `From the attached PDF "${pdf.file.name}":\n${reply}\n\n`;
           } catch (e: any) {
+            if (attachAbort.signal.aborted) { stoppedByUser = true; break; }
             combinedFindings += `Couldn't analyze the attached PDF "${pdf.file.name}" — ${e?.message || "unknown error"}.\n\n`;
           }
+        }
+        if (stoppedByUser) {
+          appendMessage({ id: uid(), role: "alfred", content: "Stopped.", timestamp: Date.now() });
+          return;
         }
         if (!combinedFindings.trim()) {
           appendMessage({ id: uid(), role: "alfred", content: "Couldn't find any usable info in those attachments.", timestamp: Date.now() });
@@ -5619,7 +5676,7 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
           ]
         }],
         maxTokens: 1500,
-      }, 45000, "File analysis", { pdf: isPdf });
+      }, 45000, "File analysis", { pdf: isPdf, externalSignal: attachAbort.signal });
       const reply = result.text || "Could not analyze the file.";
       const parts = reply.match(/RECEIPT: (.+?) \| (.+?) \| \$?([\d.,]+) \| (.+)/i);
       if (parts) {
@@ -5645,8 +5702,13 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
         }
       }
     } catch (err: any) {
-      appendMessage({ id: uid(), role: "alfred", content: "Couldn't analyze " + (attachments.length > 1 ? "those screenshots" : "that file") + " — " + (err?.message || "unknown error") + ".", timestamp: Date.now() });
+      if (attachAbort.signal.aborted) {
+        appendMessage({ id: uid(), role: "alfred", content: "Stopped.", timestamp: Date.now() });
+      } else {
+        appendMessage({ id: uid(), role: "alfred", content: "Couldn't analyze " + (attachments.length > 1 ? "those screenshots" : "that file") + " — " + (err?.message || "unknown error") + ".", timestamp: Date.now() });
+      }
     } finally {
+      if (currentAbortControllerRef.current === attachAbort) currentAbortControllerRef.current = null;
       setAttachAnalyzing(false);
       setAttachProgressLabel("");
     }
@@ -6642,9 +6704,24 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
                   <Square size={14} fill="currentColor" />
                 </button>
               ) : (
-                <button onClick={() => sendMessage()} disabled={!input.trim() && pendingAttachments.length === 0} className={"p-2.5 rounded-xl transition " + (!input.trim() && pendingAttachments.length === 0 ? "bg-white/5 text-white/30" : "bg-gradient-to-br from-red-600 to-red-800 text-white hover:scale-105")}>
-                  <Send size={14} />
-                </button>
+                <>
+                  {/* BUG FIX (user report) — "the stop button still does not
+                      work." Screenshot/file analysis (attachAnalyzing) is
+                      NOT `loading` — that's deliberate, so Send stays usable
+                      for a new message while attachments are still being
+                      read (see attachAnalyzing's own comment) — but that
+                      also meant there was never any way to cancel a stuck
+                      analysis itself. Add a real Stop alongside Send instead
+                      of replacing it. */}
+                  {attachAnalyzing && (
+                    <button onClick={stopGenerating} title="Stop analyzing" className="p-2.5 rounded-xl bg-red-950/60 border border-red-700/50 text-red-300 hover:bg-red-900/60 transition">
+                      <Square size={14} fill="currentColor" />
+                    </button>
+                  )}
+                  <button onClick={() => sendMessage()} disabled={!input.trim() && pendingAttachments.length === 0} className={"p-2.5 rounded-xl transition " + (!input.trim() && pendingAttachments.length === 0 ? "bg-white/5 text-white/30" : "bg-gradient-to-br from-red-600 to-red-800 text-white hover:scale-105")}>
+                    <Send size={14} />
+                  </button>
+                </>
               )}
             </div>
             <div className="text-[10px] text-white/30 text-center mt-2">Alfred can make mistakes. Verify critical info.</div>
