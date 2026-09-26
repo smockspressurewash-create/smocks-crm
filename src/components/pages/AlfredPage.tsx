@@ -344,6 +344,21 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     return status === 503 || status === 529 || status === 429 || /overloaded|high demand|try again later|rate.?limit|timed out/i.test(msg);
   };
   const callVisionModel = async (payload: any, timeoutMs: number, label: string, opts?: { pdf?: boolean }): Promise<any> => {
+    // BUG FIX (user report) — "it's not working... it's something wrong on
+    // our end." withTimeout is a plain Promise.race: when the timer wins,
+    // it makes THIS function move on, but it never actually cancels the
+    // underlying fetch inside callModel — that request keeps running in
+    // the background, still holding a real browser connection. Splitting
+    // screenshot analysis into one call per image (a recent fix for a
+    // different timeout issue) meant MULTIPLE of these could be in flight
+    // at once after a timeout — a same-provider retry on top of that could
+    // leave 3-4 abandoned-but-still-running requests stacked up, eating
+    // into the browser's small per-origin connection limit and starving
+    // every request AFTER them (including the final send() call) — which
+    // reads exactly like "never responds" even though each individual
+    // timeout fired exactly on schedule. A real AbortController now
+    // actually kills the request when its timeout hits, freeing the
+    // connection immediately instead of leaving it to rot in the background.
     const chain = getVisionModelChain(opts);
     let lastErr: any = new Error("No vision-capable model configured.");
     for (const cand of chain) {
@@ -352,11 +367,17 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       // of only one vision-capable key being set, where there's nothing
       // else to fail over to.
       for (let attempt = 0; attempt < 2; attempt++) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
         try {
-          return await withTimeout<any>((callModel as any)({ ...payload, modelId: cand.modelId, apiKey: cand.apiKey }), timeoutMs, label);
+          const result = await (callModel as any)({ ...payload, modelId: cand.modelId, apiKey: cand.apiKey, signal: controller.signal });
+          clearTimeout(timer);
+          return result;
         } catch (err: any) {
-          lastErr = err;
-          if (attempt === 0 && isRetryableVisionError(err)) {
+          clearTimeout(timer);
+          const normalizedErr = (err?.name === "AbortError" || controller.signal.aborted) ? new Error(label + " timed out") : err;
+          lastErr = normalizedErr;
+          if (attempt === 0 && isRetryableVisionError(normalizedErr)) {
             await new Promise(r => setTimeout(r, 1500));
             continue;
           }
