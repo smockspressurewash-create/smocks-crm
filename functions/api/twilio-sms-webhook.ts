@@ -575,7 +575,28 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // back to the platform-wide TWILIO_AUTH_TOKEN only as a last resort
     // (an owner who hasn't connected their own Twilio account yet, or a
     // single-tenant deployment that never set up owner_secrets at all).
-    const effectiveAuthToken = twilioToken || context.env.TWILIO_AUTH_TOKEN;
+    // BUG FIX (root cause of "I text Alfred, no response at all," confirmed
+    // live) — this owner's stored twilioSid is "SK24..." — a Twilio API KEY
+    // SID, not a real Account SID (those always start "AC"). Twilio signs
+    // X-Twilio-Signature with the ACCOUNT Auth Token specifically — an API
+    // Key's secret never produces a matching signature, no matter how
+    // correct it looks otherwise (right length, right format). Sending
+    // texts kept working fine the whole time (Twilio's REST API accepts an
+    // API Key SID/Secret pair as Basic Auth too, so outbound was never
+    // affected) — only inbound verification was silently rejecting every
+    // real message with 403 since the day per-owner verification shipped,
+    // which is exactly why sms_dedupe/alfred_sms_threads went completely
+    // silent that day while outbound Alfred replies kept right on working.
+    // A SID that doesn't even look like an Account SID can never verify
+    // successfully regardless of the token paired with it — same as having
+    // no usable token at all, so route it to that existing fail-open path
+    // instead of failing closed on a credential-entry mistake the owner has
+    // no way to see or diagnose.
+    const twilioSidLooksReal = /^AC[0-9a-f]{32}$/i.test(twilioSid || "");
+    const effectiveAuthToken = (twilioSidLooksReal && twilioToken) || context.env.TWILIO_AUTH_TOKEN;
+    if (!twilioSidLooksReal && twilioToken) {
+      console.warn("[TwilioSmsWebhook] owner", ownerId, "has a Twilio SID that isn't a real Account SID (starts with", (twilioSid || "").slice(0, 2) || "?", "not AC) — likely an API Key pasted into the Account SID field. Skipping signature verification instead of rejecting every inbound text; fix in Settings → Integrations → Twilio using the Account SID/Auth Token from the main Twilio Console dashboard, not an API Key.");
+    }
     if (effectiveAuthToken) {
       const signature = context.request.headers.get("X-Twilio-Signature") || "";
       const valid = await verifyTwilioSignature(context.request.url, params, signature, effectiveAuthToken);
