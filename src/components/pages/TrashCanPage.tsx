@@ -7,7 +7,7 @@
 // (see lib/utils.ts's buildOptimizedRoute), and the public signup link.
 import React, { useState, useEffect } from "react";
 import { Trash2, Copy, DollarSign, Clock, Route as RouteIcon, Users, Calendar, GripVertical, Send, Plus, X, Check, Edit2, ChevronUp, ChevronDown, CreditCard, AlertTriangle, FileText, MapPin } from "lucide-react";
-import { fmt, uid, today, daysFromNow, buildOptimizedRoute } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, buildOptimizedRoute, computeNextRecurringDate } from "../../lib/utils";
 import type { Job, Customer, AppSettings } from "../../types";
 import { supabase } from "../../lib/supabase";
 import { twilioSend, logOutboundSmsToInbox } from "../../lib/messaging";
@@ -23,7 +23,19 @@ import { AddressAutocomplete } from "../ui/AddressAutocomplete";
 import { BulkJobImportModal } from "../ui/BulkJobImportModal";
 import { useIsMobile } from "../../hooks/useIsMobile";
 
-export function TrashCanPage({ jobs = [], customers = [], setCustomers, employees = [], settings = {} as AppSettings, setSettings, setJobs, toast, ownerId }: { jobs?: Job[]; customers?: Customer[]; setCustomers?: any; employees?: any[]; settings?: AppSettings; setSettings?: any; setJobs?: any; toast?: any; ownerId?: string }) {
+const FREQ_OPTIONS = [
+  { key: "one_time", label: "One-time" },
+  { key: "weekly", label: "Weekly" },
+  { key: "biweekly", label: "Every 2 weeks" },
+  { key: "monthly", label: "Monthly" },
+  { key: "quarterly", label: "Quarterly" },
+];
+const freqLabel = (j: any) => j?.isRecurring ? (FREQ_OPTIONS.find(f => f.key === j.recurringFreq)?.label || "Recurring") : "One-time";
+const freqPatch = (freq: string) => freq === "one_time"
+  ? { isRecurring: false, recurringFreq: null }
+  : { isRecurring: true, recurringMode: "preset", recurringFreq: freq };
+
+export function TrashCanPage({ jobs = [], customers = [], setCustomers, employees = [], settings = {} as AppSettings, setSettings, setJobs, toast, ownerId, markRecentlyDeleted }: { jobs?: Job[]; customers?: Customer[]; setCustomers?: any; employees?: any[]; settings?: AppSettings; setSettings?: any; setJobs?: any; toast?: any; ownerId?: string; markRecentlyDeleted?: (table: "jobs" | "customers" | "estimates" | "chemicals", ids: string[]) => void }) {
   const trashJobs = jobs.filter((j: any) => j.serviceCategory === "trash_can");
   const upcoming = trashJobs.filter(j => j.status !== "cancelled" && j.status !== "completed").sort((a, b) => (a.scheduledDate || "").localeCompare(b.scheduledDate || ""));
   const [routeDate, setRouteDate] = useState(today());
@@ -39,10 +51,12 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
   // Planning board below for a drag-to-day placement.
   const [newCustOpen, setNewCustOpen] = useState(false);
   const [bulkImportOpen, setBulkImportOpen] = useState(false);
-  const emptyNewCustForm = () => ({ firstName: "", lastName: "", phone: "", email: "", address: "", lat: undefined as number | undefined, lng: undefined as number | undefined, cansCount: 1 });
+  const emptyNewCustForm = () => ({ firstName: "", lastName: "", phone: "", email: "", address: "", lat: undefined as number | undefined, lng: undefined as number | undefined, cansCount: 1, freq: ((settings as any)?.trashCanDefaultFrequency || "weekly") as string, firstDate: "" });
   const [newCustForm, setNewCustForm] = useState(emptyNewCustForm());
   const [addingCustomer, setAddingCustomer] = useState(false);
-  const addTrashCanCustomer = async (mode: "auto" | "manual") => {
+  // "dated" = owner picked an exact first service date, so skip both
+  // auto-placement and the Planning board and schedule it right there.
+  const addTrashCanCustomer = async (mode: "auto" | "manual" | "dated") => {
     if (!newCustForm.firstName.trim() || !newCustForm.address.trim()) { toast?.("Name and address are required", "red"); return; }
     setAddingCustomer(true);
     try {
@@ -55,12 +69,12 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
       const jobPayload = {
         customerId: customerPayload.id,
         address: newCustForm.address.trim(), amount: costPerCan * Math.max(1, newCustForm.cansCount),
-        status: "scheduled", scheduledDate: today(), scheduledTime: "", priority: "normal",
+        status: "scheduled", scheduledDate: mode === "dated" ? newCustForm.firstDate : today(), scheduledTime: "", priority: "normal",
         serviceCategory: "trash_can", cansCount: Math.max(1, newCustForm.cansCount),
         crew: [], checklist: [], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
         loggedHours: 0, createdAt: today(),
-        recurringFreq: (settings as any)?.trashCanDefaultFrequency || "weekly", isRecurring: true,
-        dayAssignmentConfirmed: mode === "manual" ? false : undefined,
+        ...freqPatch(newCustForm.freq),
+        dayAssignmentConfirmed: mode === "manual" ? false : mode === "dated" ? true : undefined,
       };
       if (mode === "auto") {
         const res = await fetch("/api/public-data", {
@@ -78,7 +92,7 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
         if (jobErr || !savedJob) throw new Error(jobErr?.message || "Couldn't save job");
         setCustomers?.((prev: any[]) => [...prev, savedCust]);
         setJobs?.((prev: any[]) => [...prev, savedJob]);
-        toast?.("Added ✓ — drag them onto a day in Planning below", "green");
+        toast?.(mode === "dated" ? `Added ✓ — scheduled ${newCustForm.firstDate}` : "Added ✓ — drag them onto a day in Planning below", "green");
       }
       setNewCustOpen(false);
       setNewCustForm(emptyNewCustForm());
@@ -405,20 +419,103 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
 
   const openEditJob = (j: Job) => {
     setEditingJob(j);
-    setEditForm({ scheduledDate: j.scheduledDate || "", recurringFreq: j.recurringFreq || "weekly", cansCount: (j as any).cansCount || 1 });
+    setEditForm({ scheduledDate: j.scheduledDate && j.status !== "cancelled" ? j.scheduledDate : today(), recurringFreq: j.isRecurring ? (j.recurringFreq || "weekly") : "one_time", cansCount: (j as any).cansCount || 1 });
+  };
+
+  // The job a customer card manages: their open one, else their most recent
+  // (so an off-schedule customer can be put back on).
+  const customerTrashJob = (customerId: string): Job | undefined => {
+    const mine = trashJobs.filter(j => j.customerId === customerId);
+    return mine.find(j => j.status !== "cancelled" && j.status !== "completed")
+      || [...mine].sort((a, b) => (b.scheduledDate || "").localeCompare(a.scheduledDate || ""))[0];
+  };
+
+  const patchJobs = async (ids: string[], patch: any): Promise<boolean> => {
+    setJobs?.((prev: any[]) => prev.map(j => ids.includes(j.id) ? { ...j, ...patch } : j));
+    const r = await (supabase as any).from("jobs").update(patch).in("id", ids).select("id");
+    if (r?.error) { toast?.(`Couldn't save — ${r.error.message}`, "red"); return false; }
+    if (!Array.isArray(r?.data) || r.data.length === 0) { toast?.("Couldn't save — the server didn't confirm the change.", "red"); return false; }
+    return true;
   };
 
   const saveEditJob = async () => {
     if (!editingJob) return;
+    if (!editForm.scheduledDate) { toast?.("Pick a date", "yellow"); return; }
     setSavingEdit(true);
-    const patch: any = { scheduledDate: editForm.scheduledDate, recurringFreq: editForm.recurringFreq, cansCount: Number(editForm.cansCount) || 1 };
-    setJobs?.((prev: any[]) => prev.map(j => j.id === editingJob.id ? { ...j, ...patch } : j));
-    const { error } = await (supabase as any).from("jobs").update(patch).eq("id", editingJob.id);
+    const reactivating = editingJob.status === "cancelled" || editingJob.status === "completed";
+    const patch: any = {
+      scheduledDate: editForm.scheduledDate, cansCount: Number(editForm.cansCount) || 1,
+      ...freqPatch(editForm.recurringFreq),
+      ...(reactivating ? { status: "scheduled", dayAssignmentConfirmed: true, completedAt: null } : {}),
+    };
+    const ok = await patchJobs([editingJob.id], patch);
     setSavingEdit(false);
-    if (error) { toast?.(`Couldn't save changes — ${error.message}`, "red"); return; }
-    toast?.("Job updated ✓", "green");
+    if (!ok) return;
+    toast?.(reactivating ? `Back on the schedule — ${editForm.scheduledDate} ✓` : "Job updated ✓", "green");
     setEditingJob(null);
   };
+
+  // Stops service but keeps the customer and their history.
+  const takeOffSchedule = async (j: Job) => {
+    const c = cf(j.customerId);
+    if (!window.confirm(`Take ${c ? c.firstName + " " + c.lastName : "this customer"} off the trash can schedule? Their upcoming cleanings stop; the customer stays in your records and can be put back on later.`)) return;
+    const openIds = trashJobs.filter(x => x.customerId === j.customerId && x.status !== "cancelled" && x.status !== "completed").map(x => x.id);
+    const ok = await patchJobs(openIds.length ? openIds : [j.id], { status: "cancelled", isRecurring: false, cancelReason: "Removed from trash can schedule" });
+    if (ok) { toast?.("Taken off the schedule ✓", "green"); setEditingJob(null); }
+  };
+
+  // Deletes the customer's trash-can jobs; optionally the customer too.
+  const deleteTrashCustomer = async (customerId: string) => {
+    const c = cf(customerId);
+    const name = c ? `${c.firstName} ${c.lastName}`.trim() : "this customer";
+    if (!window.confirm(`Delete ${name}'s trash can service? This permanently deletes their trash can jobs.`)) return;
+    const jobIds = trashJobs.filter(x => x.customerId === customerId).map(x => x.id);
+    const hasOtherJobs = jobs.some((x: any) => x.customerId === customerId && x.serviceCategory !== "trash_can");
+    const alsoCustomer = !!c && !hasOtherJobs && window.confirm(`Also delete ${name} from your Customers list?\n\nOK = delete the customer too\nCancel = keep them as a customer`);
+    setJobs?.((prev: any[]) => prev.filter(x => !jobIds.includes(x.id)));
+    markRecentlyDeleted?.("jobs", jobIds);
+    if (jobIds.length) {
+      const r = await (supabase as any).from("jobs").delete().in("id", jobIds).select("id");
+      if (r?.error || !Array.isArray(r?.data) || r.data.length === 0) { toast?.(`Delete failed — ${r?.error?.message || "the server didn't confirm it"}`, "red"); return; }
+    }
+    if (alsoCustomer) {
+      setCustomers?.((prev: any[]) => prev.filter(x => x.id !== customerId));
+      markRecentlyDeleted?.("customers", [customerId]);
+      const r = await (supabase as any).from("customers").delete().eq("id", customerId).select("id");
+      if (r?.error || !Array.isArray(r?.data) || r.data.length === 0) { toast?.(`Jobs deleted, but the customer wasn't — ${r?.error?.message || "the server didn't confirm it"}`, "red"); return; }
+    }
+    toast?.(alsoCustomer ? `${name} deleted ✓` : `${name}'s trash can service deleted ✓`, "green");
+    setEditingJob(null);
+  };
+
+  // ── Upcoming trash can days — real scheduled stops plus projected repeats
+  // of recurring customers, grouped by date. ───────────────────────────────
+  const [expandedDay, setExpandedDay] = useState<string | null>(null);
+  const HORIZON_DAYS = 56;
+  const upcomingDays = (() => {
+    const start = today();
+    const end = daysFromNow(HORIZON_DAYS);
+    const byDate: Record<string, { job: Job; projected: boolean }[]> = {};
+    for (const j of trashJobs) {
+      if (j.status === "cancelled" || j.status === "completed" || !j.scheduledDate) continue;
+      if ((j as any).dayAssignmentConfirmed === false) continue;
+      let d = j.scheduledDate;
+      let projected = false;
+      for (let i = 0; i < 60 && d <= end; i++) {
+        if (d >= start) (byDate[d] = byDate[d] || []).push({ job: j, projected });
+        if (!j.isRecurring) break;
+        const next = computeNextRecurringDate(j as any, d);
+        if (next <= d) break;
+        d = next; projected = true;
+      }
+    }
+    return Object.keys(byDate).sort().map(date => {
+      const seen = new Set<string>();
+      const stops = [...byDate[date]].sort((a, b) => Number(a.projected) - Number(b.projected))
+        .filter(s => { const k = s.job.customerId || s.job.id; if (seen.has(k)) return false; seen.add(k); return true; });
+      return { date, stops };
+    });
+  })();
 
   return (
     // Extra bottom padding (beyond <main>'s own pb-16) so the last row of
@@ -448,12 +545,79 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
         ) : (
           <div className="grid sm:grid-cols-2 gap-2 max-h-72 overflow-y-auto">
             {trashCanCustomers.map(c => {
-              const custJob = trashJobs.find((j: any) => j.customerId === c.id && j.status !== "cancelled");
+              const custJob = customerTrashJob(c.id);
+              const active = custJob && custJob.status !== "cancelled" && custJob.status !== "completed";
               return (
-                <div key={c.id} className="p-2.5 rounded-lg bg-black/30 border border-white/10 text-xs">
-                  <div className="font-medium text-white/80 truncate">{c.firstName} {c.lastName}</div>
-                  <div className="text-[10px] text-white/40 flex items-center gap-1 truncate"><MapPin size={9} className="flex-shrink-0" />{c.address || "No address"}</div>
-                  {custJob && <div className="text-[10px] text-white/30 mt-0.5">{(custJob as any).dayAssignmentConfirmed ? `Next: ${custJob.scheduledDate}` : "Unassigned — see Planning below"}</div>}
+                <div key={c.id} className={"p-2.5 rounded-lg border text-xs flex items-start gap-2 " + (active ? "bg-black/30 border-white/10" : "bg-black/20 border-white/5 opacity-70")}>
+                  <button onClick={() => custJob && openEditJob(custJob)} className="flex-1 min-w-0 text-left" title="Edit schedule">
+                    <div className="font-medium text-white/80 truncate flex items-center gap-1.5">
+                      {c.firstName} {c.lastName}
+                      <span className={"text-[9px] px-1.5 py-0.5 rounded-full border flex-shrink-0 " + (!active ? "text-white/40 border-white/10" : custJob?.isRecurring ? "text-blue-300 border-blue-800/40 bg-blue-950/30" : "text-amber-300 border-amber-800/40 bg-amber-950/30")}>
+                        {!active ? "Off schedule" : freqLabel(custJob)}
+                      </span>
+                    </div>
+                    <div className="text-[10px] text-white/40 flex items-center gap-1 truncate"><MapPin size={9} className="flex-shrink-0" />{c.address || "No address"}</div>
+                    {custJob && <div className="text-[10px] text-white/30 mt-0.5">{!active ? "Tap to put back on the schedule" : (custJob as any).dayAssignmentConfirmed === false ? "Unassigned — see Planning below" : `Next: ${custJob.scheduledDate}`}</div>}
+                  </button>
+                  <div className="flex gap-1 flex-shrink-0">
+                    {custJob && <button onClick={() => openEditJob(custJob)} className="p-1.5 rounded bg-white/5 text-white/50 hover:text-white" title="Edit"><Edit2 size={11} /></button>}
+                    <button onClick={() => deleteTrashCustomer(c.id)} className="p-1.5 rounded bg-white/5 text-white/40 hover:text-red-300" title="Delete"><Trash2 size={11} /></button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Glass>
+
+      <Glass className="p-4 space-y-3">
+        <div className="font-semibold text-sm flex items-center gap-2"><Calendar size={14} className="text-green-400" />Upcoming Trash Can Days</div>
+        <div className="text-[10px] text-white/40">Next 8 weeks. Recurring customers' future cleanings are projected from their schedule (marked "repeat").</div>
+        {upcomingDays.length === 0 ? (
+          <div className="text-center py-6 text-white/30 text-xs">No trash can days scheduled yet.</div>
+        ) : (
+          <div className="space-y-1.5 max-h-96 overflow-y-auto">
+            {upcomingDays.map(({ date, stops }) => {
+              const d = new Date(date + "T12:00:00");
+              const cans = stops.reduce((n, s) => n + ((s.job as any).cansCount || 1), 0);
+              const revenue = stops.reduce((n, s) => n + (Number(s.job.amount) || 0), 0);
+              const open = expandedDay === date;
+              const isToday = date === today();
+              return (
+                <div key={date} className={"rounded-lg border " + (isToday ? "border-green-700/40 bg-green-950/15" : "border-white/10 bg-black/30")}>
+                  <button onClick={() => setExpandedDay(open ? null : date)} className="w-full p-2.5 flex items-center gap-3 text-left">
+                    <div className="w-12 text-center flex-shrink-0">
+                      <div className="text-[9px] uppercase tracking-wider text-white/40">{d.toLocaleDateString(undefined, { weekday: "short" })}</div>
+                      <div className="text-sm font-semibold">{d.toLocaleDateString(undefined, { month: "short", day: "numeric" })}</div>
+                    </div>
+                    <div className="flex-1 min-w-0 text-xs">
+                      <div className="text-white/80">{stops.length} stop{stops.length !== 1 ? "s" : ""} · {cans} can{cans !== 1 ? "s" : ""}{isToday ? " · Today" : ""}</div>
+                      <div className="text-[10px] text-white/40 truncate">{stops.map(s => { const c = cf(s.job.customerId); return c ? `${c.firstName} ${c.lastName}`.trim() : "Customer"; }).join(", ")}</div>
+                    </div>
+                    <div className="text-right flex-shrink-0 text-[10px] text-white/50">
+                      <div>{fmt(revenue)}</div>
+                      <div>~{cans * minutesPerCan}m</div>
+                    </div>
+                    {open ? <ChevronUp size={12} className="text-white/40" /> : <ChevronDown size={12} className="text-white/40" />}
+                  </button>
+                  {open && (
+                    <div className="border-t border-white/10 p-2 space-y-1">
+                      {stops.map(({ job, projected }) => {
+                        const c = cf(job.customerId);
+                        return (
+                          <div key={job.id + date} className="flex items-center gap-2 p-1.5 rounded bg-black/30 text-[11px]">
+                            <span className="flex-1 min-w-0 truncate">{c ? `${c.firstName} ${c.lastName}` : "Customer"} <span className="text-white/30">· {job.address}</span></span>
+                            <span className="text-white/40 flex-shrink-0">{(job as any).cansCount || 1} can{((job as any).cansCount || 1) !== 1 ? "s" : ""}</span>
+                            {projected && <span className="text-[9px] px-1.5 rounded-full border border-blue-800/40 text-blue-300 flex-shrink-0">repeat</span>}
+                            <button onClick={() => openEditJob(job)} className="p-1 rounded bg-white/5 text-white/50 hover:text-white flex-shrink-0" title="Edit"><Edit2 size={10} /></button>
+                          </div>
+                        );
+                      })}
+                      {!stops.some(s => s.projected) && (
+                        <GBtn variant="ghost" onClick={() => { setRouteDate(date); setRoute(null); toast?.(`Route date set to ${date} — hit Build Optimized Route below`); }} className="!text-[10px] !py-1 w-full !justify-center"><RouteIcon size={10} className="inline mr-1" />Plan this day's route</GBtn>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -480,15 +644,33 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
               knownAddresses={customers.map((c: any) => c.address).filter(Boolean)}
             />
           </div>
+          <div className="grid grid-cols-3 gap-2">
+            <div>
+              <label className="text-[10px] text-white/50 mb-1 block">Cans</label>
+              <GInput type="number" min="1" value={newCustForm.cansCount} onChange={e => setNewCustForm(f => ({ ...f, cansCount: Math.max(1, Number(e.target.value) || 1) }))} />
+            </div>
+            <div className="col-span-2">
+              <label className="text-[10px] text-white/50 mb-1 block">Service</label>
+              <GSel value={newCustForm.freq} onChange={(e: any) => setNewCustForm(f => ({ ...f, freq: e.target.value }))}>
+                {FREQ_OPTIONS.map(o => <option key={o.key} value={o.key} className="bg-black">{o.label}</option>)}
+              </GSel>
+            </div>
+          </div>
           <div>
-            <label className="text-[10px] text-white/50 mb-1 block">Number of cans</label>
-            <GInput type="number" min="1" value={newCustForm.cansCount} onChange={e => setNewCustForm(f => ({ ...f, cansCount: Math.max(1, Number(e.target.value) || 1) }))} className="!w-24" />
+            <label className="text-[10px] text-white/50 mb-1 block">{newCustForm.freq === "one_time" ? "Cleaning date" : "First service date"} <span className="text-white/30">(optional)</span></label>
+            <GInput type="date" value={newCustForm.firstDate} onChange={e => setNewCustForm(f => ({ ...f, firstDate: e.target.value }))} />
           </div>
-          <div className="flex gap-2 pt-1">
-            <GBtn onClick={() => addTrashCanCustomer("auto")} disabled={addingCustomer} className="flex-1 !justify-center">{addingCustomer ? "Adding…" : "Add to Route (Auto)"}</GBtn>
-            <GBtn variant="ghost" onClick={() => addTrashCanCustomer("manual")} disabled={addingCustomer}>Add Manually</GBtn>
-          </div>
-          <div className="text-[10px] text-white/30">Auto finds the least-loaded existing service day and skips holiday weeks. Manual leaves them unassigned in Planning below for you to drag onto a day yourself.</div>
+          {newCustForm.firstDate ? (
+            <GBtn onClick={() => addTrashCanCustomer("dated")} disabled={addingCustomer} className="w-full !justify-center">{addingCustomer ? "Adding…" : `Add & Schedule ${newCustForm.firstDate}`}</GBtn>
+          ) : (
+            <>
+              <div className="flex gap-2 pt-1">
+                <GBtn onClick={() => addTrashCanCustomer("auto")} disabled={addingCustomer} className="flex-1 !justify-center">{addingCustomer ? "Adding…" : "Add to Route (Auto)"}</GBtn>
+                <GBtn variant="ghost" onClick={() => addTrashCanCustomer("manual")} disabled={addingCustomer}>Add Manually</GBtn>
+              </div>
+              <div className="text-[10px] text-white/30">Auto finds the least-loaded existing service day and skips holiday weeks. Manual leaves them unassigned in Planning below for you to drag onto a day yourself. Or pick a date above to schedule them directly.</div>
+            </>
+          )}
         </div>
       </Modal>
 
@@ -514,9 +696,7 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
           <div>
             <label className="text-xs text-white/60 mb-1 block">Default frequency</label>
             <GSel value={(settings as any)?.trashCanDefaultFrequency || "weekly"} onChange={(e: any) => setSettings((s: any) => ({ ...s, trashCanDefaultFrequency: e.target.value }))} className="!text-xs">
-              <option value="weekly" className="bg-black">Weekly</option>
-              <option value="monthly" className="bg-black">Monthly</option>
-              <option value="quarterly" className="bg-black">Quarterly</option>
+              {FREQ_OPTIONS.filter(o => o.key !== "one_time").map(o => <option key={o.key} value={o.key} className="bg-black">{o.label}</option>)}
             </GSel>
           </div>
           <div><label className="text-xs text-white/60 mb-1 block">Inconvenience fee name</label><GInput value={(settings as any)?.trashCanInconvenienceFeeName || "Cans Not Out Fee"} onChange={(e: any) => setSettings((s: any) => ({ ...s, trashCanInconvenienceFeeName: e.target.value }))} className="!text-xs" /></div>
@@ -834,7 +1014,7 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
                   <div className="w-9 h-9 rounded-xl bg-black/40 border border-red-900/30 flex items-center justify-center flex-shrink-0">🗑️</div>
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium truncate">{c ? `${c.firstName} ${c.lastName}` : "Customer"}</div>
-                    <div className="text-xs text-white/40 truncate">{j.address} · {(j as any).cansCount || 1} can{((j as any).cansCount || 1) !== 1 ? "s" : ""} · {j.isRecurring ? (j.recurringFreq || "recurring") : "one-time"}</div>
+                    <div className="text-xs text-white/40 truncate">{j.address} · {(j as any).cansCount || 1} can{((j as any).cansCount || 1) !== 1 ? "s" : ""} · {freqLabel(j)}</div>
                   </div>
                   <div className="text-right flex-shrink-0">
                     <div className="text-xs text-white/50">{j.scheduledDate}</div>
@@ -858,29 +1038,38 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
       {editingJob && (
         <div className="fixed inset-0 z-[999] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setEditingJob(null)}>
           <div onClick={(e) => e.stopPropagation()} className="w-full max-w-sm bg-neutral-950 border border-red-900/40 rounded-2xl p-4 space-y-3">
-            <div className="font-semibold text-sm flex items-center gap-2"><Trash2 size={14} className="text-red-400" />Edit Trash Can Job</div>
-            <div className="space-y-3">
-              <div>
-                <label className="text-xs text-white/60 mb-1 block">Scheduled Date</label>
-                <GInput type="date" value={editForm.scheduledDate} onChange={(e: any) => setEditForm(f => ({ ...f, scheduledDate: e.target.value }))} className="!text-xs w-full" />
-              </div>
-              <div>
-                <label className="text-xs text-white/60 mb-1 block">Recurring Frequency</label>
-                <GSel value={editForm.recurringFreq} onChange={(e: any) => setEditForm(f => ({ ...f, recurringFreq: e.target.value }))} className="!text-xs">
-                  <option value="weekly" className="bg-black">Weekly</option>
-                  <option value="monthly" className="bg-black">Monthly</option>
-                  <option value="quarterly" className="bg-black">Quarterly</option>
-                </GSel>
-              </div>
-              <div>
-                <label className="text-xs text-white/60 mb-1 block">Can Count</label>
-                <GInput type="number" min={1} value={editForm.cansCount} onChange={(e: any) => setEditForm(f => ({ ...f, cansCount: Number(e.target.value) || 1 }))} className="!text-xs w-full" />
-              </div>
-            </div>
-            <div className="flex flex-col sm:flex-row gap-2 pt-1">
-              <GBtn onClick={saveEditJob} disabled={savingEdit} className="flex-1 !text-xs !justify-center">{savingEdit ? "Saving…" : "Save Changes"}</GBtn>
-              <GBtn variant="ghost" onClick={() => setEditingJob(null)} className="flex-1 !text-xs !justify-center">Cancel</GBtn>
-            </div>
+            {(() => {
+              const c = cf(editingJob.customerId);
+              const offSchedule = editingJob.status === "cancelled" || editingJob.status === "completed";
+              return <>
+                <div className="font-semibold text-sm flex items-center gap-2"><Trash2 size={14} className="text-red-400" />{c ? `${c.firstName} ${c.lastName}` : "Trash Can Job"}</div>
+                {offSchedule && <div className="text-[11px] text-white/50 bg-white/5 border border-white/10 rounded-lg px-2.5 py-1.5">Not on the schedule right now. Pick a date and save to put them back on.</div>}
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-xs text-white/60 mb-1 block">Service</label>
+                    <GSel value={editForm.recurringFreq} onChange={(e: any) => setEditForm(f => ({ ...f, recurringFreq: e.target.value }))} className="!text-xs">
+                      {FREQ_OPTIONS.map(o => <option key={o.key} value={o.key} className="bg-black">{o.label}</option>)}
+                    </GSel>
+                  </div>
+                  <div>
+                    <label className="text-xs text-white/60 mb-1 block">{editForm.recurringFreq === "one_time" ? "Cleaning date" : "Next service date"}</label>
+                    <GInput type="date" value={editForm.scheduledDate} onChange={(e: any) => setEditForm(f => ({ ...f, scheduledDate: e.target.value }))} className="!text-xs w-full" />
+                  </div>
+                  <div>
+                    <label className="text-xs text-white/60 mb-1 block">Can Count</label>
+                    <GInput type="number" min={1} value={editForm.cansCount} onChange={(e: any) => setEditForm(f => ({ ...f, cansCount: Number(e.target.value) || 1 }))} className="!text-xs w-full" />
+                  </div>
+                </div>
+                <div className="flex flex-col sm:flex-row gap-2 pt-1">
+                  <GBtn onClick={saveEditJob} disabled={savingEdit} className="flex-1 !text-xs !justify-center">{savingEdit ? "Saving…" : offSchedule ? "Put Back on Schedule" : "Save Changes"}</GBtn>
+                  <GBtn variant="ghost" onClick={() => setEditingJob(null)} className="flex-1 !text-xs !justify-center">Cancel</GBtn>
+                </div>
+                <div className="flex flex-col sm:flex-row gap-2 pt-2 border-t border-white/10">
+                  {!offSchedule && <GBtn variant="ghost" onClick={() => takeOffSchedule(editingJob)} className="flex-1 !text-xs !justify-center"><X size={11} className="inline mr-1" />Take Off Schedule</GBtn>}
+                  <GBtn variant="danger" onClick={() => deleteTrashCustomer(editingJob.customerId)} className="flex-1 !text-xs !justify-center"><Trash2 size={11} className="inline mr-1" />Delete</GBtn>
+                </div>
+              </>;
+            })()}
           </div>
         </div>
       )}

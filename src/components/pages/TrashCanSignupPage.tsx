@@ -208,6 +208,7 @@ export function TrashCanSignupPage() {
             <label className="text-xs text-white/60 mb-1 block">Schedule</label>
             <select value={frequency} onChange={e => setFrequency(e.target.value as any)} className="w-full bg-white/5 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-red-500/50">
               <option value="weekly" className="bg-black">Weekly</option>
+              <option value="biweekly" className="bg-black">Every 2 weeks</option>
               <option value="monthly" className="bg-black">Monthly</option>
               <option value="quarterly" className="bg-black">Quarterly</option>
               <option value="onetime" className="bg-black">One-time only</option>
