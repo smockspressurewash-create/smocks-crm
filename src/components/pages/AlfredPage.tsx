@@ -1021,6 +1021,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
 
   const active = conversations.find(c => c.id === activeConvId) || conversations[0];
   const chats = active?.messages || [];
+  // Alfred's own attachment-analysis prompt (fed to the model as a "user"
+  // turn). Builds before Sept 26 saved it into history as a visible user
+  // bubble — those rows are still in old conversations. Never render them.
+  const isInternalAttachPrompt = (m: any) => m?.role === "user" && typeof m.content === "string" &&
+    (/^Here's what I found in (what I just attached|the \d+ screenshots I just sent you)/.test(m.content) || m.content.includes("(The above is what I just found in the file I attached.)"));
 
   // BUG FIX — "after a couple of messages the screenshots get deleted from
   // our backend, or they just get stored in the user's local storage."
@@ -2621,7 +2626,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             // "trash_can" (see its own comment) — a free-form tag was never
             // going to satisfy that, this tool had no way to set the real
             // field at all until now.
-            ...(inputs.isTrashCan ? { serviceCategory: "trash_can", cansCount: Math.max(1, Number(inputs.cansCount) || 1) } : {}),
+            // BUG FIX (repeat report) — the model often skips isTrashCan and
+            // just tags the job "trash can" instead (confirmed live: 11 jobs
+            // with tags ["trash can"] and serviceCategory null, invisible on
+            // the Trash Cans page). Infer it from the tags/notes too.
+            ...((inputs.isTrashCan || [...(Array.isArray(inputs.tags) ? inputs.tags : []), inputs.notes, inputs.serviceType].some((s: any) => /trash\s*-?\s*(can|bin)/i.test(String(s || "")))) ? { serviceCategory: "trash_can", isTrashCan: true, cansCount: Math.max(1, Number(inputs.cansCount) || 1) } : {}),
             // FEATURE — "Alfred can read a work order (email/text) and
             // create it for the owner, with a checklist and photo/video
             // requirements." Still the same jobs-table insert as every other
@@ -6419,7 +6428,7 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
           )}
           {chats.length > 1 && (
             <div className="max-w-3xl mx-auto px-4 py-6 space-y-5">
-              {chats.map(m => {
+              {chats.filter(m => !isInternalAttachPrompt(m)).map(m => {
                 const isUser = m.role === "user";
                 const isError = !isUser && typeof m.content === "string" && m.content.startsWith("⚠️");
                 return (

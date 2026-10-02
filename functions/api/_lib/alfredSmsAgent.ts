@@ -1473,6 +1473,11 @@ const executeToolCore = async (ctx: Ctx, name: string, input: Record<string, any
         if (checklist) job.duringChecklist = checklist;
         if (Array.isArray(input.tags) && input.tags.length > 0) job.tags = input.tags;
         if (input.isRecurring) { job.isRecurring = true; job.recurringMode = "preset"; job.recurringFreq = input.recurringFreq; }
+        // Trash Cans page keys off serviceCategory, not tags — a job only
+        // tagged "trash can" never showed up there.
+        if ([...(Array.isArray(input.tags) ? input.tags : []), input.notes].some((s: any) => /trash\s*-?\s*(can|bin)/i.test(String(s || "")))) {
+          job.serviceCategory = "trash_can"; job.isTrashCan = true; job.cansCount = 1;
+        }
         const res = await sbWrite(ctx, "jobs", "POST", job);
         if (!res.ok) return { error: res.error };
         return { success: true, jobId: job.id, customer: job.customerName, date: job.scheduledDate, jobType: job.jobType, recurring: !!input.isRecurring, checklistItems: checklist?.length || 0 };

@@ -42,6 +42,25 @@ if ("serviceWorker" in navigator) {
   });
 }
 
+// A phone PWA can sit open in the background for days, keeping the JS bundle
+// it first loaded in memory — so already-shipped fixes never reach it (seen
+// live: an old-build Alfred bug reappearing a day after its fix deployed).
+// When the app comes back to the foreground, check whether a newer build is
+// live and reload into it. Unsent Alfred drafts persist in localStorage.
+const currentBundle = (document.querySelector('script[type="module"][src*="/assets/index-"]') as HTMLScriptElement | null)?.src.match(/\/assets\/index-[\w-]+\.js/)?.[0];
+let hiddenAt = 0;
+if (currentBundle) {
+  document.addEventListener("visibilitychange", async () => {
+    if (document.visibilityState === "hidden") { hiddenAt = Date.now(); return; }
+    if (!hiddenAt || Date.now() - hiddenAt < 60_000) return;
+    try {
+      const html = await (await fetch("/", { cache: "no-store" })).text();
+      const live = html.match(/\/assets\/index-[\w-]+\.js/)?.[0];
+      if (live && live !== currentBundle) location.reload();
+    } catch { /* offline — keep running the current build */ }
+  });
+}
+
 // Haptic feedback on every tap, app-wide — one listener here covers the
 // owner CRM, employee portal, and client portal alike (all mount under this
 // single root). Real ticks on Android; a harmless no-op on iOS (see

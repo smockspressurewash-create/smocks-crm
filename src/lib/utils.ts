@@ -474,6 +474,11 @@ export const normalizeJobRow = (j: any): any => ({
   // banner and cross-actor crew merge in reconcileCrewAfterAssign both rely
   // on this being populated).
   crewAssignedAt: j.crewAssignedAt ?? j.crewassignedat ?? j.crew_assigned_at ?? {},
+  // Every trash-can view (TrashCanPage, Calendar filter, route builder)
+  // keys off serviceCategory === "trash_can"; a job only flagged via
+  // isTrashCan or a "trash can" tag (e.g. created by Alfred) was invisible
+  // there. Treat those as trash-can jobs too.
+  serviceCategory: j.serviceCategory ?? j.servicecategory ?? ((j.isTrashCan || (Array.isArray(j.tags) && j.tags.some((t: any) => /trash\s*-?\s*(can|bin)/i.test(String(t))))) ? "trash_can" : undefined),
 });
 
 // ─── Timeframes ───────────────────────────────────────────────────────────────
