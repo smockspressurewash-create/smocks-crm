@@ -90,7 +90,7 @@ export function ResetPassword() {
       <div className="w-full max-w-sm space-y-6">
         {/* Logo */}
         <div className="text-center">
-          <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center mx-auto mb-3 shadow-lg shadow-red-900/40">
+          <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center mx-auto mb-3">
             <Lock size={24} className="text-white" />
           </div>
           <div className="text-xl font-bold text-white">Reset Password</div>

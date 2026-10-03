@@ -407,7 +407,7 @@ export function ClientAuthPortal({
             {(settings as any)?.logoUrl ? (
               <img src={(settings as any).logoUrl} alt={companyName} className="w-14 h-14 rounded-2xl object-contain mx-auto shadow-lg bg-white/5" />
             ) : (
-              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center mx-auto shadow-lg shadow-red-900/40">
+              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center mx-auto">
                 <CrewBossMark className="w-9 h-9" />
               </div>
             )}

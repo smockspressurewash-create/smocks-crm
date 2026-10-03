@@ -12,7 +12,11 @@ let stripeJsPromise: Promise<any> | null = null;
 // stripeAccount: acct_... })` — or confirmation fails outright for every
 // Connect-mode owner. `stripeAccount` is optional and a no-op for a legacy
 // manual-key owner (stripeAccount undefined).
-export const loadStripeJs = (publishableKey: string, stripeAccount?: string): Promise<any> => {
+// Start downloading Stripe.js before the customer taps Pay, so the card form
+// opens faster (the script is ~100KB and was only fetched after the tap).
+export const preloadStripeJs = (): void => { loadStripeScript().catch(() => {}); };
+
+const loadStripeScript = (): Promise<any> => {
   if (!stripeJsPromise) {
     stripeJsPromise = new Promise((resolve, reject) => {
       if ((window as any).Stripe) { resolve((window as any).Stripe); return; }
@@ -33,8 +37,11 @@ export const loadStripeJs = (publishableKey: string, stripeAccount?: string): Pr
     // clear the cached promise so the next call retries the script fresh.
     stripeJsPromise.catch(() => { stripeJsPromise = null; });
   }
-  return stripeJsPromise.then(Stripe => Stripe(publishableKey, stripeAccount ? { stripeAccount } : undefined));
+  return stripeJsPromise;
 };
+
+export const loadStripeJs = (publishableKey: string, stripeAccount?: string): Promise<any> =>
+  loadStripeScript().then(Stripe => Stripe(publishableKey, stripeAccount ? { stripeAccount } : undefined));
 
 // SECURITY AUDIT (round 12) — every function below used to take a `secretKey`
 // and call api.stripe.com DIRECTLY FROM THE BROWSER with it. That secret key

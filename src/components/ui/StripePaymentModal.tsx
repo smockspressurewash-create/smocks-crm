@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { CreditCard, X, AlertCircle, CheckCircle } from "lucide-react";
+import { CreditCard, X, AlertCircle, CheckCircle, Loader2 } from "lucide-react";
 import { loadStripeJs, createPaymentIntent } from "../../lib/stripe";
 import { Modal } from "./Modal";
 import { GBtn } from "./GBtn";
@@ -104,13 +104,17 @@ export function StripePaymentModal({
         // ownerId — see lib/stripe.ts's createPaymentIntent comment. Harmless
         // to always fetch: when invoiceId IS present, the server resolves the
         // owner from the invoice itself and never looks at this token.
+        // Start Stripe.js now so it downloads while the intent is created —
+        // these used to run one after the other.
+        const stripePromise = loadStripeJs(publishableKey, stripeAccountId);
+        stripePromise.catch(() => {});
         const { data: { session } } = await supabase.auth.getSession();
         const intent = await createPaymentIntent(Math.round(amount * 100), currency, description, invoiceId ? { invoiceId } : undefined, allowSaveCard && saveCard, Math.round(tipCents), session?.access_token, payment);
         if (cancelled) return;
         intentIdRef.current = intent.id;
         clientSecretRef.current = intent.client_secret;
         resolvedStripeCustomerRef.current = intent.stripeCustomerId || "";
-        const stripe = await loadStripeJs(publishableKey, stripeAccountId);
+        const stripe = await stripePromise;
         if (cancelled) return;
         stripeRef.current = stripe;
         const elements = stripe.elements({ clientSecret: intent.client_secret });
@@ -121,6 +125,9 @@ export function StripePaymentModal({
         // Payment Request Button (Apple Pay / Google Pay) — see comment
         // above on why this, not real NFC terminal tap-to-pay, is what's
         // feasible from a web page.
+        // Card form is usable now — don't make the customer wait on the
+        // Apple Pay / Google Pay availability check below.
+        if (!cancelled) setStatus("ready");
         const pr = stripe.paymentRequest({
           country: "US",
           currency,
@@ -157,7 +164,7 @@ export function StripePaymentModal({
             } : undefined);
           });
         }
-        setStatus("ready");
+        // (status already set to "ready" right after the card form mounted)
       } catch (e: any) {
         if (!cancelled) { setError(e.message || "Failed to start payment"); setStatus("error"); }
       }
@@ -192,7 +199,10 @@ export function StripePaymentModal({
     <Modal open={open} onClose={onClose} title="Pay with Stripe" maxW="max-w-md">
       <div className="space-y-4">
         {status === "loading" && (
-          <div className="text-center py-8 text-white/50 text-sm">Loading payment form…</div>
+          <div className="py-8 flex flex-col items-center gap-3 text-white/60 text-sm" role="status" aria-live="polite">
+            <Loader2 size={28} className="animate-spin text-white/70" />
+            Loading secure payment form…
+          </div>
         )}
         {status === "error" && (
           <div className="p-3 rounded-xl bg-red-950/30 border border-red-700/40 text-red-300 text-sm flex items-start gap-2">
@@ -230,7 +240,7 @@ export function StripePaymentModal({
             )}
             {(status === "ready" || status === "processing") && (
               <GBtn onClick={confirmPayment} disabled={status === "processing"} className="w-full !justify-center !py-3">
-                <CreditCard size={16} />{status === "processing" ? "Processing…" : `Pay $${amount.toFixed(2)}`}
+                {status === "processing" ? <Loader2 size={16} className="animate-spin" /> : <CreditCard size={16} />}{status === "processing" ? "Processing payment…" : `Pay $${amount.toFixed(2)}`}
               </GBtn>
             )}
           </>

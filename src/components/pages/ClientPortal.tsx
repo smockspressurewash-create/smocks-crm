@@ -40,7 +40,7 @@ import { Modal } from "../ui/Modal";
 import { StripePaymentModal } from "../ui/StripePaymentModal";
 import { SquarePaymentModal } from "../ui/SquarePaymentModal";
 import { getPublicSquareConfig, confirmSquareInvoicePayment } from "../../lib/square";
-import { confirmInvoicePayment } from "../../lib/stripe";
+import { confirmInvoicePayment, preloadStripeJs } from "../../lib/stripe";
 import { Badge } from "../ui/Badge";
 import { Stat } from "../ui/Stat";
 import { PBar } from "../ui/PBar";
@@ -134,6 +134,9 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
   const [agreedToPaymentTerms, setAgreedToPaymentTerms] = useState(false);
   const [payLaterBusy, setPayLaterBusy] = useState(false);
   const [confirmWarn, setConfirmWarn] = useState("");
+  // Start downloading Stripe.js as soon as the page opens so "Pay" doesn't
+  // wait on it.
+  useEffect(() => { if ((settings as any)?.stripePublishableKey) preloadStripeJs(); }, [(settings as any)?.stripePublishableKey]);
   // What the customer actually did, so the Done screen does not claim a
   // payment was processed when they chose "pay after service".
   const [paidAmountNow, setPaidAmountNow] = useState(0);
@@ -518,7 +521,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
             keeps the header a single predictable height regardless of how
             long the company name is; flex-shrink-0 keeps the right side
             from ever being squeezed into wrapping either. */}
-        <div className={"px-4 sm:px-6 py-3 sm:py-4 flex-shrink-0 " + (headerColor ? "" : "bg-gradient-to-r from-red-600 to-red-800")} style={headerColor ? { background: headerColor } : undefined}>
+        <div className={"pl-4 sm:pl-6 pr-14 sm:pr-16 py-3 sm:py-4 flex-shrink-0 " + (headerColor ? "" : "bg-gradient-to-r from-red-600 to-red-800")} style={headerColor ? { background: headerColor } : undefined}>
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
               {tpl?.logoUrl && <img src={tpl.logoUrl} alt="" className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg object-contain bg-white/90 p-1 flex-shrink-0" />}
@@ -603,6 +606,13 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                 <div className="text-xs text-white/50 uppercase tracking-wider mb-1">Bill To</div>
                 <div className="font-semibold text-lg">Hi {c.firstName} 👋</div>
                 <div className="text-white/60 text-sm">{c.address}</div>
+              </div>
+              <div className="p-4 rounded-xl border border-white/10 bg-white/[0.04] flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-xs text-white/50 uppercase tracking-wider">{fullyPaid ? "Paid in full" : hasRemainingBalance ? "Balance due" : e.invoiced ? "Amount due" : "Quote total"}</div>
+                  {(Number(e.tax) > 0 || effectiveTax > 0) && <div className="text-[11px] text-white/40 mt-0.5">Includes {fmt(effectiveTax)} tax</div>}
+                </div>
+                <div className="text-2xl font-black tabular-nums">{fmt(hasRemainingBalance ? remainingAmt : effectiveTotal)}</div>
               </div>
               <div>
                 <div className="text-xs text-white/50 uppercase tracking-wider mb-2">

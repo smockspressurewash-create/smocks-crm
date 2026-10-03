@@ -5210,7 +5210,7 @@ export function App() {
       <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center p-6 overflow-y-auto overflow-x-hidden">
         <div className="w-full max-w-sm flex flex-col items-center gap-6 py-8">
           <div className="text-center">
-            <div className="w-20 h-20 rounded-3xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center mx-auto mb-5 shadow-2xl shadow-red-900/50">
+            <div className="w-20 h-20 rounded-3xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center mx-auto mb-5">
               <CrewBossMark className="w-11 h-11" />
             </div>
             <div className="text-2xl font-bold tracking-tight">CrewBoss</div>

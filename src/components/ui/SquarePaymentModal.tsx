@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { CreditCard, X, AlertCircle, CheckCircle } from "lucide-react";
+import { CreditCard, X, AlertCircle, CheckCircle, Loader2 } from "lucide-react";
 import { loadSquareJs, createSquarePayment } from "../../lib/square";
 import { Modal } from "./Modal";
 import { GBtn } from "./GBtn";
@@ -106,7 +106,7 @@ export function SquarePaymentModal({
           <>
             <div ref={mountRef} className="min-h-[90px] p-2 rounded-xl bg-white" />
             <GBtn onClick={pay} disabled={status !== "ready" && status !== "error"} className="w-full">
-              {status === "loading" ? "Loading…" : status === "processing" ? "Processing…" : `Pay $${(amount + tipCents / 100).toFixed(2)}`}
+              {(status === "loading" || status === "processing") && <Loader2 size={16} className="inline animate-spin mr-1.5 -mt-0.5" />}{status === "loading" ? "Loading…" : status === "processing" ? "Processing payment…" : `Pay $${(amount + tipCents / 100).toFixed(2)}`}
             </GBtn>
           </>
         )}
