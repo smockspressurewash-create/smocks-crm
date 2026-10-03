@@ -4392,159 +4392,6 @@ export function App() {
   // render whatever the normal gates below decide (typically the login
   // screen) instead of blocking on a spinner.
 
-  // ── Client portal — fully public route, its own Supabase auth, no PIN/owner gate ──
-  if (page === "client") {
-    return <ClientAuthPortal customers={customers} setCustomers={setCustomers} estimates={estimates} setEstimates={setEstimates} jobs={jobs} settings={settings} estimateTemplates={estimateTemplates} toast={toast} />;
-  }
-
-  // ── Single-estimate portal — fully public, no login. Reached via
-  // #/estimate/ID from a "Review & Sign" / "View & Pay Invoice" link. Replaces
-  // the old #/portal/ID links, which pointed at the EMPLOYEE portal's own
-  // route and left a real customer stranded on an employee login screen
-  // (see FIX 17 / FIX 20). Renders the same ClientPortal used for the owner's
-  // internal preview button, wired to write approve/decline straight to
-  // Supabase — this visitor has no CRM session for the App-level state
-  // setters to mean anything beyond this one render.
-  // Reads AND writes for this anonymous route both go through
-  // /api/public-data (service role, bypasses RLS) — see approve_estimate/
-  // decline_estimate there. A direct anon-client write here would be
-  // rejected by the new owner_id-scoped WITH CHECK policies, since an
-  // anonymous visitor has no owner_id-satisfying session.
-  if (page === "estimate") {
-    const est = publicEstimate?.estimate;
-    const estCust = publicEstimate?.customer;
-    // publicEstimateLoading distinguishes "still fetching" from "fetched and
-    // truly not found" (expired/bad link) — both render the same message
-    // today, but keeping the flag around in case that copy needs to diverge.
-    if (!est) {
-      return (
-        <div className="min-h-screen bg-black flex items-center justify-center text-white/50 text-sm p-4 text-center">
-          {publicEstimateLoading
-            ? "Loading your estimate…"
-            : <>Loading your estimate… if this doesn't load in a few seconds, the link may have expired — contact {publicEstimate?.settings?.companyName || settings.companyName || "the business"} for a new one.</>}
-        </div>
-      );
-    }
-    return (
-      <ClientPortal
-        estimate={est}
-        customer={estCust}
-        jobs={jobs}
-        invoices={estimates.filter(e => e.invoiced)}
-        settings={{ ...settings, ...(publicEstimate?.settings || {}) } as any}
-        estimateTemplates={estimateTemplates}
-        promotions={promotions}
-        customers={customers}
-        setCustomers={setCustomers}
-        onClose={() => { window.location.hash = "/client"; }}
-        onView={id => {
-          setEstimates(prev => prev.map(e => e.id === id && !(e as any).clientViewedAt ? { ...e, clientViewedAt: new Date().toISOString() } as any : e));
-          fetch("/api/public-data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "mark_estimate_viewed", id }) }).catch(() => {});
-        }}
-        onApprove={(id, data) => {
-          const paid = data.payChoice !== "later";
-          setEstimates(prev => prev.map(e => e.id === id ? {
-            ...e, status: "approved", signedAt: data.signedAt || e.signedAt, sigData: data.sigData || e.sigData, payChoice: data.payChoice,
-            ...(paid ? { paidAt: today() } : {}),
-            paidDeposit: data.payType === "deposit" ? data.totalPaid : (e.paidDeposit || 0),
-            paidFull: data.payType === "full" ? data.totalPaid : data.payType === "remaining" ? (e.paidDeposit || 0) + data.totalPaid : (e.paidFull || 0),
-          } : e));
-          const cust = customers.find(c => c.id === est.customerId);
-          // FEATURE 4 — combine every linked service's checklist template
-          // (instead of always starting the job with an empty checklist).
-          // Seeds BOTH job.checklist (legacy, CrewView/JobsPage progress %)
-          // AND job.preChecklist (what EmployeePortal's field-portal flow
-          // actually renders to the crew — it only falls back to hardcoded
-          // defaults when empty).
-          const combinedChecklist = buildChecklistFromServices(est.lineItems, services);
-          const newJob = {
-            id: uid(), customerId: est.customerId, address: cust?.address || "",
-            amount: est.total, status: "scheduled", scheduledDate: "", duration: 2,
-            priority: "normal", crew: [], checklist: combinedChecklist, preChecklist: combinedChecklist, photos: [], chemicalsUsed: [],
-            equipment: [], tags: ["Needs Scheduling"], commLog: [],
-            notes: "From approved estimate #" + id.slice(-4).toUpperCase(),
-            createdAt: today(), estimateId: id,
-          } as any;
-          setJobs(prev => prev.some(j => (j as any).estimateId === id) ? prev : [...prev, { ...newJob, owner_id: (est as any).owner_id }]);
-          // Anonymous visitor — no owner_id-satisfying session, so this
-          // write goes through the service-role approve_estimate action
-          // (see functions/api/public-data.ts) rather than the anon client.
-          // AUDIT FIX — this fetch was fire-and-forget with the success
-          // toast firing unconditionally right after, violating CLAUDE.md's
-          // "toast on success AND failure, no silent fails" rule. If this
-          // write fails server-side, the customer sees "Paid"/"Signed" and
-          // the local UI reflects it, but the CRM's own estimate/job record
-          // (and the owner-notification SMS this action sends) never lands
-          // — the charge itself already happened separately before this
-          // point, so nothing here can undo that, but the owner needs to
-          // know the record didn't sync so they can follow up manually.
-          fetch("/api/public-data", {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              action: "approve_estimate", id, signedAt: data.signedAt, sigData: data.sigData, payChoice: data.payChoice,
-              paid, totalPaid: data.totalPaid, payType: data.payType,
-              job: newJob,
-            }),
-          }).then(r => {
-            if (!r.ok) toast(paid ? "Payment received, but the business's records may take longer than usual to update — contact them if it doesn't confirm soon." : "Signed, but there was a problem saving it — please contact the business to confirm.", "red");
-          }).catch(() => {
-            toast(paid ? "Payment received, but the business's records may take longer than usual to update — contact them if it doesn't confirm soon." : "Signed, but there was a problem saving it — please contact the business to confirm.", "red");
-          });
-          toast(paid ? "✓ Paid — " + fmt(data.totalPaid) : "✓ Signed — you'll pay later");
-        }}
-        onDecline={async (id: string, data: { reason?: string; category?: string }) => {
-          const declinedAt = new Date().toISOString();
-          setEstimates(prev => prev.map(e => e.id === id ? { ...e, status: "rejected", declinedAt, declineReason: data.reason || "", declineReasonCategory: data.category || "" } as any : e));
-          try {
-            await fetch("/api/public-data", {
-              method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ action: "decline_estimate", id, reason: data.reason || "", category: data.category || "" }),
-            });
-          } catch { /* ignore */ }
-        }}
-      />
-    );
-  }
-
-  // ── Referral landing — fully public, no auth/PIN gate. Handles both
-  // #/referral?ref=CODE and the shorthand #/r/CODE.
-  if (page === "referral") {
-    return <ReferralLanding customers={customers} setCustomers={setCustomers} settings={settings} toast={toast} />;
-  }
-
-  // ── Customer review landing — public route, no auth.
-  // URL: #/rate?c=CUSTOMER_ID&n=FIRST_NAME&g=GOOGLE_PLACE_ID&co=COMPANY_NAME
-  if (page === "rate") {
-    return <CustomerReviewPage />;
-  }
-
-  // ── Public lead intake form — no auth, embeddable via iframe. See
-  // LeadFormPage.tsx and LeadIntakePage.tsx's "Get Embed Code".
-  // URL: #/lead-form?co=COMPANY_NAME&ph=COMPANY_PHONE
-  if (page === "lead-form") {
-    return <LeadFormPage />;
-  }
-
-  // ── Public Trash Can Cleaning signup — no auth. See TrashCanSignupPage.tsx.
-  // URL: #/trash-cans?co=...&ph=...&cost=...&min=...&freq=...&pk=...
-  if (page === "trash-cans") {
-    return <TrashCanSignupPage />;
-  }
-
-  // ── Public job application form — no auth. See ApplyPage.tsx and
-  // HiringPage.tsx's "Apply Link". URL: #/apply?oid=OWNER_ID&co=COMPANY_NAME
-  if (page === "apply") {
-    return <ApplyPage />;
-  }
-
-  // ── Public legal pages — no auth, required as live HTTPS links for Twilio
-  // A2P 10DLC campaign registration. See LegalPages.tsx.
-  if (page === "terms") {
-    return <TermsPage />;
-  }
-  if (page === "privacy") {
-    return <PrivacyPolicyPage />;
-  }
 
   // ── Public marketing/landing page — fully public, no auth/PIN gate ────────
   // Shown at the bare root ("#/", "#/welcome", "#/home") to any visitor with
@@ -4767,6 +4614,174 @@ export function App() {
     }, 600);
     return () => { window.removeEventListener("mousemove", onMove); clearInterval(interval); };
   }, [customers, employees, jobs, estimates]);
+
+  // Public, no-session routes. These early returns must stay BELOW every hook
+  // in this component (rules of hooks) — opening an estimate/invoice link in
+  // a tab that already rendered the CRM otherwise crashes with React #310
+  // ("Rendered more hooks than during the previous render").
+  // ── Client portal — fully public route, its own Supabase auth, no PIN/owner gate ──
+  if (page === "client") {
+    return <ClientAuthPortal customers={customers} setCustomers={setCustomers} estimates={estimates} setEstimates={setEstimates} jobs={jobs} settings={settings} estimateTemplates={estimateTemplates} toast={toast} />;
+  }
+
+  // ── Single-estimate portal — fully public, no login. Reached via
+  // #/estimate/ID from a "Review & Sign" / "View & Pay Invoice" link. Replaces
+  // the old #/portal/ID links, which pointed at the EMPLOYEE portal's own
+  // route and left a real customer stranded on an employee login screen
+  // (see FIX 17 / FIX 20). Renders the same ClientPortal used for the owner's
+  // internal preview button, wired to write approve/decline straight to
+  // Supabase — this visitor has no CRM session for the App-level state
+  // setters to mean anything beyond this one render.
+  // Reads AND writes for this anonymous route both go through
+  // /api/public-data (service role, bypasses RLS) — see approve_estimate/
+  // decline_estimate there. A direct anon-client write here would be
+  // rejected by the new owner_id-scoped WITH CHECK policies, since an
+  // anonymous visitor has no owner_id-satisfying session.
+  if (page === "estimate") {
+    const est = publicEstimate?.estimate;
+    const estCust = publicEstimate?.customer;
+    // publicEstimateLoading distinguishes "still fetching" from "fetched and
+    // truly not found" (expired/bad link) — both render the same message
+    // today, but keeping the flag around in case that copy needs to diverge.
+    if (!est) {
+      return (
+        <div className="min-h-screen bg-black flex items-center justify-center text-white/50 text-sm p-4 text-center">
+          {publicEstimateLoading
+            ? "Loading your estimate…"
+            : <>Loading your estimate… if this doesn't load in a few seconds, the link may have expired — contact {publicEstimate?.settings?.companyName || settings.companyName || "the business"} for a new one.</>}
+        </div>
+      );
+    }
+    return (
+      <ClientPortal
+        estimate={est}
+        customer={estCust}
+        jobs={jobs}
+        invoices={estimates.filter(e => e.invoiced)}
+        settings={{ ...settings, ...(publicEstimate?.settings || {}) } as any}
+        estimateTemplates={estimateTemplates}
+        promotions={promotions}
+        customers={customers}
+        setCustomers={setCustomers}
+        onClose={() => { window.location.hash = "/client"; }}
+        onView={id => {
+          setEstimates(prev => prev.map(e => e.id === id && !(e as any).clientViewedAt ? { ...e, clientViewedAt: new Date().toISOString() } as any : e));
+          fetch("/api/public-data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "mark_estimate_viewed", id }) }).catch(() => {});
+        }}
+        onApprove={(id, data) => {
+          const paid = data.payChoice !== "later";
+          setEstimates(prev => prev.map(e => e.id === id ? {
+            ...e, status: "approved", signedAt: data.signedAt || e.signedAt, sigData: data.sigData || e.sigData, payChoice: data.payChoice,
+            ...(paid ? { paidAt: today() } : {}),
+            paidDeposit: data.payType === "deposit" ? data.totalPaid : (e.paidDeposit || 0),
+            paidFull: data.payType === "full" ? data.totalPaid : data.payType === "remaining" ? (e.paidDeposit || 0) + data.totalPaid : (e.paidFull || 0),
+          } : e));
+          // BUG FIX — paying an invoice (or an already-signed estimate) from its
+          // link went on to call approve_estimate, which the server rejects for
+          // an approved row (409), so the customer saw a scary "records may take
+          // longer" error right after a successful payment. The payment itself
+          // is recorded server-side (stripe-webhook / square-action confirm), so
+          // there is nothing to approve and no new job to create here.
+          if ((est as any).status === "approved" || (est as any).invoiced) {
+            toast(paid ? "✓ Paid — " + fmt(data.totalPaid) + ". Thank you!" : "✓ Got it — thank you!");
+            return;
+          }
+          const cust = customers.find(c => c.id === est.customerId);
+          // FEATURE 4 — combine every linked service's checklist template
+          // (instead of always starting the job with an empty checklist).
+          // Seeds BOTH job.checklist (legacy, CrewView/JobsPage progress %)
+          // AND job.preChecklist (what EmployeePortal's field-portal flow
+          // actually renders to the crew — it only falls back to hardcoded
+          // defaults when empty).
+          const combinedChecklist = buildChecklistFromServices(est.lineItems, services);
+          const newJob = {
+            id: uid(), customerId: est.customerId, address: cust?.address || "",
+            amount: est.total, status: "scheduled", scheduledDate: "", duration: 2,
+            priority: "normal", crew: [], checklist: combinedChecklist, preChecklist: combinedChecklist, photos: [], chemicalsUsed: [],
+            equipment: [], tags: ["Needs Scheduling"], commLog: [],
+            notes: "From approved estimate #" + id.slice(-4).toUpperCase(),
+            createdAt: today(), estimateId: id,
+          } as any;
+          setJobs(prev => prev.some(j => (j as any).estimateId === id) ? prev : [...prev, { ...newJob, owner_id: (est as any).owner_id }]);
+          // Anonymous visitor — no owner_id-satisfying session, so this
+          // write goes through the service-role approve_estimate action
+          // (see functions/api/public-data.ts) rather than the anon client.
+          // AUDIT FIX — this fetch was fire-and-forget with the success
+          // toast firing unconditionally right after, violating CLAUDE.md's
+          // "toast on success AND failure, no silent fails" rule. If this
+          // write fails server-side, the customer sees "Paid"/"Signed" and
+          // the local UI reflects it, but the CRM's own estimate/job record
+          // (and the owner-notification SMS this action sends) never lands
+          // — the charge itself already happened separately before this
+          // point, so nothing here can undo that, but the owner needs to
+          // know the record didn't sync so they can follow up manually.
+          fetch("/api/public-data", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "approve_estimate", id, signedAt: data.signedAt, sigData: data.sigData, payChoice: data.payChoice,
+              paid, totalPaid: data.totalPaid, payType: data.payType,
+              job: newJob,
+            }),
+          }).then(r => {
+            if (!r.ok) toast(paid ? "Payment received, but the business's records may take longer than usual to update — contact them if it doesn't confirm soon." : "Signed, but there was a problem saving it — please contact the business to confirm.", "red");
+          }).catch(() => {
+            toast(paid ? "Payment received, but the business's records may take longer than usual to update — contact them if it doesn't confirm soon." : "Signed, but there was a problem saving it — please contact the business to confirm.", "red");
+          });
+          toast(paid ? "✓ Paid — " + fmt(data.totalPaid) : "✓ Signed — you'll pay later");
+        }}
+        onDecline={async (id: string, data: { reason?: string; category?: string }) => {
+          const declinedAt = new Date().toISOString();
+          setEstimates(prev => prev.map(e => e.id === id ? { ...e, status: "rejected", declinedAt, declineReason: data.reason || "", declineReasonCategory: data.category || "" } as any : e));
+          try {
+            await fetch("/api/public-data", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ action: "decline_estimate", id, reason: data.reason || "", category: data.category || "" }),
+            });
+          } catch { /* ignore */ }
+        }}
+      />
+    );
+  }
+
+  // ── Referral landing — fully public, no auth/PIN gate. Handles both
+  // #/referral?ref=CODE and the shorthand #/r/CODE.
+  if (page === "referral") {
+    return <ReferralLanding customers={customers} setCustomers={setCustomers} settings={settings} toast={toast} />;
+  }
+
+  // ── Customer review landing — public route, no auth.
+  // URL: #/rate?c=CUSTOMER_ID&n=FIRST_NAME&g=GOOGLE_PLACE_ID&co=COMPANY_NAME
+  if (page === "rate") {
+    return <CustomerReviewPage />;
+  }
+
+  // ── Public lead intake form — no auth, embeddable via iframe. See
+  // LeadFormPage.tsx and LeadIntakePage.tsx's "Get Embed Code".
+  // URL: #/lead-form?co=COMPANY_NAME&ph=COMPANY_PHONE
+  if (page === "lead-form") {
+    return <LeadFormPage />;
+  }
+
+  // ── Public Trash Can Cleaning signup — no auth. See TrashCanSignupPage.tsx.
+  // URL: #/trash-cans?co=...&ph=...&cost=...&min=...&freq=...&pk=...
+  if (page === "trash-cans") {
+    return <TrashCanSignupPage />;
+  }
+
+  // ── Public job application form — no auth. See ApplyPage.tsx and
+  // HiringPage.tsx's "Apply Link". URL: #/apply?oid=OWNER_ID&co=COMPANY_NAME
+  if (page === "apply") {
+    return <ApplyPage />;
+  }
+
+  // ── Public legal pages — no auth, required as live HTTPS links for Twilio
+  // A2P 10DLC campaign registration. See LegalPages.tsx.
+  if (page === "terms") {
+    return <TermsPage />;
+  }
+  if (page === "privacy") {
+    return <PrivacyPolicyPage />;
+  }
 
   // BUG FIX — "not showing I'm logged in when I go to the landing page" —
   // passed into every marketing page's MarketingNav (isLoggedIn prop) so
@@ -6183,6 +6198,8 @@ export function App() {
             // nothing or throwing trying to update a non-existent row.
             if (String(id).startsWith("demo-")) { toast?.("This is a preview — nothing was actually signed or charged."); return; }
             const paid = data.payChoice !== "later";
+            const wasApproved = estimates.some(e => e.id === id && (e.status === "approved" || (e as any).invoiced));
+            if (wasApproved) { toast(paid ? "✓ Paid — " + fmt(data.totalPaid) : "✓ Saved"); setPortalEstId(null); return; }
             setEstimates(prev => prev.map(e => e.id === id ? {
               ...e, status: "approved", signedAt: data.signedAt || e.signedAt, sigData: data.sigData || e.sigData, payChoice: data.payChoice,
               ...(paid ? { paidAt: today() } : {}),

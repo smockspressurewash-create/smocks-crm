@@ -42,7 +42,7 @@ import { PBar } from "./PBar";
 import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 
-export function ESignatureStep({ e, c, sigData, setSigData, canvasRef, startDraw, draw, stopDraw, clearSig, onBack, onNext }) {
+export function ESignatureStep({ e, c, sigData, setSigData, canvasRef, startDraw, draw, stopDraw, clearSig, onBack, onNext, companyName = "" }) {
   const [sigMode, setSigMode] = useState("draw");
   const [typedName, setTypedName] = useState("");
 
@@ -74,7 +74,7 @@ export function ESignatureStep({ e, c, sigData, setSigData, canvasRef, startDraw
     <div className="space-y-4">
       <div>
         <div className="font-semibold mb-1">E-Signature</div>
-        <div className="text-xs text-white/60 mb-3">By signing below, you agree to the estimate total of <span className="text-red-400 font-bold">{fmt(e.total)}</span> and authorize Crew Boss to perform the listed services.</div>
+        <div className="text-xs text-white/60 mb-3">By signing below, you agree to the estimate total of <span className="text-red-400 font-bold">{fmt(e.total)}</span> and authorize {companyName || "the business"} to perform the listed services.</div>
       </div>
       <div className="flex gap-2">
         {[["draw","✍️ Draw"],["type","⌨️ Type Name"]].map(([m,l]) => (

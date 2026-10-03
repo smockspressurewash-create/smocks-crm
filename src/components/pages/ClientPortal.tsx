@@ -39,7 +39,8 @@ import { GTxt } from "../ui/GTxt";
 import { Modal } from "../ui/Modal";
 import { StripePaymentModal } from "../ui/StripePaymentModal";
 import { SquarePaymentModal } from "../ui/SquarePaymentModal";
-import { getPublicSquareConfig } from "../../lib/square";
+import { getPublicSquareConfig, confirmSquareInvoicePayment } from "../../lib/square";
+import { confirmInvoicePayment } from "../../lib/stripe";
 import { Badge } from "../ui/Badge";
 import { Stat } from "../ui/Stat";
 import { PBar } from "../ui/PBar";
@@ -132,6 +133,10 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
   // signature step, about the estimate total, not payment terms).
   const [agreedToPaymentTerms, setAgreedToPaymentTerms] = useState(false);
   const [payLaterBusy, setPayLaterBusy] = useState(false);
+  const [confirmWarn, setConfirmWarn] = useState("");
+  // What the customer actually did, so the Done screen does not claim a
+  // payment was processed when they chose "pay after service".
+  const [paidAmountNow, setPaidAmountNow] = useState(0);
   // FIX 14 — promo code (business coupon, Settings → Promotions) or a referral
   // code (another customer's referralCode) entered at checkout. Only one of
   // "promotion" | "referral" applies at a time — whichever the code matches.
@@ -242,6 +247,13 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
   // FEATURE (round 13, item 4) — mandatory deposit only applies before the
   // job exists/is invoiced and before any partial payment is already on record.
   const isDepositMandatory = !!e?.depositMandatory && Number(e?.depositRequired) > 0 && !e?.invoiced && !hasRemainingBalance;
+  // BUG FIX — "View & Pay Invoice" links always opened on "Review & Sign",
+  // even for an invoice that was already signed or already paid in full, so a
+  // customer could re-sign and get charged a second time. An invoice (or an
+  // estimate that's already signed) goes straight to payment; a fully paid
+  // one shows a Paid confirmation with no payment button at all.
+  const alreadySigned = !!(e?.signedAt || e?.sigData || e?.invoiced);
+  const fullyPaid = !!e?.paidAt && !hasRemainingBalance;
   useEffect(() => {
     if (isDepositMandatory) setPayType("deposit");
   }, [isDepositMandatory, e?.id]);
@@ -415,6 +427,19 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
         stripePaymentStatus: "paid" as const,
       } : {}),
     });
+    // BUG FIX — an invoice / already-signed estimate is past approve_estimate
+    // (the server ignores a second approval), so record the payment itself
+    // through the server-verified confirm action — same one the customer
+    // login portal uses. Without this, a Square payment from an invoice link
+    // was charged but never marked paid (Stripe also has its webhook).
+    if (paymentIntentId && alreadySigned && e?.id) {
+      const confirm = provider === "square" ? confirmSquareInvoicePayment(e.id, paymentIntentId) : confirmInvoicePayment(e.id, paymentIntentId);
+      Promise.resolve(confirm).catch((err: any) => {
+        console.error("[ClientPortal] confirm invoice payment failed:", err?.message);
+        setConfirmWarn("Payment received, but confirming it with the business is taking longer than usual — it may take a minute to show as paid.");
+      });
+    }
+    setPaidAmountNow(paymentIntentId ? totalWithTip : 0);
     setStep("done");
 
     if (!paymentIntentId) {
@@ -693,10 +718,17 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
               )}
               {e.terms && <div className="text-[10px] text-white/40 leading-relaxed">{e.terms}</div>}
               {tpl?.footerText && <div className="text-[10px] text-white/30 text-center italic">{tpl.footerText}</div>}
-              <GBtn onClick={() => setStep("sign")} className="w-full !py-3 text-base font-bold" style={accentColor ? { background: accentColor } : undefined}>
-                Review & Sign →
-              </GBtn>
-              {(!e.status || e.status === "pending") && (
+              {fullyPaid ? (
+                <Glass className="p-4 !bg-green-950/20 !border-green-700/40 text-center space-y-1">
+                  <div className="text-green-300 font-bold">✓ Paid in full</div>
+                  <div className="text-xs text-white/50">Thank you! Nothing is due on this {e.invoiced ? "invoice" : "quote"}.</div>
+                </Glass>
+              ) : (
+                <GBtn onClick={() => setStep(alreadySigned ? "payment" : "sign")} className="w-full !py-3 text-base font-bold" style={accentColor ? { background: accentColor } : undefined}>
+                  {alreadySigned ? "Pay " + fmt(hasRemainingBalance ? remainingAmt : effectiveTotal) + " →" : "Review & Sign →"}
+                </GBtn>
+              )}
+              {(!e.status || e.status === "pending") && !e.invoiced && !fullyPaid && (
                 declining ? (
                   <Glass className="p-4 !bg-black/40 space-y-3">
                     <div className="text-sm font-medium">Decline this quote?</div>
@@ -758,7 +790,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
           {/* STEP 2: Signature */}
           {step === "sign" && (
             <ESignatureStep
-              e={e} c={c} sigData={sigData} setSigData={setSigData}
+              e={e} c={c} companyName={companyName} sigData={sigData} setSigData={setSigData}
               canvasRef={canvasRef} startDraw={startDraw} draw={draw} stopDraw={stopDraw} clearSig={clearSig}
               onBack={() => setStep("view")} onNext={() => setStep("payment")}
             />
@@ -976,7 +1008,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                   but disabled={busy} guards against a double-tap leaving it
                   looking unresponsive on a slow connection, which wasn't
                   handled before. */}
-              {!hasRemainingBalance && !e?.invoiced && !isDepositMandatory && (
+              {!hasRemainingBalance && !alreadySigned && !isDepositMandatory && (
                 <>
                   <button onClick={() => { if (!payLaterBusy) { setPayLaterBusy(true); Promise.resolve(handleApprove(undefined, "later")).finally(() => setPayLaterBusy(false)); } }} disabled={payLaterBusy || !agreedToPaymentTerms} className="w-full py-3 rounded-xl border border-white/15 text-white/70 hover:text-white hover:bg-white/5 transition text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed">
                     {payLaterBusy ? "Signing…" : "Pay in Full After Service — just sign for now"}
@@ -984,7 +1016,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                   {!agreedToPaymentTerms && <div className="text-center text-[10px] text-yellow-400/80">Check the box above to accept</div>}
                 </>
               )}
-              <GBtn variant="ghost" onClick={() => setStep("sign")} className="w-full">← Back to signature</GBtn>
+              <GBtn variant="ghost" onClick={() => setStep(alreadySigned ? "view" : "sign")} className="w-full">{alreadySigned ? "← Back" : "← Back to signature"}</GBtn>
 
               {/* BUG FIX (round following "payment security in general, not
                   just packages") — this used to pass NO invoiceId at all,
@@ -1030,12 +1062,13 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
               </div>
               <div>
                 <div className="text-2xl font-bold text-green-400">You're all set, {c.firstName}!</div>
-                <div className="text-white/60 text-sm mt-2">Your quote has been approved and signed.</div>
+                <div className="text-white/60 text-sm mt-2">{alreadySigned ? "Your payment went through. Thank you!" : "Your quote has been approved and signed."}</div>
+                {confirmWarn && <div className="text-yellow-300 text-xs mt-2">{confirmWarn}</div>}
               </div>
               <Glass className="p-4 !bg-green-950/20 !border-green-700/30 text-left">
                 <div className="text-xs text-white/60 mb-1">What happens next?</div>
                 <div className="text-sm space-y-1.5">
-                  <div>✅ Payment of {fmt(totalWithTip)} processed</div>
+                  <div>{paidAmountNow > 0 ? <>✅ Payment of {fmt(paidAmountNow)} processed</> : <>✅ Signed — payment due after service</>}</div>
                   <div>📱 You'll receive a confirmation text shortly</div>
                   <div>📅 We'll contact you to confirm your service date</div>
                   <div>⭐ After service, we'll ask for a quick review</div>
