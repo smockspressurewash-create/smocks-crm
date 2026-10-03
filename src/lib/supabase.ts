@@ -258,7 +258,10 @@ if (typeof window !== "undefined" && _bridgeCapturedToken) {
 // or our withTimeout gives up on it, the session stays in localStorage and
 // the next page load restores it. Call this after every sign-out attempt so
 // signing out on this device always actually signs out.
-export function clearLocalAuthSession() {
+export async function clearLocalAuthSession() {
+  // Drop the in-memory session too (and fire SIGNED_OUT) — otherwise the
+  // client keeps it and its auto-refresh writes it straight back to storage.
+  try { await (supabase.auth as any)._removeSession?.(); } catch { /* fall through to the storage sweep */ }
   try {
     const keys: string[] = [];
     for (let i = 0; i < localStorage.length; i++) {

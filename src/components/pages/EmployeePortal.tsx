@@ -3260,7 +3260,7 @@ function OwnerTeamPortal({ jobs, employees, customers, onClose, googleMapsKey, t
             active on this browser. An employee sharing the device needs a way to reach
             their own login instead of being stuck looking at the owner's team preview. */}
         <button
-          onClick={async () => { try { await withTimeout(supabase.auth.signOut({ scope: "local" }), 6000, "Sign out"); } catch { /* local hash change below still gets them to login either way */ } clearLocalAuthSession(); window.location.hash = "/portal"; }}
+          onClick={async () => { try { await withTimeout(supabase.auth.signOut({ scope: "local" }), 6000, "Sign out"); } catch { /* local hash change below still gets them to login either way */ } await clearLocalAuthSession(); window.location.hash = "/portal"; }}
           className="text-[10px] text-white/40 hover:text-white/70 underline whitespace-nowrap"
         >
           Not you? Sign in
@@ -5362,7 +5362,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     } catch (e: any) {
       console.warn("[SignOut] server call timed out/failed — signing out locally anyway:", e?.message);
     } finally {
-      clearLocalAuthSession();
+      await clearLocalAuthSession();
       setEmpSession(null);
       window.location.hash = "/portal";
       setSigningOut(false);

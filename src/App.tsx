@@ -4373,7 +4373,7 @@ export function App() {
     } catch (e: any) {
       console.warn("[SignOut] server sign-out failed/timed out — clearing local session anyway:", e?.message);
     } finally {
-      clearLocalAuthSession();
+      await clearLocalAuthSession();
       setSettings((prev: any) => ({
         ...prev,
         googleConnected: false,
