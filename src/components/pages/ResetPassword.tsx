@@ -114,7 +114,10 @@ export function ResetPassword() {
               )}
 
               <div className="space-y-1">
-                <label className="text-xs text-white/50 font-medium">New Password</label>
+                <div className="flex items-center justify-between">
+                  <label className="text-xs text-white/50 font-medium">New Password</label>
+                  <button type="button" onClick={() => setShowPassword(s => !s)} className="text-xs font-medium text-white/60 hover:text-white underline-offset-2 hover:underline">{showPassword ? "Hide" : "Show"}</button>
+                </div>
                 <div className="relative">
                   <GInput
                     type={showPassword ? "text" : "password"}

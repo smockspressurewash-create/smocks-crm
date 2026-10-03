@@ -103,8 +103,8 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
       setDiscount(Number(initialDraft?.discount) || 0);
       setDiscounts([]);
       setDepositRequired(Number(initialDraft?.depositRequired) || 0);
-      setDepositType("amount");
-      setDepositMandatory(false);
+      setDepositType((initialDraft as any)?.depositType === "percent" ? "percent" : "amount");
+      setDepositMandatory(!!(initialDraft as any)?.depositMandatory);
       setIsRecurring(false);
       setRecurringMode("preset");
       setRecurringFreq("monthly");
@@ -135,6 +135,22 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
   const addDiscount = () => setDiscounts(prev => [...prev, { id: uid(), label: "", type: "amount", value: 0 }]);
   const updateDiscountRow = (id: string, patch: any) => setDiscounts(prev => prev.map(d => d.id === id ? { ...d, ...patch } : d));
   const removeDiscount = (id: string) => setDiscounts(prev => prev.filter(d => d.id !== id));
+
+  // BUG FIX — "the Add buttons for the AI recommended price don't always work."
+  // Add used to drop every line item without a description (so a row where
+  // you'd only typed a price vanished), and on a Package estimate it added to
+  // the hidden standard list, so nothing visibly happened. It now keeps any
+  // row with a description or a price, adds to the first package when
+  // building packages, and shows "Added ✓" so the tap is confirmed.
+  const [justAdded, setJustAdded] = useState("");
+  const addSuggestedItem = (description: string, unitPrice: number) => {
+    const row = { id: uid(), description, quantity: 1, unitPrice };
+    const keep = (li: any) => (li.description || "").trim() || Number(li.unitPrice) > 0;
+    if (estimateType === "package") setPackages((p: any[]) => p.map((x, i) => i === 0 ? { ...x, lineItems: [...x.lineItems.filter(keep), row] } : x));
+    else setItems((prev: any[]) => [...prev.filter(keep), row]);
+    setJustAdded(description);
+    setTimeout(() => setJustAdded(cur => cur === description ? "" : cur), 1500);
+  };
 
   const addSvc = (sid: string) => {
     const s = services.find((x: any) => x.id === sid);
@@ -325,7 +341,7 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
                   <div className="text-right flex-shrink-0">
                     <div className={"text-sm font-bold " + (diff >= 0 ? "text-green-400" : "text-yellow-400")}>{fmt(s.price)}</div>
                   </div>
-                  <button onClick={() => setItems(prev => [...prev.filter(i => i.description), { id: uid(), description: s.service, quantity: 1, unitPrice: s.price }])} className="px-2.5 py-1.5 rounded-lg bg-blue-950/60 border border-blue-700/40 text-blue-200 text-xs hover:bg-blue-900/60 transition flex-shrink-0">Add</button>
+                  <button type="button" onClick={() => addSuggestedItem(s.service, s.price)} className="px-2.5 py-1.5 rounded-lg bg-blue-950/60 border border-blue-700/40 text-blue-200 text-xs hover:bg-blue-900/60 transition flex-shrink-0 min-w-[64px] min-h-[36px]">{justAdded === s.service ? "Added ✓" : "Add"}</button>
                 </div>;
               })}
             </div>

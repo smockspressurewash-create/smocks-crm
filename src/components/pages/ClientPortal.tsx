@@ -611,6 +611,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                 <div>
                   <div className="text-xs text-white/50 uppercase tracking-wider">{fullyPaid ? "Paid in full" : hasRemainingBalance ? "Balance due" : e.invoiced ? "Amount due" : "Quote total"}</div>
                   {(Number(e.tax) > 0 || effectiveTax > 0) && <div className="text-[11px] text-white/40 mt-0.5">Includes {fmt(effectiveTax)} tax</div>}
+                  {!fullyPaid && !hasRemainingBalance && !e.invoiced && Number(e.depositRequired) > 0 && <div className="text-[11px] text-yellow-300/90 mt-0.5">Deposit due now {fmt(depositAmt)} · balance after service {fmt(Math.max(0, effectiveTotal - depositAmt))}</div>}
                 </div>
                 <div className="text-2xl font-black tabular-nums">{fmt(hasRemainingBalance ? remainingAmt : effectiveTotal)}</div>
               </div>

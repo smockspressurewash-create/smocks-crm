@@ -3922,7 +3922,16 @@ export function App() {
         // Subscribe first so we catch SIGNED_IN from detectSessionInUrl processing the hash.
         // The hash-sync effect is guarded to return early while access_token is in the hash,
         // so Supabase can read and process the token before the router overwrites it.
-        const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+        const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+          // BUG FIX — "signing in / out takes forever" / "That is taking too long".
+          // supabase-js runs these callbacks while still holding its internal
+          // auth lock, and this handler awaits Supabase queries
+          // (resolveUserRole) that need that same lock to read the session —
+          // so signIn/signOut waited on the handler, which waited on signIn:
+          // a deadlock that only ended when our 20s timeout fired. Supabase's
+          // documented fix: never await Supabase calls inside the callback —
+          // defer the work to the next tick so the lock is released first.
+          setTimeout(async () => {
           try {
             // The client portal (#/client) signs in with the same shared Supabase auth
             // client but manages its own session locally — it must never let this
@@ -4088,6 +4097,7 @@ export function App() {
             console.error("onAuthStateChange handler failed:", err);
             setOauthProcessing(false);
           }
+          }, 0);
         });
         sub = subscription;
 
@@ -5238,6 +5248,9 @@ export function App() {
               <button onClick={() => setPage("portal")} className="flex-1 py-2 rounded-lg text-xs font-medium text-white/40 hover:text-white/70 transition">
                 Employee Portal
               </button>
+              <button onClick={() => { window.location.hash = "/client"; }} className="flex-1 py-2 rounded-lg text-xs font-medium text-white/40 hover:text-white/70 transition">
+                Customer
+              </button>
             </div>
           )}
 
@@ -5328,7 +5341,10 @@ export function App() {
                   />
                 </div>
                 <div>
-                  <label className="text-xs text-white/50 mb-1 block">Password</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs text-white/50 block">Password</label>
+                    <button type="button" onClick={() => setShowOwnerPassword(s => !s)} className="text-xs font-medium text-white/60 hover:text-white underline-offset-2 hover:underline">{showOwnerPassword ? "Hide" : "Show"}</button>
+                  </div>
                   <div className="relative">
                     <input
                       type={showOwnerPassword ? "text" : "password"} value={ownerPassword} onChange={e => setOwnerPassword(e.target.value)}

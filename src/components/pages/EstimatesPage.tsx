@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, describeRecurringSchedule, buildChecklistFromServices, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, escapeHtml } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, describeRecurringSchedule, buildChecklistFromServices, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, escapeHtml, computeDepositAmount } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, emailShell, emailButton, logOutboundSmsToInbox } from "../../lib/messaging";
 import { supabase } from "../../lib/supabase";
@@ -98,7 +98,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
   // always creates a NEW estimate row, the declined one is left untouched.
   const [resendDraft, setResendDraft] = useState<{ customerId?: string; lineItems?: any[]; notes?: string; discount?: number; depositRequired?: number } | null>(null);
   const openResend = (e: any) => {
-    setResendDraft({ customerId: e.customerId, lineItems: e.lineItems, notes: e.notes, discount: e.discount, depositRequired: e.depositRequired });
+    setResendDraft({ customerId: e.customerId, lineItems: e.lineItems, notes: e.notes, discount: e.discount, depositRequired: e.depositRequired, depositType: (e as any).depositType, depositMandatory: (e as any).depositMandatory } as any);
     setBuilderOpen(true);
     if ((e as any).declineReasonCategory === "price") toast?.("Declined for price — this starts from their old quote so you can lower it before sending.", "yellow");
   };
@@ -536,7 +536,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
               <div className="text-xs text-white/50 mt-1 space-y-0.5">
                 <div>{e.lineItems.length} items · {e.createdAt}</div>
                 {e.discount > 0 && <div className="text-green-400">Discount: {fmt(e.discount)}</div>}
-                {e.depositRequired > 0 && <div className="text-yellow-400">Deposit: {fmt(e.depositRequired)}</div>}
+                {e.depositRequired > 0 && <div className="text-yellow-400">Deposit: {fmt(computeDepositAmount(e as any, Number(e.total) || 0))}{(e as any).depositType === "percent" ? ` (${e.depositRequired}%)` : ""} · balance {fmt(Math.max(0, (Number(e.total) || 0) - computeDepositAmount(e as any, Number(e.total) || 0)))}</div>}
                 {e.status === "rejected" && ((e as any).declineReasonCategory || (e as any).declineReason) && (
                   <div className="mt-1.5 p-2 rounded-lg bg-red-950/20 border border-red-900/30 text-red-300/90">
                     <div className="font-medium">{DECLINE_REASON_LABELS[(e as any).declineReasonCategory] || "Declined"}</div>

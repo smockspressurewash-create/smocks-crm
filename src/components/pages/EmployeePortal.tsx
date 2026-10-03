@@ -6197,6 +6197,9 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               <button className="flex-1 py-2 rounded-lg text-xs font-medium bg-red-600/30 border border-red-500/40 text-white transition">
                 Employee Portal
               </button>
+              <button onClick={() => { window.location.hash = "/client"; }} className="flex-1 py-2 rounded-lg text-xs font-medium text-white/40 hover:text-white/70 transition">
+                Customer
+              </button>
             </div>
           )}
 
@@ -6229,7 +6232,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
                 placeholder="you@example.com" onKeyDown={e => e.key === "Enter" && (loginMode === "login" ? doLogin() : doRegister())} />
             </div>
             <div>
-              <label className="text-xs text-white/50 mb-1 block">Password</label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs text-white/50 block">Password</label>
+                <button type="button" onClick={() => setShowLoginPwd(s => !s)} className="text-xs font-medium text-white/60 hover:text-white underline-offset-2 hover:underline">{showLoginPwd ? "Hide" : "Show"}</button>
+              </div>
               <div className="relative">
                 <GInput type={showLoginPwd ? "text" : "password"} value={loginPwd} onChange={e => setLoginPwd(e.target.value)}
                   placeholder="••••••••" className="!pr-11" onKeyDown={e => e.key === "Enter" && (loginMode === "login" ? doLogin() : doRegister())} />

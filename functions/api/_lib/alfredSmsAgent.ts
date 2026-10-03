@@ -291,6 +291,20 @@ const sbGet = async (ctx: Ctx, path: string): Promise<any[]> => {
 // Try WITH owner_id first (the correct, tenant-scoped shape once the
 // migration is live); on any non-2xx, retry once without it so this agent
 // still works on a pre-migration single-tenant deployment.
+// Deposit fields for an estimate row from depositPercent / depositAmount.
+// Same shape the CRM's estimate builder saves (depositType "percent" | "amount").
+const smsDepositFields = (input: any, total: number, allowRemove = false): { depositRequired: number; depositType: string; depositMandatory: boolean } | { error: string } => {
+  const pct = Number(input.depositPercent) || 0, amt = Number(input.depositAmount) || 0;
+  if (pct && amt) return { error: "Use depositPercent OR depositAmount, not both." };
+  if (pct < 0 || pct > 100) return { error: "depositPercent must be between 0 and 100." };
+  if (amt < 0 || (total > 0 && amt > total)) return { error: "depositAmount can't be more than the total." };
+  if (!pct && !amt && !allowRemove) return { depositRequired: 0, depositType: "amount", depositMandatory: false };
+  return pct ? { depositRequired: pct, depositType: "percent", depositMandatory: !!input.depositMandatory }
+             : { depositRequired: amt, depositType: "amount", depositMandatory: amt > 0 && !!input.depositMandatory };
+};
+const depositDollars = (d: { depositRequired: number; depositType: string }, total: number) =>
+  d.depositType === "percent" ? Math.round(total * d.depositRequired) / 100 : Number(d.depositRequired) || 0;
+
 const sbWrite = async (ctx: Ctx, path: string, method: "POST" | "PATCH", body: Record<string, unknown>): Promise<{ ok: boolean; data: any; error?: string }> => {
   const withOwner = ctx.ownerId ? { ...body, owner_id: ctx.ownerId } : body;
   const attempt = async (payload: Record<string, unknown>) => {
@@ -895,7 +909,7 @@ const TOOLS = [
   },
   {
     name: "create_estimate",
-    description: "Create a new quote/estimate for a customer with one line item description and a total amount. Does NOT text it to the customer — call send_estimate after (or in the same reply) to actually deliver it. For 'send an invoice for $X' set invoiced true.",
+    description: "Create a new quote/estimate for a customer with one line item description and a total amount, optionally requiring a deposit (depositPercent or depositAmount). Does NOT text it to the customer — call send_estimate after (or in the same reply) to actually deliver it. For 'send an invoice for $X' set invoiced true (invoices can't have a deposit). To redo an earlier quote with a deposit, create a new one with the same customer/description/amount plus the deposit, or use set_estimate_deposit on the existing one.",
     input_schema: {
       type: "object",
       properties: {
@@ -903,8 +917,25 @@ const TOOLS = [
         description: { type: "string", description: "What the line item is for, e.g. 'House wash + driveway'" },
         amount: { type: "number" },
         invoiced: { type: "boolean", description: "true = this is an invoice (payment due now), false/omitted = a quote awaiting approval" },
+        depositPercent: { type: "number", description: "Require a deposit of this % of the total (e.g. 50 for 50%). Use this OR depositAmount, not both." },
+        depositAmount: { type: "number", description: "Require a flat dollar deposit (e.g. 100 for $100). Use this OR depositPercent." },
+        depositMandatory: { type: "boolean", description: "true = customer must pay the deposit up front (can't choose pay-in-full or pay-later). Default false." },
       },
       required: ["customerName", "amount"],
+    },
+  },
+  {
+    name: "set_estimate_deposit",
+    description: "Add, change, or remove the deposit on an existing (not yet paid, not invoiced) quote. Identify it by estimateId, or by customerName for that customer's most recent quote. Set depositPercent or depositAmount; 0 removes the deposit. Does not text the customer — call send_estimate after if they should get the updated link.",
+    input_schema: {
+      type: "object",
+      properties: {
+        estimateId: { type: "string" },
+        customerName: { type: "string" },
+        depositPercent: { type: "number", description: "Require a deposit of this % of the total (e.g. 50 for 50%). Use this OR depositAmount, not both." },
+        depositAmount: { type: "number", description: "Require a flat dollar deposit (e.g. 100 for $100). Use this OR depositPercent." },
+        depositMandatory: { type: "boolean", description: "true = customer must pay the deposit up front (can't choose pay-in-full or pay-later). Default false." },
+      },
     },
   },
   {
@@ -1234,7 +1265,7 @@ const SMS_TOOL_CAPABILITY: Record<string, string> = {
   schedule_job: "schedule_jobs",
   reschedule_job: "modify_jobs", cancel_job: "modify_jobs", update_job_priority: "modify_jobs", add_checklist_item: "modify_jobs", attach_file_to_job: "modify_jobs",
   assign_employee: "manage_crew", request_employee: "manage_crew", respond_to_job_request: "manage_crew", approve_customer_request: "manage_crew", decline_customer_request: "manage_crew",
-  create_estimate: "create_quotes", create_invoice: "create_quotes", mark_invoice_paid: "create_quotes",
+  create_estimate: "create_quotes", create_invoice: "create_quotes", mark_invoice_paid: "create_quotes", set_estimate_deposit: "create_quotes",
   send_estimate: "send_quotes", send_invoice: "send_quotes",
   notify_all_customers: "mass_messaging",
   text_customer: "message_customers", text_phone_number: "message_customers",
@@ -2110,16 +2141,41 @@ const executeToolCore = async (ctx: Ctx, name: string, input: Record<string, any
         const amount = Number(input.amount) || 0;
         if (amount <= 0) return { error: "amount must be greater than 0" };
         const invoiced = !!input.invoiced;
+        const dep = invoiced ? null : smsDepositFields(input, amount);
+        if (dep && "error" in dep) return { error: dep.error };
         const row = {
           id: crypto.randomUUID(), customerId: cust.id,
           lineItems: [{ id: crypto.randomUUID(), description: input.description || "Service", quantity: 1, unitPrice: amount }],
           subtotal: amount, discount: 0, depositRequired: 0, tax: 0, total: amount,
-          status: "approved", createdAt: today(), validUntil: today(),
+          ...(dep || {}),
+          // BUG FIX — quotes were created already "approved", so the customer's
+          // Review & Sign was rejected server-side ("already approved").
+          status: invoiced ? "approved" : "pending", createdAt: today(), validUntil: today(),
           terms: "Payment due upon receipt.", notes: "", invoiced, ...(invoiced ? { invoicedAt: today() } : {}),
         };
         const res = await sbWrite(ctx, "estimates", "POST", row);
         if (!res.ok) return { error: res.error };
-        return { success: true, estimateId: row.id, customer: `${cust.firstName} ${cust.lastName}`.trim(), total: amount, invoiced };
+        return { success: true, estimateId: row.id, customer: `${cust.firstName} ${cust.lastName}`.trim(), total: amount, invoiced, ...(dep && Number((dep as any).depositRequired) > 0 ? { depositDueNow: depositDollars(dep as any, amount), balanceAfterService: Math.max(0, amount - depositDollars(dep as any, amount)) } : {}) };
+      }
+      case "set_estimate_deposit": {
+        let est: any = null;
+        if (input.estimateId) est = (await sbGet(ctx, `estimates?id=eq.${encodeURIComponent(input.estimateId)}&select=id,customerId,total,invoiced,paidAt,paidDeposit,status${ownerScope(ctx)}`))[0];
+        else if (input.customerName) {
+          const cust = await findCustomerByName(ctx, input.customerName);
+          if (!cust) return { error: `No customer found matching "${input.customerName}".` };
+          const rows = await sbGet(ctx, `estimates?customerId=eq.${encodeURIComponent(cust.id)}&invoiced=is.false&select=id,customerId,total,invoiced,paidAt,paidDeposit,status,createdAt${ownerScope(ctx)}`);
+          est = rows.sort((a: any, b: any) => (b.createdAt || "").localeCompare(a.createdAt || ""))[0];
+        } else return { error: "Need either estimateId or customerName." };
+        if (!est) return { error: "Couldn't find that quote." };
+        if (est.invoiced) return { error: "That one is already an invoice — deposits only apply to quotes." };
+        if (est.paidAt || Number(est.paidDeposit) > 0) return { error: "The customer has already paid on that quote, so the deposit can't be changed." };
+        const total = Number(est.total) || 0;
+        const dep = smsDepositFields(input, total, true);
+        if ("error" in dep) return { error: dep.error };
+        const res = await sbWrite(ctx, `estimates?id=eq.${encodeURIComponent(est.id)}`, "PATCH", dep);
+        if (!res.ok) return { error: res.error };
+        if (!Array.isArray(res.data) || res.data.length === 0) return { error: "The update didn't save (no matching quote for this account)." };
+        return { success: true, estimateId: est.id, total, depositDueNow: depositDollars(dep, total), balanceAfterService: Math.max(0, total - depositDollars(dep, total)) };
       }
       case "send_estimate": {
         let est: any = null;
@@ -2796,7 +2852,7 @@ NEVER REFUSE TO SEND A MESSAGE: if text_customer comes back "No customer found m
 
 MASS MESSAGING — real power, use it carefully: notify_all_customers texts EVERY eligible customer at once (optionally narrowed by tag) — this is a real, immediate send to real people, not a draft. Use it for broadcast requests like "let everyone know I'm running late today", "tell my customers about the weather closure", or "send a promo to my whole list". Always confirm you have the FULL exact wording before calling it if the owner was vague ("send something to everyone" — ask what it should say, don't invent business content on their behalf). create_promotion sets up a tracked discount code but does NOT send anything by itself — for "create a promo and send it out", call create_promotion first, then notify_all_customers with a message that includes the returned code, in the same reply.
 
-You can: text the owner back on request (text_me), remember arbitrary facts/notes for later (remember/recall — use this whenever they say "remember", "keep track of", or "note that"), save persistent "from now on" instructions that apply to every future conversation (set_standing_preference — see above), schedule future text reminders/follow-ups (set_reminder; list_reminders/cancel_reminder manage existing ones), summarize the schedule (get_calendar_summary), add a non-job event to the owner's real Google Calendar (create_calendar_event — use schedule_job instead for an actual pressure-washing job tied to a customer), review/approve or deny employee job requests (list_job_requests, respond_to_job_request), resolve customer requests awaiting approval (list_pending_customer_requests, approve_customer_request, decline_customer_request — see above), message many customers at once or run a promotion (notify_all_customers, create_promotion — see above), and turn on automatically texting a review-request link a couple days after a job's marked complete (enable_review_request_automation — a real deterministic automation, not something you have to remember to do yourself each time). Core CRM actions: create/reschedule/cancel jobs, reprioritize a job, look up full job or customer detail (get_job_details, get_customer_details), add a checklist item, assign employees, create customers, check who's clocked in and what they're working on, and create/send quotes and invoices (create_estimate then send_estimate — two steps, creating one does NOT notify the customer). Use whichever tool actually matches what's being asked, and don't hesitate to chain several tool calls in one exchange if the request needs it (e.g. reschedule a job AND text the customer AND remember a preference). You can also receive and understand voice memos sent as a text — they're transcribed automatically before you ever see them, so just respond to the transcribed content normally.
+You can: text the owner back on request (text_me), remember arbitrary facts/notes for later (remember/recall — use this whenever they say "remember", "keep track of", or "note that"), save persistent "from now on" instructions that apply to every future conversation (set_standing_preference — see above), schedule future text reminders/follow-ups (set_reminder; list_reminders/cancel_reminder manage existing ones), summarize the schedule (get_calendar_summary), add a non-job event to the owner's real Google Calendar (create_calendar_event — use schedule_job instead for an actual pressure-washing job tied to a customer), review/approve or deny employee job requests (list_job_requests, respond_to_job_request), resolve customer requests awaiting approval (list_pending_customer_requests, approve_customer_request, decline_customer_request — see above), message many customers at once or run a promotion (notify_all_customers, create_promotion — see above), and turn on automatically texting a review-request link a couple days after a job's marked complete (enable_review_request_automation — a real deterministic automation, not something you have to remember to do yourself each time). Core CRM actions: create/reschedule/cancel jobs, reprioritize a job, look up full job or customer detail (get_job_details, get_customer_details), add a checklist item, assign employees, create customers, check who's clocked in and what they're working on, and create/send quotes and invoices (create_estimate then send_estimate — two steps, creating one does NOT notify the customer). Quotes can require a deposit — pass depositPercent or depositAmount to create_estimate, or change one on an existing quote with set_estimate_deposit; never say deposits aren't supported. Use whichever tool actually matches what's being asked, and don't hesitate to chain several tool calls in one exchange if the request needs it (e.g. reschedule a job AND text the customer AND remember a preference). You can also receive and understand voice memos sent as a text — they're transcribed automatically before you ever see them, so just respond to the transcribed content normally.
 
 BE CONCISE — this is a text message, and every extra sentence costs real API tokens. One short line per part of the request is enough (e.g. three parts to a request → three short checkmark lines, one per part, using the REAL names/numbers from what you actually did — never a placeholder or example name) — no throat-clearing, no restating the question, no closing pleasantries.
 

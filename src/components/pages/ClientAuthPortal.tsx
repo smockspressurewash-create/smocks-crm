@@ -436,6 +436,9 @@ export function ClientAuthPortal({
                 {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
               </button>
             </div>
+            <div className="flex justify-end -mt-1">
+              <button type="button" onClick={() => setShowPassword(v => !v)} className="text-xs font-medium text-white/60 hover:text-white">{showPassword ? "Hide password" : "Show password"}</button>
+            </div>
             {authError && <div className="text-xs text-red-400">{authError}</div>}
             <GBtn onClick={handleAuth} disabled={authBusy} className="w-full !py-3">{authBusy ? "Please wait…" : mode === "login" ? "Log In" : "Create Account"}</GBtn>
             {mode === "login" && (
@@ -448,6 +451,7 @@ export function ClientAuthPortal({
               )
             )}
           </Glass>
+          <button type="button" onClick={() => { window.location.hash = "/login"; }} className="mt-4 w-full text-center text-xs text-white/40 hover:text-white/70 transition">Business owner or crew member? Sign in here →</button>
         </div>
       </div>
     );
