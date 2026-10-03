@@ -1,3 +1,4 @@
+import { computeAmountDue, paidPatch } from "./_lib/amountDue";
 // FEATURE — Square as an alternative payment provider to Stripe (owner
 // request: "Is there a way we can give another option for users to connect
 // payments? Something similar to Stripe... free on our end... accepts many
@@ -195,7 +196,13 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         return json({ error: "Square isn't configured for this business yet — add keys in Settings → Integrations → Square." }, 500);
       }
       const tip = Math.max(0, Math.round(Number(tipCents) || 0));
-      const amountCents = (invoiceId ? await getInvoiceAmountCents(invoiceId, serviceRoleKey) : Math.round(Number(body.amountCents) || 0)) + tip;
+      // Server-side amount for the option the customer picked — see _lib/amountDue.ts.
+      let due: Awaited<ReturnType<typeof computeAmountDue>> | null = null;
+      if (invoiceId) {
+        try { due = await computeAmountDue({ invoiceId, serviceRoleKey, payType: body.payType, promoId: body.promoId, referrerId: body.referrerId }); }
+        catch (e: any) { return json({ error: e?.message || "Could not verify the amount due" }, 400); }
+      }
+      const amountCents = (due ? due.baseCents : Math.round(Number(body.amountCents) || 0)) + tip;
       if (amountCents <= 0) return json({ error: "Invalid amount" }, 400);
 
       const sqRes = await fetch(`${squareApiBase()}/v2/payments`, {
@@ -217,10 +224,10 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           // (field-portal tips/fees, no invoiceId) have no stable id to key
           // on, so they keep a random key — narrower risk (typically small
           // amounts, no auto-retry in the client today).
-          idempotency_key: invoiceId ? `pay-${invoiceId}` : crypto.randomUUID(),
+          idempotency_key: due ? `${invoiceId}-${due.payType[0]}${amountCents}`.slice(0, 45) : crypto.randomUUID(),
           amount_money: { amount: amountCents, currency: "USD" },
           location_id: acct.locationId,
-          note: body.description || "",
+          note: ((body.description || "").slice(0, 440) + (due ? ` [${due.payType}:${due.baseCents}]` : "")).trim(),
           ...(invoiceId ? { reference_id: invoiceId } : {}),
         }),
       });
@@ -432,13 +439,15 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       // paymentId, then call this with THAT id and a different invoiceId
       // under the same owner to mark it paid without paying for it. Same
       // exploit and same fix as stripe-action.ts's confirm_invoice_payment.
-      const expectedAmountCents = await getInvoiceAmountCents(invoiceId, serviceRoleKey).catch(() => 0);
+      const noteTag = String(payData?.payment?.note || "").match(/\[(full|deposit|remaining):(\d+)\]$/);
+      const paidPayType = noteTag ? noteTag[1] : "full";
+      const expectedAmountCents = noteTag ? Number(noteTag[2]) : await getInvoiceAmountCents(invoiceId, serviceRoleKey).catch(() => 0);
       const paidAmountCents = Number(payData?.payment?.amount_money?.amount) || 0;
       if (payData?.payment?.reference_id !== invoiceId || !expectedAmountCents || paidAmountCents < expectedAmountCents) {
         return json({ error: "This payment doesn't match the invoice being confirmed — nothing was marked paid." }, 400);
       }
       const authHeaders = { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` };
-      const getRes = await fetch(`${SUPABASE_URL}/rest/v1/estimates?id=eq.${encodeURIComponent(invoiceId)}&select=paymentLog`, { headers: authHeaders });
+      const getRes = await fetch(`${SUPABASE_URL}/rest/v1/estimates?id=eq.${encodeURIComponent(invoiceId)}&select=paymentLog,paidDeposit`, { headers: authHeaders });
       const rows = await getRes.json().catch(() => []);
       const existingLog = Array.isArray(rows) && Array.isArray(rows[0]?.paymentLog) ? rows[0].paymentLog : [];
       const alreadyLogged = existingLog.some((e: any) => e?.type === "paid" && e?.squarePaymentId === paymentId);
@@ -446,7 +455,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/estimates?id=eq.${encodeURIComponent(invoiceId)}&select=id`, {
         method: "PATCH",
         headers: { ...authHeaders, "Content-Type": "application/json", Prefer: "return=representation" },
-        body: JSON.stringify({ paidAt: new Date().toISOString().slice(0, 10), squarePaymentId: paymentId, stripePaymentStatus: "paid", paymentLog: newLog }),
+        body: JSON.stringify({ ...paidPatch(rows[0], paidPayType, Math.min(paidAmountCents, expectedAmountCents) / 100), squarePaymentId: paymentId, stripePaymentStatus: "paid", paymentLog: newLog }),
       });
       const updated = await patchRes.json().catch(() => []);
       if (!patchRes.ok || !Array.isArray(updated) || updated.length === 0) {

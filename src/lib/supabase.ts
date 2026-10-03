@@ -251,3 +251,29 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
 if (typeof window !== "undefined" && _bridgeCapturedToken) {
   persistGoogleTokenToCloud(_bridgeCapturedToken, _bridgeCapturedExpiresAt, _bridgeCapturedEmail || undefined, _bridgeCapturedRefreshToken || undefined).catch(() => {});
 }
+
+// BUG FIX — "I signed out of the employee portal, clicked an invoice link,
+// and it logged me straight back in." supabase.auth.signOut() only deletes
+// the stored session AFTER its network call succeeds; when that call fails
+// or our withTimeout gives up on it, the session stays in localStorage and
+// the next page load restores it. Call this after every sign-out attempt so
+// signing out on this device always actually signs out.
+export function clearLocalAuthSession() {
+  try {
+    const keys: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && /^sb-.*-auth-token(-code-verifier)?$/.test(k)) keys.push(k);
+    }
+    keys.forEach(k => localStorage.removeItem(k));
+  } catch { /* storage blocked — nothing stored to clear */ }
+}
+
+// Public pages a customer opens from a link (quote/invoice, client portal,
+// reviews, referral, lead/job forms, legal). Whoever else is signed in on
+// this device (an employee, the owner) must never be redirected off these.
+export function isPublicCustomerHash(hash: string = typeof window !== "undefined" ? window.location.hash : ""): boolean {
+  const h = hash.replace(/^#\/?/, "").split("?")[0];
+  return h === "client" || h.startsWith("client/") || h.startsWith("estimate/") || h === "referral" || h.startsWith("r/")
+    || h === "rate" || h === "lead-form" || h === "trash-cans" || h === "apply" || h === "terms" || h === "privacy";
+}

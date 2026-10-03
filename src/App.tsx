@@ -15,7 +15,7 @@ import { usePollGate } from "./hooks/usePollGate";
 import { useAutomationEngine } from "./hooks/useAutomationEngine";
 import { useScheduledCampaigns } from "./hooks/useScheduledCampaigns";
 import { useIsMobile } from "./hooks/useIsMobile";
-import { supabase } from "./lib/supabase";
+import { supabase, clearLocalAuthSession, isPublicCustomerHash } from "./lib/supabase";
 import { getPlanLimits, hasPlanFeature, FEATURE_MIN_TIER_LABEL, PLAN_TIER_LABEL, type PlatformSubscription } from "./lib/planLimits";
 import { GBtn } from "./components/ui/GBtn";
 import { SafePage } from "./components/ui/ErrorBoundary";
@@ -3928,7 +3928,10 @@ export function App() {
             // client but manages its own session locally — it must never let this
             // top-level listener reclassify a customer as an owner/employee and bounce
             // them into the CRM or employee portal.
-            if (window.location.hash.replace(/^#\/?/, "").startsWith("client")) return;
+            // Same for every other public customer page (quote/invoice links,
+            // reviews, forms): an employee or owner session on this device must
+            // not redirect a customer link into the portal or CRM.
+            if (isPublicCustomerHash()) return;
 
             if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED" || event === "INITIAL_SESSION") {
               console.log("[GoogleConnect] onAuthStateChange —", event, "· has provider_token on session:", !!(session as any)?.provider_token);
@@ -4090,7 +4093,7 @@ export function App() {
 
         // Resolve current session and determine owner vs employee — skipped entirely
         // on the client portal route for the same reason as the listener guard above.
-        if (window.location.hash.replace(/^#\/?/, "").startsWith("client")) {
+        if (isPublicCustomerHash()) {
           setSessionChecked(true);
           bootstrapDone = true;
           clearTimeout(forceRenderTimer);
@@ -4370,6 +4373,7 @@ export function App() {
     } catch (e: any) {
       console.warn("[SignOut] server sign-out failed/timed out — clearing local session anyway:", e?.message);
     } finally {
+      clearLocalAuthSession();
       setSettings((prev: any) => ({
         ...prev,
         googleConnected: false,

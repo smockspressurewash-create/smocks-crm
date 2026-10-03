@@ -131,12 +131,23 @@ const logPaymentEvent = async (
   return true;
 };
 
-const markInvoicePaid = (invoiceId: string, paymentIntentId: string, serviceRoleKey: string, amount?: number): Promise<boolean> => {
+const markInvoicePaid = async (invoiceId: string, paymentIntentId: string, serviceRoleKey: string, amount?: number, payType?: string, tipCents?: number): Promise<boolean> => {
   const paidAt = new Date().toISOString().slice(0, 10);
+  // Deposit vs balance: create_payment_intent stamps metadata.payType. A
+  // balance payment must also set paidFull, or the invoice keeps showing
+  // the remainder as still due.
+  let amounts: Record<string, any> = {};
+  if (payType && amount != null) {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/estimates?id=eq.${encodeURIComponent(invoiceId)}&select=paidDeposit`, { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } });
+    const rows = await r.json().catch(() => []);
+    const paidDeposit = Number(Array.isArray(rows) ? rows[0]?.paidDeposit : 0) || 0;
+    const net = amount - (Number(tipCents) || 0) / 100;
+    amounts = payType === "deposit" ? { paidDeposit: net } : payType === "remaining" ? { paidFull: paidDeposit + net } : { paidFull: net };
+  }
   return logPaymentEvent(
     invoiceId,
     { type: "paid", amount, stripePaymentIntentId: paymentIntentId, note: "Paid via Stripe" },
-    { paidAt, stripePaymentStatus: "paid", stripePaymentIntentId: paymentIntentId },
+    { paidAt, ...amounts, stripePaymentStatus: "paid", stripePaymentIntentId: paymentIntentId },
     serviceRoleKey
   );
 };
@@ -285,12 +296,12 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       const invoiceId = session.metadata?.invoiceId || session.client_reference_id;
       const paymentIntentId = session.payment_intent || session.id;
       if (invoiceId && session.payment_status === "paid") {
-        ok = await markInvoicePaid(invoiceId, paymentIntentId || "", serviceRoleKey, (session.amount_total || 0) / 100);
+        ok = await markInvoicePaid(invoiceId, paymentIntentId || "", serviceRoleKey, (session.amount_total || 0) / 100, session.metadata?.payType, 0);
       }
     } else if (event.type === "payment_intent.succeeded") {
       const intent = event.data?.object || {};
       const invoiceId = intent.metadata?.invoiceId;
-      if (invoiceId) ok = await markInvoicePaid(invoiceId, intent.id, serviceRoleKey, (intent.amount || 0) / 100);
+      if (invoiceId) ok = await markInvoicePaid(invoiceId, intent.id, serviceRoleKey, (intent.amount || 0) / 100, intent.metadata?.payType, Number(intent.metadata?.tipCents) || 0);
     } else if (event.type === "payment_intent.payment_failed") {
       // AUDIT (round 12) — previously unhandled entirely: a declined card
       // meant Stripe knew, but this app never did — no log, no owner

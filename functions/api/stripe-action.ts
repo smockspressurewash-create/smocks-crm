@@ -29,6 +29,7 @@
 // amount is ignored whenever an invoiceId is present.
 
 import { getOwnerSecrets } from "./_lib/ownerSecrets";
+import { computeAmountDue, paidPatch } from "./_lib/amountDue";
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_8aEa3wsYJ7ghVPcGbtHymw_ugj0aEfm";
@@ -665,7 +666,11 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         // base itself is still never client-controlled when invoiceId is
         // given.
         const tipCents = Math.max(0, Math.round(Number(body.tipCents) || 0));
-        const amountCents = (body.invoiceId ? await getInvoiceAmountCents(body.invoiceId, serviceRoleKey) : Math.round(Number(body.amountCents) || 0)) + tipCents;
+        // Amount due is recomputed server-side for the option the customer
+        // picked (deposit / balance / full, minus a verified promo) — see
+        // _lib/amountDue.ts. The browser's claimed amount is never used.
+        const due = body.invoiceId ? await computeAmountDue({ invoiceId: body.invoiceId, serviceRoleKey, payType: body.payType, promoId: body.promoId, referrerId: body.referrerId }) : null;
+        const amountCents = (due ? due.baseCents : Math.round(Number(body.amountCents) || 0)) + tipCents;
         if (amountCents <= 0) throw new Error("Invalid amount");
         const params: Record<string, string> = {
           amount: String(amountCents),
@@ -674,6 +679,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           "automatic_payment_methods[enabled]": "true",
         };
         if (body.invoiceId) params["metadata[invoiceId]"] = body.invoiceId;
+        if (due) { params["metadata[payType]"] = due.payType; params["metadata[baseCents]"] = String(due.baseCents); params["metadata[tipCents]"] = String(Math.max(0, amountCents - due.baseCents)); }
         // FEATURE — "save this card" checkbox during a real invoice payment
         // (StripePaymentModal). Stripe requires `customer` +
         // setup_future_usage to be set at PaymentIntent CREATION time, not
@@ -742,13 +748,16 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         // metadata to match the invoice being marked paid, and cross-check
         // the amount actually matches too (belt and suspenders — catches a
         // legacy intent created before metadata was added).
-        const expectedAmountCents = await getInvoiceAmountCents(body.invoiceId, serviceRoleKey).catch(() => 0);
+        // The intent itself (created server-side above) records what was due
+        // for the option the customer chose; older intents fall back to the
+        // invoice total.
+        const expectedAmountCents = Number(intent?.metadata?.baseCents) || await getInvoiceAmountCents(body.invoiceId, serviceRoleKey).catch(() => 0);
         const intentInvoiceId = intent?.metadata?.invoiceId;
         if (intentInvoiceId !== body.invoiceId || !expectedAmountCents || Number(intent.amount) < expectedAmountCents) {
           return new Response(JSON.stringify({ error: "This payment doesn't match the invoice being confirmed — nothing was marked paid." }), { status: 400, headers: { "Content-Type": "application/json" } });
         }
         const authHeaders = { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` };
-        const getRes = await fetch(`${SUPABASE_URL}/rest/v1/estimates?id=eq.${encodeURIComponent(body.invoiceId)}&select=paymentLog`, { headers: authHeaders });
+        const getRes = await fetch(`${SUPABASE_URL}/rest/v1/estimates?id=eq.${encodeURIComponent(body.invoiceId)}&select=paymentLog,paidDeposit`, { headers: authHeaders });
         const rows = await getRes.json().catch(() => []);
         const existingLog = Array.isArray(rows) && Array.isArray(rows[0]?.paymentLog) ? rows[0].paymentLog : [];
         const alreadyLogged = existingLog.some((e: any) => e?.type === "paid" && e?.stripePaymentIntentId === body.paymentIntentId);
@@ -756,7 +765,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/estimates?id=eq.${encodeURIComponent(body.invoiceId)}&select=id`, {
           method: "PATCH",
           headers: { ...authHeaders, "Content-Type": "application/json", Prefer: "return=representation" },
-          body: JSON.stringify({ paidAt: new Date().toISOString().slice(0, 10), stripePaymentIntentId: body.paymentIntentId, stripePaymentStatus: "paid", paymentLog: newLog }),
+          body: JSON.stringify({ ...paidPatch(rows[0], intent?.metadata?.payType || "full", ((Number(intent.amount) || 0) - (Number(intent?.metadata?.tipCents) || 0)) / 100), stripePaymentIntentId: body.paymentIntentId, stripePaymentStatus: "paid", paymentLog: newLog }),
         });
         const updated = await patchRes.json().catch(() => []);
         if (!patchRes.ok || !Array.isArray(updated) || updated.length === 0) {
@@ -784,7 +793,8 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
             return new Response(JSON.stringify({ error: "Not authenticated — sign in and try again." }), { status: 401, headers: { "Content-Type": "application/json" } });
           }
         }
-        const amountCents = body.invoiceId ? await getInvoiceAmountCents(body.invoiceId, serviceRoleKey) : Math.round(Number(body.amountCents) || 0);
+        const due = body.invoiceId ? await computeAmountDue({ invoiceId: body.invoiceId, serviceRoleKey, payType: body.payType }) : null;
+        const amountCents = due ? due.baseCents : Math.round(Number(body.amountCents) || 0);
         if (amountCents <= 0) throw new Error("Invalid amount");
         const params: Record<string, string> = {
           mode: "payment",
@@ -797,6 +807,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         };
         if (body.customerEmail) params.customer_email = body.customerEmail;
         if (body.invoiceId) { params.client_reference_id = body.invoiceId; params["metadata[invoiceId]"] = body.invoiceId; }
+        if (due) { params["metadata[payType]"] = due.payType; params["metadata[baseCents]"] = String(due.baseCents); }
         const session = await stripeFetch(secretKey, "POST", "checkout/sessions", params, stripeAccount);
         return json({ id: session.id, url: session.url, payment_status: session.payment_status, payment_intent: session.payment_intent });
       }
@@ -907,7 +918,8 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
             return new Response(JSON.stringify({ error: "Not authenticated — sign in and try again." }), { status: 401, headers: { "Content-Type": "application/json" } });
           }
         }
-        const amountCents = body.invoiceId ? await getInvoiceAmountCents(body.invoiceId, serviceRoleKey) : Math.round(Number(body.amountCents) || 0);
+        const due = body.invoiceId ? await computeAmountDue({ invoiceId: body.invoiceId, serviceRoleKey, payType: body.payType }) : null;
+        const amountCents = due ? due.baseCents : Math.round(Number(body.amountCents) || 0);
         if (!body.customerId || !body.paymentMethodId) throw new Error("Missing customerId/paymentMethodId");
         if (amountCents <= 0) throw new Error("Invalid amount");
         // SECURITY FIX (audit finding) — verifiedOwnerIdForCharge only proved
@@ -927,6 +939,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           confirm: "true",
         };
         if (body.invoiceId) params["metadata[invoiceId]"] = body.invoiceId;
+        if (due) { params["metadata[payType]"] = due.payType; params["metadata[baseCents]"] = String(due.baseCents); params["metadata[tipCents]"] = String(Math.max(0, amountCents - due.baseCents)); }
         // Idempotency key derived from the invoice when one is given (the
         // charge is then fully determined by it — safe to reuse on retry).
         // SECURITY/SYNC FIX (audit finding) — ad-hoc charges (field-portal

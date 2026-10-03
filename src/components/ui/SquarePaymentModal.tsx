@@ -13,7 +13,7 @@ import { GBtn } from "./GBtn";
 // charge using the owner's Square access token (server-side only).
 export function SquarePaymentModal({
   open, onClose, applicationId, locationId, amount, description = "",
-  invoiceId, tipCents = 0, ownerId, onSuccess,
+  invoiceId, tipCents = 0, ownerId, onSuccess, payment: paymentChoice,
 }: {
   open: boolean; onClose: () => void;
   applicationId: string;
@@ -21,6 +21,7 @@ export function SquarePaymentModal({
   amount: number; description?: string;
   invoiceId?: string;
   tipCents?: number;
+  payment?: { payType?: string; promoId?: string; referrerId?: string };
   ownerId?: string;
   onSuccess: (paymentId: string) => void;
 }) {
@@ -72,6 +73,7 @@ export function SquarePaymentModal({
         tipCents: Math.round(tipCents),
         description,
         ownerId,
+        ...(paymentChoice || {}),
       });
       setStatus("success");
       onSuccess(payment.id);

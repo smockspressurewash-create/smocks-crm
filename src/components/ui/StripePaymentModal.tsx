@@ -12,7 +12,7 @@ import { supabase } from "../../lib/supabase";
 // client_secret, and confirms payment in-place without leaving the page.
 export function StripePaymentModal({
   open, onClose, publishableKey, stripeAccountId, amount, currency = "usd", description = "",
-  onSuccess, invoiceId, allowSaveCard = false, tipCents = 0, disableLink = false,
+  onSuccess, invoiceId, allowSaveCard = false, tipCents = 0, disableLink = false, payment,
 }: {
   open: boolean; onClose: () => void;
   publishableKey: string;
@@ -45,6 +45,9 @@ export function StripePaymentModal({
   // underpay), so it's accepted separately here and added to the verified
   // base amount server-side (see stripe-action.ts's create_payment_intent).
   tipCents?: number;
+  // Option the customer picked + promo/referral, passed through to the
+  // server's amount calculation (see functions/api/_lib/amountDue.ts).
+  payment?: { payType?: string; promoId?: string; referrerId?: string };
   // SECURITY FIX (owner report — CRITICAL) — Stripe Link autofills/offers
   // a one-click "Use this card" for whatever saved card the BROWSER's own
   // Link session belongs to, independent of which customer is actually
@@ -102,7 +105,7 @@ export function StripePaymentModal({
         // to always fetch: when invoiceId IS present, the server resolves the
         // owner from the invoice itself and never looks at this token.
         const { data: { session } } = await supabase.auth.getSession();
-        const intent = await createPaymentIntent(Math.round(amount * 100), currency, description, invoiceId ? { invoiceId } : undefined, allowSaveCard && saveCard, Math.round(tipCents), session?.access_token);
+        const intent = await createPaymentIntent(Math.round(amount * 100), currency, description, invoiceId ? { invoiceId } : undefined, allowSaveCard && saveCard, Math.round(tipCents), session?.access_token, payment);
         if (cancelled) return;
         intentIdRef.current = intent.id;
         clientSecretRef.current = intent.client_secret;

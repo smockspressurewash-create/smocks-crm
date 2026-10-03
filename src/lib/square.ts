@@ -74,7 +74,7 @@ export interface SquarePublicConfig {
 export const getPublicSquareConfig = (ownerId: string): Promise<SquarePublicConfig> =>
   squareAction("get_public_square_config", { ownerId });
 
-export const createSquarePayment = (opts: { sourceId: string; invoiceId?: string; amountCents?: number; tipCents?: number; description?: string; ownerId?: string }): Promise<{ id: string; status: string }> =>
+export const createSquarePayment = (opts: { sourceId: string; invoiceId?: string; amountCents?: number; tipCents?: number; description?: string; ownerId?: string; payType?: string; promoId?: string; referrerId?: string }): Promise<{ id: string; status: string }> =>
   squareAction("create_payment", opts);
 
 // amountCents omitted = full refund (server looks up the real original

@@ -209,7 +209,10 @@ export const createPaymentIntent = async (
   metadata?: Record<string, string>,
   saveCard?: boolean,
   tipCents?: number,
-  accessToken?: string
+  accessToken?: string,
+  // Which option the customer picked (deposit / balance / full) and any
+  // promo/referral — the server recomputes the real amount from these.
+  payment?: { payType?: string; promoId?: string; referrerId?: string }
 ): Promise<StripePaymentIntent> =>
   stripeAction("create_payment_intent", {
     amountCents,
@@ -218,6 +221,7 @@ export const createPaymentIntent = async (
     invoiceId: metadata?.invoiceId,
     saveCard: !!saveCard,
     tipCents: tipCents || 0,
+    ...(payment || {}),
   }, accessToken);
 
 export const retrievePaymentIntent = async (id: string): Promise<StripePaymentIntent> =>

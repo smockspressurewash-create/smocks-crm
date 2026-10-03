@@ -1037,6 +1037,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                 amount={totalWithTip}
                 invoiceId={e?.id}
                 tipCents={Math.round((Number(tip) || 0) * 100)}
+                payment={{ payType, promoId: appliedPromo?.kind === "promotion" ? appliedPromo.promo?.id : undefined, referrerId: appliedPromo?.kind === "referral" ? appliedPromo.referrer?.id : undefined }}
                 description={`${companyName} — ${e?.lineItems?.[0]?.description || "Quote"} #${e?.id || ""}`}
                 onSuccess={(paymentIntentId) => { setShowStripeModal(false); handleApprove(paymentIntentId, "now", "stripe"); }}
               />
@@ -1048,6 +1049,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                 amount={totalWithTip}
                 invoiceId={e?.id}
                 tipCents={Math.round((Number(tip) || 0) * 100)}
+                payment={{ payType, promoId: appliedPromo?.kind === "promotion" ? appliedPromo.promo?.id : undefined, referrerId: appliedPromo?.kind === "referral" ? appliedPromo.referrer?.id : undefined }}
                 description={`${companyName} — ${e?.lineItems?.[0]?.description || "Quote"} #${e?.id || ""}`}
                 onSuccess={(paymentId) => { setShowSquareModal(false); handleApprove(paymentId, "now", "square"); }}
               />
