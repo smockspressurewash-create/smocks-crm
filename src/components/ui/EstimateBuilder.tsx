@@ -130,7 +130,8 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
   const tax = afterDisc * (taxRate / 100);
   const tot = afterDisc + tax;
   // FEATURE 6 — actual deposit dollar figure, whichever mode is selected.
-  const depositAmt = computeDepositAmount({ depositRequired: Number(depositRequired), depositType }, tot);
+  // A deposit can never be more than the estimate itself.
+  const depositAmt = Math.min(tot, computeDepositAmount({ depositRequired: Number(depositRequired), depositType }, tot));
 
   const addDiscount = () => setDiscounts(prev => [...prev, { id: uid(), label: "", type: "amount", value: 0 }]);
   const updateDiscountRow = (id: string, patch: any) => setDiscounts(prev => prev.map(d => d.id === id ? { ...d, ...patch } : d));

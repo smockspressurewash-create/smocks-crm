@@ -235,7 +235,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
   // FEATURE 6 — depositRequired can now be a flat $ or a % of the total;
   // computeDepositAmount resolves either. Falls back to the pre-existing 25%
   // default when the owner never configured a deposit at all.
-  const depositAmt = e ? (computeDepositAmount(e, effectiveTotal) || Math.round(effectiveTotal * 0.25)) : 0;
+  const depositAmt = e ? Math.min(effectiveTotal, computeDepositAmount(e, effectiveTotal) || Math.round(effectiveTotal * 0.25)) : 0;
   const depositBalanceAmt = Math.max(0, effectiveTotal - depositAmt);
   useEffect(() => {
     if (!e?.id || !e?.depositRequired) return;
