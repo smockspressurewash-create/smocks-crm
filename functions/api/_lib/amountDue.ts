@@ -59,7 +59,7 @@ export async function computeAmountDue(opts: {
     // 25% fallback when the owner never configured a deposit.
     const req = Number(est.depositRequired) || 0;
     const dep = req ? (est.depositType === "percent" ? Math.round(total * (req / 100) * 100) / 100 : req) : 0;
-    base = dep || Math.round(total * 0.25);
+    base = dep || Math.round(total * 25) / 100;
   } else base = total;
   base = Math.max(0, Math.min(base, total));
 

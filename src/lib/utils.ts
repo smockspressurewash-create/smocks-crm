@@ -152,9 +152,15 @@ export const checkVideoLimits = (file: File): Promise<string | null> => {
 
 // ─── Formatting ───────────────────────────────────────────────────────────────
 
+// BUG FIX — "total was a dollar and the deposit was a dollar" on a $1 quote
+// with a 50% deposit: this always rounded to whole dollars, so $0.50 showed
+// as "$1" and $1.06 as "$1". Whole amounts still print without cents
+// ("$300"); anything with cents shows them ("$0.50", "$1.06").
 export const fmt = (n: number | undefined | null): string => {
   if (n == null || isNaN(Number(n))) return "$0";
-  return "$" + Number(n).toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+  const v = Math.round(Number(n) * 100) / 100;
+  const cents = Number.isInteger(v) ? 0 : 2;
+  return "$" + v.toLocaleString("en-US", { minimumFractionDigits: cents, maximumFractionDigits: cents });
 };
 
 // SECURITY FIX (audit finding) — customer records (firstName/lastName etc.)
