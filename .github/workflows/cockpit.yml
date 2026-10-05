@@ -28,6 +28,7 @@ concurrency:
 
 permissions:
   contents: write
+  checks: read
   id-token: write
 
 jobs:
@@ -72,14 +73,16 @@ jobs:
       - name: Work the queue with Claude
         if: steps.queue.outputs.open != '0'
         uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           prompt: |
             Follow .claude/commands/cockpit.md exactly to work the Alfred Cockpit queue.
-            You are running unattended in GitHub Actions on the master branch; git is configured.
-            Commit with a clear message ending in "Co-Authored-By: Claude <noreply@anthropic.com>" and `git push origin master` after each verified fix.
-            Skip Playwright UI checks if a browser isn't available; say so in the item's note.
+            You are running unattended in GitHub Actions; git is configured and can push branches and master.
+            Changes go to a cockpit-<id> branch and a private preview first; only merge to master when the owner taps "Make it live for everyone".
+            Skip Playwright UI checks if a browser isn't available.
           claude_args: >-
             --max-turns 120
             --allowedTools "Bash,Read,Edit,Write,Glob,Grep"
