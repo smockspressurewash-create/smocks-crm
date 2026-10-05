@@ -222,7 +222,7 @@ export function CockpitPage({ ownerId, toast }: { ownerId: string; toast?: (msg:
   useEffect(() => { setReopening(false); setReply(""); }, [viewingId]);
 
   return (
-    <div className="max-w-6xl mx-auto">
+    <div className="max-w-6xl mx-auto w-full min-w-0 overflow-x-hidden">
       <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold">Alfred Cockpit</h1>
@@ -244,11 +244,11 @@ export function CockpitPage({ ownerId, toast }: { ownerId: string; toast?: (msg:
       {loading ? (
         <div className="text-center py-16 text-white/40 text-sm">Loading…</div>
       ) : (
-        <div className="grid md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {COLUMNS.map(col => {
             const colItems = items.filter(i => i.status === col.key);
             return (
-              <div key={col.key}>
+              <div key={col.key} className="min-w-0">
                 <div className="flex items-center justify-between mb-2 px-1">
                   <div className="text-xs uppercase tracking-wider font-semibold text-white/50">{col.label}</div>
                   <div className="text-xs text-white/30">{colItems.length}</div>
@@ -260,7 +260,7 @@ export function CockpitPage({ ownerId, toast }: { ownerId: string; toast?: (msg:
                     const st = cardState(item);
                     const last = lastNote(item.claude_notes);
                     return (
-                      <Glass key={item.id} className="p-3 cursor-pointer hover:border-red-700/30 transition" onClick={() => setViewingId(item.id)}>
+                      <Glass key={item.id} className="p-3 min-w-0 overflow-hidden cursor-pointer hover:border-red-700/30 transition" onClick={() => setViewingId(item.id)}>
                         <div className="flex items-start gap-2">
                           <Icon size={13} className={meta.color + " mt-0.5 flex-shrink-0"} />
                           <div className="flex-1 min-w-0">
