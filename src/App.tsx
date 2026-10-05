@@ -2321,6 +2321,10 @@ export function App() {
       const cur = { status: j.status, arrivedAt: j.arrivedAt, photoCount, signed, issueCount };
       jobSnap[j.id] = cur;
       if (!crewActivitySeededRef.current) continue;
+      // A job we've never seen before (late load, realtime insert, poll
+      // returning a fuller list) is not "newly signed"/"new photos" — it
+      // already had them. Only diff jobs that were in the previous snapshot.
+      const hadPrev = !!crewActivityJobRef.current[j.id];
       const prev = crewActivityJobRef.current[j.id] || {};
       const cust = customers.find(x => x.id === j.customerId);
       const who = cust ? `${cust.firstName} ${cust.lastName}` : j.address;
@@ -2357,8 +2361,8 @@ export function App() {
         notifyDesktop(text);
         if (crmUserId) sendPushNotification({ ownerId: crmUserId, title: "Crew arrived", body: text, tag: "crew-activity" });
       }
-      if (photoCount > (prev.photoCount ?? 0)) events.push({ id: j.id + ":photos:" + photoCount, text: `📸 ${photoCount - (prev.photoCount ?? 0)} new photo${photoCount - (prev.photoCount ?? 0) !== 1 ? "s" : ""} — ${who}`, at: Date.now(), customerId: j.customerId });
-      if (signed && !prev.signed) events.push({ id: j.id + ":signed", text: `✍️ Got customer sign-off — ${who}`, at: Date.now(), customerId: j.customerId });
+      if (hadPrev && photoCount > (prev.photoCount ?? 0)) events.push({ id: j.id + ":photos:" + photoCount, text: `📸 ${photoCount - (prev.photoCount ?? 0)} new photo${photoCount - (prev.photoCount ?? 0) !== 1 ? "s" : ""} — ${who}`, at: Date.now(), customerId: j.customerId });
+      if (hadPrev && signed && !prev.signed) events.push({ id: j.id + ":signed", text: `✍️ Got customer sign-off — ${who}`, at: Date.now(), customerId: j.customerId });
       if (issueCount > (prev.issueCount ?? 0)) {
         const latestNote = [...(j.commLog || [])].reverse().find((c: any) => typeof c.note === "string" && c.note.startsWith("🚨 ISSUE REPORTED"));
         const text = `🚨 Problem reported — ${who}`;
