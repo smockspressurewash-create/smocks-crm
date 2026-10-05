@@ -205,7 +205,9 @@ export function AutomationsPage({ automations = [], setAutomations, jobs = [], c
             </h2>
             <div className="text-xs text-white/50 mt-0.5">{activeCount} active · {totalRuns} total runs · workflows fire automatically as events happen</div>
           </div>
-          <div className="flex items-center gap-2">
+          {/* flex-wrap — on a phone these four buttons ran past the card edge and
+              the card's overflow-hidden cut "New Workflow" off. */}
+          <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
             <GBtn variant="ghost" onClick={() => setLogOpen(!logOpen)} className={"!text-xs " + (execLog.length > 0 ? "!border-green-700/50 !text-green-400" : "")}>
               <Activity size={12} className="inline mr-1.5" />Log {execLog.length > 0 && `(${execLog.length})`}
             </GBtn>

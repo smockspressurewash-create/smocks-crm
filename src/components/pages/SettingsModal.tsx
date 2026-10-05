@@ -30,7 +30,7 @@ import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
-import { refreshEmpGoogleToken } from "../../lib/googleApi";
+import { refreshEmpGoogleToken, getLastGoogleRefreshError } from "../../lib/googleApi";
 import { supabase, getStoredGoogleConnection, setStoredGoogleToken, clearStoredGoogleConnection } from "../../lib/supabase";
 import { getOwnerStripeStatus, saveOwnerStripeKeys, getStripeConnectAuthorizeUrl, type OwnerStripeStatus } from "../../lib/stripe";
 import { usePersistent } from "../../hooks/usePersistent";
@@ -518,7 +518,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
         if (!silent) toast?.("Gmail unavailable — Google reconnect isn't fully configured yet (missing server env vars). See the notice below.", "red");
       } else {
         console.warn("[GoogleConnect] refresh failed — function may not be deployed, or refresh token itself was rejected");
-        if (!silent) toast?.("Couldn't refresh automatically — the refresh function may not be deployed yet. Reconnect Google below.", "red");
+        if (!silent) toast?.(getLastGoogleRefreshError() || "Couldn't refresh the Google sign-in — reconnect Google below.", "red");
       }
     } finally {
       setGoogleRetrying(false);

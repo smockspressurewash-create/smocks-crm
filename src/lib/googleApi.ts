@@ -449,6 +449,17 @@ export const isEmpGoogleTokenValid = (t: EmpGoogleToken | null): boolean =>
 // side from owner_secrets via that session. An employee refreshing their
 // OWN separately-connected Google account (a distinct per-employee secret
 // they already own) keeps passing refreshToken directly, unaffected.
+// Why the last refresh failed, in words an owner can act on — shown by the
+// Retry buttons instead of guessing "the function may not be deployed".
+let lastGoogleRefreshError = "";
+export const getLastGoogleRefreshError = () => lastGoogleRefreshError;
+const describeRefreshFailure = (code: string, msg: string): string => {
+  if (code === "invalid_grant") return "Google ended the saved sign-in (it was revoked, or your Google Cloud OAuth app is still in Testing mode, which expires sign-ins every 7 days). Reconnect Google below — see the setup notes to stop this from repeating.";
+  if (code === "no_refresh_token" || /Missing refresh_token/i.test(msg)) return "There's no saved Google sign-in for this account on the server yet. Reconnect Google below once to save one.";
+  if (/GOOGLE_CLIENT_ID|GOOGLE_CLIENT_SECRET/i.test(msg)) return "Google refresh isn't configured on the server (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET missing in Cloudflare).";
+  return "Couldn't refresh the Google sign-in (" + (msg || "network error") + "). Try again, or reconnect Google below.";
+};
+
 export const refreshEmpGoogleToken = async (
   backendUrl: string | undefined,
   refreshToken: string,
@@ -475,13 +486,16 @@ export const refreshEmpGoogleToken = async (
     if (!res.ok || !data?.access_token) {
       const errMsg = String(data?.error || res.status);
       const configMissing = /GOOGLE_CLIENT_ID|GOOGLE_CLIENT_SECRET/i.test(errMsg);
+      lastGoogleRefreshError = describeRefreshFailure(String(data?.code || ""), errMsg);
       console.warn("[GoogleToken] employee token refresh failed:", errMsg, configMissing ? "— Cloudflare env vars not set" : "");
       return configMissing ? { token: "", expiresAt: 0, configMissing: true } : null;
     }
     console.log("[GoogleConnect] Cloudflare Function responded with a fresh access_token, expires_in:", data.expires_in);
+    lastGoogleRefreshError = "";
     return { token: data.access_token, expiresAt: Date.now() + (Number(data.expires_in) || 3300) * 1000, configMissing: false };
   } catch (e: any) {
     console.warn("[GoogleToken] employee token refresh threw:", e?.message);
+    lastGoogleRefreshError = describeRefreshFailure("", e?.message || "");
     return null;
   }
 };

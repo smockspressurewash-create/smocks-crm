@@ -97,8 +97,8 @@ export function CockpitPage({ ownerId, toast }: { ownerId: string; toast?: (msg:
           Claude's/Anthropic's own usage or rate limits to a web app — this
           is the honest placeholder for that request rather than faking a
           number. */}
-      <Glass className="p-3 mb-5 !bg-yellow-950/10 !border-yellow-700/20 text-xs text-yellow-200/80">
-        Usage limits aren't shown here — there's no API that exposes Claude's own usage/rate-limit data to an app like this one to read. Everything else you asked for (the board, bug/idea/question tracking, notes) is live below.
+      <Glass className="p-3 mb-5 text-xs text-white/70 leading-relaxed">
+        Add a bug, idea or question here and Claude picks it up automatically while the developer's Claude Code session is running: it moves the card to <b>In Progress</b>, fixes it, ships it, and moves it to <b>Done</b> with a note. Tap a card to read Claude's notes. Questions back to you show up in the notes too.
       </Glass>
 
       {loading ? (
@@ -124,6 +124,7 @@ export function CockpitPage({ ownerId, toast }: { ownerId: string; toast?: (msg:
                           <div className="flex-1 min-w-0">
                             <div className="text-sm font-medium truncate">{item.title}</div>
                             {item.description && <div className="text-xs text-white/40 mt-0.5 line-clamp-2">{item.description}</div>}
+                            {item.claude_notes && <div className="text-[11px] text-green-300/80 mt-1 line-clamp-2">💬 {item.claude_notes.trim().split(String.fromCharCode(10)).filter(Boolean).slice(-1)[0]}</div>}
                           </div>
                         </div>
                         <div className="flex items-center justify-between mt-2">

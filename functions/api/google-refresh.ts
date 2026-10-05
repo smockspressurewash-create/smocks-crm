@@ -39,7 +39,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     const clientId = context.env.GOOGLE_CLIENT_ID;
     const clientSecret = context.env.GOOGLE_CLIENT_SECRET;
     if (!refresh_token) {
-      return new Response(JSON.stringify({ error: "Missing refresh_token" }), {
+      return new Response(JSON.stringify({ error: "Missing refresh_token", code: "no_refresh_token" }), {
         status: 400, headers: { "Content-Type": "application/json" },
       });
     }
@@ -61,7 +61,10 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     });
     const data = await googleRes.json().catch(() => ({} as any));
     if (!googleRes.ok) {
-      return new Response(JSON.stringify({ error: data?.error_description || data?.error || `Google token refresh error ${googleRes.status}` }), {
+      // invalid_grant = Google itself ended this saved sign-in: revoked, the
+      // password changed, or (most common) the OAuth app is still in
+      // "Testing" in Google Cloud, where refresh tokens expire after 7 days.
+      return new Response(JSON.stringify({ error: data?.error_description || data?.error || `Google token refresh error ${googleRes.status}`, code: data?.error === "invalid_grant" ? "invalid_grant" : (data?.error || "google_error") }), {
         status: googleRes.status, headers: { "Content-Type": "application/json" },
       });
     }

@@ -15,8 +15,7 @@ import {
   fetchCalendarEvents, fetchGTasks, createGTask, patchGTask, deleteGTask,
   fetchGContacts, fetchGDriveFiles,
   setGoogleTokenRefresher, refreshEmpGoogleToken, onGoogleAuthFailure,
-  type GmailMessage, type GCalEvent, type GTask, type GContact, type GDriveFile,
-} from "../../lib/googleApi";
+  type GmailMessage, type GCalEvent, type GTask, type GContact, type GDriveFile, getLastGoogleRefreshError } from "../../lib/googleApi";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const fmtDate = (d: string) => {
@@ -899,7 +898,7 @@ export function GoogleWorkspacePage({
       if (!silent) {
         toast?.(
           s.googleRefreshToken
-            ? "Couldn't refresh automatically — the refresh function may not be deployed yet. Reconnect Google below."
+            ? (getLastGoogleRefreshError() || "Couldn't refresh the Google sign-in — reconnect Google below.")
             : "No refresh token on file for this account — reconnect Google below to enable auto-refresh.",
           "red"
         );
