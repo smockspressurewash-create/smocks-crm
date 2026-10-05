@@ -71,15 +71,22 @@ Explain consequences concretely, e.g. "This changes how invoices are emailed to 
 - `Cancel — don't make this change.` → delete any branch you made (`git push origin --delete $B`), note "Cancelled — nothing was changed.", `status: done`, `progress: null`.
 - `Make it live for everyone.` →
   ```bash
-  git checkout master && git pull --ff-only
-  git merge --no-ff $B -m "Cockpit: <title>"
-  npx tsc -b && npm run build && git push origin master
+  git fetch origin && git checkout master && git reset --hard origin/master
+  git merge --no-ff origin/$B -m "Cockpit: <title>"
+  npx tsc -b && npm run build
+  git push origin master || { git pull --no-rebase origin master && npx tsc -b && npm run build && git push origin master; }
+  SHA=$(git rev-parse HEAD)          # the commit that is now on origin/master
   git push origin --delete $B
   ```
-  Report real progress while you do it (no note needed, just `progress` + `progressLabel`): 15 "Merging the change", 40 "Checking it builds", 70 "Publishing to everyone", then poll production until the new deploy is up — the Cloudflare check on the merge commit (`gh api repos/smockspressurewash-create/smocks-crm/commits/<sha>/check-runs`) or https://smocks-crm.pages.dev serving the new build — at 90 "Waiting for the live site to update". Never post 100 before it's actually live.
-  Then `status: done`, `progress: null`, `previewUrl: ""`, note `LIVE: <what changed>. It's live for everyone now. Tap Undo on this card if you want it back the way it was. (merge <short sha>)`.
+  Report real progress while you do it (just `progress` + `progressLabel`): 15 "Merging the change", 40 "Checking it builds", 70 "Publishing to everyone", 90 "Waiting for the live site to update".
+  **Only call it live once the live site is serving that commit.** Every build stamps its commit into the page: poll until it matches (Cloudflare usually takes 2–4 minutes; give up after 12):
+  ```bash
+  for i in $(seq 1 72); do curl -s https://smocks-crm.pages.dev/ | grep -q "build-sha\" content=\"$(git rev-parse HEAD)" && break; sleep 10; done
+  ```
+  If `git rev-parse HEAD` isn't an ancestor of what's live (someone else pushed after you), check `git merge-base --is-ancestor $SHA <live sha>` instead. If it never shows up, leave the card `in_progress`, `progress: null`, and post a plain note saying the publish is taking longer than usual and you'll check again — don't claim it's live.
+  Then `status: done`, `progress: null`, `previewUrl: ""`, note `LIVE: <what changed>. It's live for everyone now. To test: <exact taps>. If the app still looks old, close it fully and reopen it. Tap Undo on this card if you want it back the way it was. (merge <short sha>)`.
 - `Discard this change.` → `git push origin --delete $B`, note "Discarded — nothing changed for anyone.", `status: done`, `progress: null`, `previewUrl: ""`.
-- `Undo this change.` → same progress steps as making it live ("Undoing the change", "Checking it builds", "Publishing to everyone", "Waiting for the live site to update"); find the merge sha in the `LIVE:` note, `git revert -m 1 <sha>` on master, build, push. Note "Undone — it's back the way it was for everyone (about 2 minutes).", `status: done`.
+- `Undo this change.` → same progress steps and the same live-site check as making it live ("Undoing the change", "Checking it builds", "Publishing to everyone", "Waiting for the live site to update"); find the merge sha in the `LIVE:` note, `git revert -m 1 <sha>` on master, build, push. Note "Undone — it's back the way it was for everyone (about 2 minutes).", `status: done`.
 - `Not fixed yet: …` on a card that was done/live → it's reopened. Read the whole conversation, reproduce what they describe, find why the earlier fix didn't work (don't repeat it), and go through the preview flow again on a fresh `$B` branch from master.
 - Anything else → treat it as more detail or an answer, continue from where you were.
 
