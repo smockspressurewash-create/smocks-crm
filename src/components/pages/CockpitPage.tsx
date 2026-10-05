@@ -42,6 +42,8 @@ export function CockpitPage({ ownerId, toast }: { ownerId: string; toast?: (msg:
   const [newType, setNewType] = useState<"bug" | "idea" | "question">("bug");
   const [saving, setSaving] = useState(false);
   const [viewing, setViewing] = useState<CockpitItem | null>(null);
+  const [reply, setReply] = useState("");
+  const [replying, setReplying] = useState(false);
 
   const load = async () => {
     try {
@@ -63,7 +65,39 @@ export function CockpitPage({ ownerId, toast }: { ownerId: string; toast?: (msg:
     if (error) { toast?.("Couldn't save — " + error.message, "red"); return; }
     setItems(prev => [{ ...row, created_at: new Date().toISOString(), updated_at: new Date().toISOString() } as any, ...prev]);
     setNewTitle(""); setNewDesc(""); setNewType("bug"); setAddOpen(false);
-    toast?.("Added ✓");
+    const woke = await wakeClaude();
+    toast?.(woke ? "Added ✓ — Claude is starting on it now" : "Added ✓ — Claude will pick it up on the next check (within ~15 min)", "green");
+  };
+
+  // Wake Claude now instead of waiting for the next scheduled check.
+  // Returns true when the GitHub run was started.
+  const wakeClaude = async (): Promise<boolean> => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch("/api/cockpit-sync?wake=1", { method: "POST", headers: { Authorization: `Bearer ${session?.access_token || ""}` } });
+      const out = await res.json().catch(() => ({}));
+      return !!out?.woke;
+    } catch { return false; }
+  };
+
+  // Answer Claude's question (or add more detail) on a card. Appended to the
+  // card's notes as "You:", and the card goes back to In Progress so Claude
+  // picks it up again.
+  const sendReply = async () => {
+    if (!viewing || !reply.trim()) return;
+    setReplying(true);
+    const stamp = new Date().toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    const notes = ((viewing.claude_notes || "").trim() ? viewing.claude_notes.trim() + String.fromCharCode(10, 10) : "") + `[${stamp}] You: ${reply.trim()}`;
+    const status = viewing.status === "done" ? "in_progress" : viewing.status;
+    const { error, data } = await (supabase as any).from("cockpit_items").update({ claude_notes: notes, status, updated_at: new Date().toISOString() }).eq("id", viewing.id).select("id");
+    setReplying(false);
+    if (error || !data?.length) { toast?.("Couldn't send — " + (error?.message || "no matching item"), "red"); return; }
+    const updated = { ...viewing, claude_notes: notes, status } as CockpitItem;
+    setItems(prev => prev.map(i => i.id === viewing.id ? updated : i));
+    setViewing(updated);
+    setReply("");
+    const woke = await wakeClaude();
+    toast?.(woke ? "Sent ✓ — Claude is starting on it now" : "Sent ✓ — Claude will see it on the next check", "green");
   };
 
   const moveItem = async (item: CockpitItem, dir: 1 | -1) => {
@@ -175,6 +209,10 @@ export function CockpitPage({ ownerId, toast }: { ownerId: string; toast?: (msg:
                 <div className="text-sm text-white/70 whitespace-pre-wrap">{viewing.claude_notes}</div>
               </div>
             )}
+            <div className="space-y-2">
+              <GTxt label="Reply to Claude" value={reply} onChange={(e: any) => setReply(e.target.value)} rows={3} placeholder="Answer a question or add more detail…" />
+              <GBtn onClick={sendReply} disabled={replying || !reply.trim()} className="w-full">{replying ? "Sending…" : "Send reply"}</GBtn>
+            </div>
             <div className="flex gap-2 pt-2">
               <GBtn variant="danger" onClick={() => deleteItem(viewing)} className="flex-1"><Trash2 size={13} className="inline mr-1.5" />Delete</GBtn>
             </div>

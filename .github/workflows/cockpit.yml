@@ -42,9 +42,11 @@ jobs:
         run: |
           if [ -z "$KEY" ]; then echo "COCKPIT_SYNC_KEY secret is missing"; exit 1; fi
           body=$(curl -sf -H "x-cockpit-key: $KEY" https://smocks-crm.pages.dev/api/cockpit-sync) || { echo "Cockpit endpoint unreachable"; exit 1; }
-          open=$(echo "$body" | jq '.items | length')
+          # Items that need Claude: new ones, plus ones where the owner replied last.
+          # (In-progress items still waiting on the owner's answer are skipped.)
+          open=$(echo "$body" | jq '[.items[] | select(.status == "backlog" or (((.claude_notes // "") | split("\n\n") | last) | test("\\] You:")))] | length')
           echo "open=$open" >> "$GITHUB_OUTPUT"
-          echo "Open cockpit items: $open"
+          echo "Cockpit items needing work: $open"
 
       - uses: actions/checkout@v4
         if: steps.queue.outputs.open != '0'

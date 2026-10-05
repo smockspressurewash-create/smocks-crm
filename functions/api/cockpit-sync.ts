@@ -51,7 +51,32 @@ export const onRequestGet = async (context: { request: Request; env: Record<stri
   return json({ items: rows });
 };
 
+// POST /api/cockpit-sync?wake=1 (from the Cockpit page, with the owner's
+// Supabase session) — starts the GitHub Actions run right away instead of
+// waiting for the next scheduled check. Needs GITHUB_DISPATCH_TOKEN in
+// Cloudflare: a fine-grained GitHub token for this repo with
+// "Actions: Read and write". Without it, items still get picked up by the
+// schedule.
+const COCKPIT_OWNER_EMAIL = "smockspressurewash@gmail.com";
+const wake = async (context: { request: Request; env: Record<string, string> }) => {
+  const token = context.env.GITHUB_DISPATCH_TOKEN;
+  if (!token) return json({ woke: false, reason: "GITHUB_DISPATCH_TOKEN not set — the next scheduled check will pick it up." });
+  const accessToken = (context.request.headers.get("authorization") || "").replace(/^Bearers+/i, "");
+  const anonKey = context.env.SUPABASE_ANON_KEY || "sb_publishable_8aEa3wsYJ7ghVPcGbtHymw_ugj0aEfm";
+  const who = await fetch(`${SUPABASE_URL}/auth/v1/user`, { headers: { apikey: anonKey, Authorization: `Bearer ${accessToken}` } });
+  const user = who.ok ? await who.json().catch(() => null) as any : null;
+  if (String(user?.email || "").toLowerCase() !== COCKPIT_OWNER_EMAIL) return json({ error: "Unauthorized" }, 401);
+  const gh = await fetch("https://api.github.com/repos/smockspressurewash-create/smocks-crm/actions/workflows/cockpit.yml/dispatches", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "User-Agent": "crewboss-cockpit", "X-GitHub-Api-Version": "2022-11-28" },
+    body: JSON.stringify({ ref: "master" }),
+  });
+  if (!gh.ok) return json({ woke: false, reason: `GitHub refused (${gh.status}) — check GITHUB_DISPATCH_TOKEN.` }, 502);
+  return json({ woke: true });
+};
+
 export const onRequestPost = async (context: { request: Request; env: Record<string, string> }) => {
+  if (new URL(context.request.url).searchParams.get("wake") === "1") return wake(context);
   const denied = authorize(context); if (denied) return denied;
   const body = await context.request.json().catch(() => ({})) as { id?: string; status?: string; note?: string };
   if (!body.id) return json({ error: "Missing id" }, 400);
