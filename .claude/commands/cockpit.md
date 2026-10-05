@@ -58,7 +58,7 @@ Explain consequences concretely, e.g. "This changes how invoices are emailed to 
    B=cockpit-$(echo <id> | cut -c1-8)
    git checkout -B $B origin/master
    ```
-   Post progress as you go (≈ 20 "Finding the code", 45 "Making the change", 70 "Checking it builds", 85 "Publishing a private preview").
+   Post progress as you go (≈ 20 "Finding the code", 45 "Making the change", 70 "Checking it builds", 85 "Publishing a private preview"). Progress must reflect what has actually happened — never jump to 100 early.
 4. Follow CLAUDE.md (toasts on success and failure, `.select("id")` on writes, uuid ids…). New SQL goes in the next `supabase/migrations/` file and needs `APPROVAL NEEDED:` (the developer has to run it).
 5. Verify: `npx tsc -b` and `npm run build` must pass. For UI or flow changes, start `npm run dev -- --port 5181 --host 127.0.0.1` in the background and run (or adapt) the matching script in `scripts/e2e/` at phone width — the owner uses an iPhone.
 6. Commit (message ends with `Co-Authored-By: Claude <noreply@anthropic.com>`), `git push -u origin $B --force-with-lease`.
@@ -76,9 +76,10 @@ Explain consequences concretely, e.g. "This changes how invoices are emailed to 
   npx tsc -b && npm run build && git push origin master
   git push origin --delete $B
   ```
-  Then `status: done`, `progress: null`, `previewUrl: ""`, note `LIVE: <what changed>. It's live for everyone now (takes ~2 minutes to appear). Tap Undo on this card if you want it back the way it was. (merge <short sha>)`.
+  Report real progress while you do it (no note needed, just `progress` + `progressLabel`): 15 "Merging the change", 40 "Checking it builds", 70 "Publishing to everyone", then poll production until the new deploy is up — the Cloudflare check on the merge commit (`gh api repos/smockspressurewash-create/smocks-crm/commits/<sha>/check-runs`) or https://smocks-crm.pages.dev serving the new build — at 90 "Waiting for the live site to update". Never post 100 before it's actually live.
+  Then `status: done`, `progress: null`, `previewUrl: ""`, note `LIVE: <what changed>. It's live for everyone now. Tap Undo on this card if you want it back the way it was. (merge <short sha>)`.
 - `Discard this change.` → `git push origin --delete $B`, note "Discarded — nothing changed for anyone.", `status: done`, `progress: null`, `previewUrl: ""`.
-- `Undo this change.` → find the merge sha in the `LIVE:` note, `git revert -m 1 <sha>` on master, build, push. Note "Undone — it's back the way it was for everyone (about 2 minutes).", `status: done`.
+- `Undo this change.` → same progress steps as making it live ("Undoing the change", "Checking it builds", "Publishing to everyone", "Waiting for the live site to update"); find the merge sha in the `LIVE:` note, `git revert -m 1 <sha>` on master, build, push. Note "Undone — it's back the way it was for everyone (about 2 minutes).", `status: done`.
 - `Not fixed yet: …` on a card that was done/live → it's reopened. Read the whole conversation, reproduce what they describe, find why the earlier fix didn't work (don't repeat it), and go through the preview flow again on a fresh `$B` branch from master.
 - Anything else → treat it as more detail or an answer, continue from where you were.
 
