@@ -78,6 +78,9 @@ export function LeadFormPage() {
   // your Twilio campaign registration — swap it for that exact wording
   // before this matters for registration/vetting.
   const [smsOptIn, setSmsOptIn] = useState(false);
+  // Honeypot — hidden from people, filled in by spam bots; the server drops
+  // any submission that has it.
+  const [hp, setHp] = useState("");
 
   const utmParams = (() => {
     try {
@@ -109,12 +112,14 @@ export function LeadFormPage() {
       console.log("[LeadForm] submitting new lead:", newCustomer.firstName, newCustomer.lastName);
       const res = await fetch("/api/public-data", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "submit_lead_form", ownerId, customer: newCustomer }),
+        body: JSON.stringify({ action: "submit_lead_form", ownerId, customer: newCustomer, website: hp }),
       });
       const data = await res.json().catch(() => null);
       if (!res.ok || data?.error) {
         console.error("[LeadForm] submit failed:", data?.error || res.status);
-        setError("Something went wrong submitting your request — please call or text us instead.");
+        // Show the server's reason when it's one meant for the visitor (bad/old
+        // embed link, missing contact info); otherwise the generic message.
+        setError(res.status === 400 || res.status === 404 ? (data?.error || "Something went wrong submitting your request — please call or text us instead.") : "Something went wrong submitting your request — please call or text us instead.");
         setSubmitting(false);
         return;
       }
@@ -151,6 +156,7 @@ export function LeadFormPage() {
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="text-xs text-white/60 mb-1 block">First Name *</label>
+            <input type="text" name="website" value={hp} onChange={e => setHp(e.target.value)} tabIndex={-1} autoComplete="off" aria-hidden="true" style={{ position: "absolute", left: "-9999px", width: 1, height: 1, opacity: 0 }} />
             <input value={f.firstName} onChange={e => setF({ ...f, firstName: e.target.value })} placeholder="Jennifer"
               className="w-full bg-white/5 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white placeholder-white/25 focus:outline-none focus:border-red-500/50" />
           </div>

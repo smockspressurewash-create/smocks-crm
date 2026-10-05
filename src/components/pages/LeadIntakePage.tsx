@@ -379,7 +379,13 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
           </div>
           <pre className="text-[11px] bg-black/60 border border-white/10 rounded-xl p-3 overflow-x-auto whitespace-pre-wrap break-all text-white/80">{embedHtml}</pre>
           <div className="flex gap-2">
-            <GBtn onClick={() => { navigator.clipboard?.writeText(embedHtml).catch(() => {}); toast("Embed code copied! Paste into your website's HTML ✓"); }} className="!text-xs">
+            <GBtn disabled={!ownerId} onClick={async () => {
+              // The oid in this code decides whose Leads list submissions land in —
+              // never hand out a snippet without it.
+              if (!ownerId) { toast("Your account is still loading — try again in a moment.", "red"); return; }
+              try { await navigator.clipboard.writeText(embedHtml); toast("Embed code copied! Paste into your website's HTML ✓", "green"); }
+              catch { toast("Couldn't copy automatically — select the code above and copy it manually.", "red"); }
+            }} className="!text-xs">
               <Copy size={12} className="inline mr-1" />Copy Code
             </GBtn>
             <GBtn variant="ghost" onClick={() => window.open(embedUrl, "_blank", "noopener,noreferrer")} className="!text-xs">
