@@ -109,6 +109,29 @@ export function CockpitPage({ ownerId, toast }: { ownerId: string; toast?: (msg:
   const [reply, setReply] = useState("");
   const [replying, setReplying] = useState(false);
   const [reopening, setReopening] = useState(false);
+  const [openingPreview, setOpeningPreview] = useState(false);
+
+  // A preview is a separate web address, so it doesn't share this app's
+  // sign-in. Ask the server for a one-time link that opens it signed in to
+  // this same account. The tab is opened right away (inside the tap) so
+  // iPhone doesn't block it as a pop-up, then pointed at the link.
+  const openPreview = async (previewUrl: string) => {
+    const tab = window.open("about:blank", "_blank");
+    setOpeningPreview(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch("/api/cockpit-sync?previewLogin=1", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session?.access_token || ""}` }, body: JSON.stringify({ previewUrl }) });
+      const out = await res.json().catch(() => ({}));
+      const target = out?.url || previewUrl;
+      if (!out?.url) toast?.("Opening the preview — sign in there with your usual email and password (" + (out?.error || "auto sign-in unavailable") + ")", "red");
+      if (tab) tab.location.href = target; else window.location.href = target;
+    } catch (e: any) {
+      toast?.("Couldn't sign you in to the preview automatically — " + (e?.message || "network error"), "red");
+      if (tab) tab.location.href = previewUrl; else window.location.href = previewUrl;
+    } finally {
+      setOpeningPreview(false);
+    }
+  };
   const viewing = items.find(i => i.id === viewingId) || null;
 
   const load = async () => {
@@ -296,11 +319,11 @@ export function CockpitPage({ ownerId, toast }: { ownerId: string; toast?: (msg:
                 <div className="flex items-center gap-2 text-sm font-semibold text-purple-300"><Eye size={15} />Try it before anyone else sees it</div>
                 <div className="text-sm text-white/80 whitespace-pre-wrap">{stripStamp(lastNote(viewing.claude_notes)).replace(/^PREVIEW READY:\s*/, "")}</div>
                 {viewing.preview_url && (
-                  <a href={viewing.preview_url} target="_blank" rel="noopener noreferrer" className="flex items-center justify-center gap-1.5 w-full py-2.5 rounded-xl border border-purple-500/40 text-purple-200 text-sm font-semibold hover:bg-purple-900/30">
-                    <ExternalLink size={14} />Open the preview
-                  </a>
+                  <button type="button" onClick={() => openPreview(viewing.preview_url!)} disabled={openingPreview} className="flex items-center justify-center gap-1.5 w-full py-2.5 rounded-xl border border-purple-500/40 text-purple-200 text-sm font-semibold hover:bg-purple-900/30 disabled:opacity-60">
+                    {openingPreview ? <Loader2 size={14} className="animate-spin" /> : <ExternalLink size={14} />}{openingPreview ? "Signing you in…" : "Open the preview"}
+                  </button>
                 )}
-                <div className="text-[11px] text-white/45">The preview uses your real account and data. Sign in there the same way you do here.</div>
+                <div className="text-[11px] text-white/45">Opens signed in to your account (real data). Nobody else sees it unless you share the link.</div>
                 <div className="grid grid-cols-2 gap-2 pt-1">
                   <GBtn onClick={() => sendReply(REPLIES.makeLive)} disabled={replying} className="!justify-center"><Rocket size={13} className="inline mr-1" />Make it live for everyone</GBtn>
                   <GBtn variant="ghost" onClick={() => sendReply(REPLIES.discard)} disabled={replying} className="!justify-center">Discard</GBtn>

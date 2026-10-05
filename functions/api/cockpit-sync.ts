@@ -58,6 +58,44 @@ export const onRequestGet = async (context: { request: Request; env: Record<stri
   return json({ items: rows });
 };
 
+// The signed-in owner's email (from the request's Supabase session), or null.
+const ownerFromSession = async (context: { request: Request; env: Record<string, string> }): Promise<string | null> => {
+  const accessToken = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+  if (!accessToken) return null;
+  const anonKey = context.env.SUPABASE_ANON_KEY || "sb_publishable_8aEa3wsYJ7ghVPcGbtHymw_ugj0aEfm";
+  const who = await fetch(`${SUPABASE_URL}/auth/v1/user`, { headers: { apikey: anonKey, Authorization: `Bearer ${accessToken}` } });
+  const user = who.ok ? await who.json().catch(() => null) as any : null;
+  const email = String(user?.email || "").toLowerCase();
+  return email === COCKPIT_OWNER_EMAIL ? email : null;
+};
+
+// POST /api/cockpit-sync?previewLogin=1 { previewUrl } (owner session) →
+// { url }: a one-time link that opens the preview already signed in.
+// A preview lives on its own web address, so it can't see the owner's
+// sign-in from the live app. This creates a fresh, separate session for the
+// same account (a Supabase magic link generated server-side — no email is
+// sent), leaving the live app's session untouched. Supabase must allow
+// https://*.smocks-crm.pages.dev/** as a redirect URL, otherwise the link
+// lands on the live site instead.
+const previewLogin = async (context: { request: Request; env: Record<string, string> }) => {
+  const email = await ownerFromSession(context);
+  if (!email) return json({ error: "Unauthorized" }, 401);
+  const body = await context.request.json().catch(() => ({})) as { previewUrl?: string };
+  const previewUrl = String(body.previewUrl || "").replace(/\/?$/, "/");
+  if (!/^https:\/\/[a-z0-9-]+\.smocks-crm\.pages\.dev\/$/.test(previewUrl)) return json({ error: "Not a CrewBoss preview link" }, 400);
+  const key = context.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!key) return json({ error: "SUPABASE_SERVICE_ROLE_KEY isn't set." }, 503);
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/admin/generate_link`, {
+    method: "POST",
+    headers: { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ type: "magiclink", email, redirect_to: previewUrl }),
+  });
+  const data = await res.json().catch(() => null) as any;
+  const url = data?.action_link || data?.properties?.action_link;
+  if (!res.ok || !url) return json({ error: "Couldn't create a sign-in link for the preview", detail: data?.msg || data?.error_description || res.status }, 502);
+  return json({ url });
+};
+
 // Start the GitHub Actions run right away instead of waiting for the next
 // scheduled check. Needs GITHUB_DISPATCH_TOKEN in Cloudflare: a fine-grained
 // GitHub token for this repo with "Actions: Read and write". Without it,
@@ -65,11 +103,7 @@ export const onRequestGet = async (context: { request: Request; env: Record<stri
 const wake = async (context: { request: Request; env: Record<string, string> }) => {
   const token = context.env.GITHUB_DISPATCH_TOKEN;
   if (!token) return json({ woke: false, reason: "GITHUB_DISPATCH_TOKEN not set — the next scheduled check will pick it up." });
-  const accessToken = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
-  const anonKey = context.env.SUPABASE_ANON_KEY || "sb_publishable_8aEa3wsYJ7ghVPcGbtHymw_ugj0aEfm";
-  const who = await fetch(`${SUPABASE_URL}/auth/v1/user`, { headers: { apikey: anonKey, Authorization: `Bearer ${accessToken}` } });
-  const user = who.ok ? await who.json().catch(() => null) as any : null;
-  if (String(user?.email || "").toLowerCase() !== COCKPIT_OWNER_EMAIL) return json({ error: "Unauthorized" }, 401);
+  if (!(await ownerFromSession(context))) return json({ error: "Unauthorized" }, 401);
   const gh = await fetch("https://api.github.com/repos/smockspressurewash-create/smocks-crm/actions/workflows/cockpit.yml/dispatches", {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "User-Agent": "crewboss-cockpit", "X-GitHub-Api-Version": "2022-11-28" },
@@ -113,7 +147,9 @@ const notifyOwner = async (env: Record<string, string>, ownerId: string, itemTit
 };
 
 export const onRequestPost = async (context: { request: Request; env: Record<string, string> }) => {
-  if (new URL(context.request.url).searchParams.get("wake") === "1") return wake(context);
+  const q = new URL(context.request.url).searchParams;
+  if (q.get("wake") === "1") return wake(context);
+  if (q.get("previewLogin") === "1") return previewLogin(context);
   const denied = authorize(context); if (denied) return denied;
   const body = await context.request.json().catch(() => ({})) as { id?: string; status?: string; note?: string; progress?: number | null; progressLabel?: string; previewUrl?: string };
   if (!body.id) return json({ error: "Missing id" }, 400);
