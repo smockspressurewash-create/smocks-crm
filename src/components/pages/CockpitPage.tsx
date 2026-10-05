@@ -8,6 +8,7 @@ import { GInput } from "../ui/GInput";
 import { GTxt } from "../ui/GTxt";
 import { GSel } from "../ui/GSel";
 import { Modal } from "../ui/Modal";
+import { PushNotificationButton } from "../ui/PushNotificationButton";
 
 // Alfred Cockpit — the owner's private board for bugs, ideas and questions.
 // Claude Code works the board (functions/api/cockpit-sync.ts, run by
@@ -107,6 +108,7 @@ export function CockpitPage({ ownerId, toast }: { ownerId: string; toast?: (msg:
   const [viewingId, setViewingId] = useState<string | null>(null);
   const [reply, setReply] = useState("");
   const [replying, setReplying] = useState(false);
+  const [reopening, setReopening] = useState(false);
   const viewing = items.find(i => i.id === viewingId) || null;
 
   const load = async () => {
@@ -181,6 +183,7 @@ export function CockpitPage({ ownerId, toast }: { ownerId: string; toast?: (msg:
   };
 
   const state = viewing ? cardState(viewing) : null;
+  useEffect(() => { setReopening(false); setReply(""); }, [viewingId]);
 
   return (
     <div className="max-w-6xl mx-auto">
@@ -189,7 +192,12 @@ export function CockpitPage({ ownerId, toast }: { ownerId: string; toast?: (msg:
           <h1 className="text-2xl font-bold">Alfred Cockpit</h1>
           <p className="text-sm text-white/50 mt-1">Report a bug, drop an idea, or ask a question from anywhere.</p>
         </div>
-        <GBtn onClick={() => setAddOpen(true)}><Plus size={14} className="inline mr-1.5" />New Item</GBtn>
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Phone notifications when Claude needs you or finishes. iPhone:
+              add CrewBoss to the Home Screen first (the button explains). */}
+          <PushNotificationButton ownerId={ownerId} label="Notify my phone" className="!py-2" />
+          <GBtn onClick={() => setAddOpen(true)}><Plus size={14} className="inline mr-1.5" />New Item</GBtn>
+        </div>
       </div>
 
       <Glass className="p-3 mb-5 text-xs text-white/70 leading-relaxed space-y-1">
@@ -315,6 +323,10 @@ export function CockpitPage({ ownerId, toast }: { ownerId: string; toast?: (msg:
               </div>
             )}
 
+            {viewing.status === "done" && !reopening && (
+              <GBtn variant="ghost" onClick={() => setReopening(true)} className="w-full !justify-center">This isn't fixed / not quite right</GBtn>
+            )}
+
             {viewing.claude_notes && (
               <div className="p-3 rounded-xl bg-black/40 border border-white/10">
                 <div className="text-[10px] uppercase tracking-wider text-white/40 font-semibold mb-1">Conversation</div>
@@ -322,8 +334,8 @@ export function CockpitPage({ ownerId, toast }: { ownerId: string; toast?: (msg:
               </div>
             )}
             <div className="space-y-2">
-              <GTxt label={state === "question" ? "Your answer" : "Reply to Claude"} value={reply} onChange={(e: any) => setReply(e.target.value)} rows={3} placeholder={state === "question" ? "Type your answer…" : "Add more detail, ask for a change, or answer a question…"} />
-              <GBtn onClick={() => sendReply()} disabled={replying || !reply.trim()} className="w-full">{replying ? "Sending…" : "Send reply"}</GBtn>
+              <GTxt label={reopening ? "What's still wrong?" : state === "question" ? "Your answer" : "Reply to Claude"} value={reply} onChange={(e: any) => setReply(e.target.value)} rows={3} placeholder={reopening ? "Describe what you see and what you expected — Claude will reopen it and fix it." : state === "question" ? "Type your answer…" : "Add more detail, ask for a change, or answer a question…"} />
+              <GBtn onClick={async () => { if (reopening) { await sendReply("Not fixed yet: " + reply.trim()); setReply(""); setReopening(false); } else sendReply(); }} disabled={replying || !reply.trim()} className="w-full">{replying ? "Sending…" : reopening ? "Reopen and send to Claude" : "Send reply"}</GBtn>
             </div>
             <div className="flex gap-2 pt-2">
               <GBtn variant="danger" onClick={() => deleteItem(viewing)} className="flex-1"><Trash2 size={13} className="inline mr-1.5" />Delete</GBtn>

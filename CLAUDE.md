@@ -35,6 +35,12 @@ IDs are real UUID v4, generated via `uid()` in `lib/utils.ts` (uses `crypto.rand
 - Every user-facing action must show a toast on success **and** a toast with the failure reason on error — no silent fails. This has been an explicit, repeated user requirement; several actions (crew assignment, job/estimate delete) previously had failure-only or no toasts at all.
 - All async Supabase/network calls in field-portal action buttons (Complete Job, invoice send, OTW, Running Late) are wrapped in a local `withTimeout(promise, ms, label)` helper so a hung fetch can never leave a button stuck on "Sending…" forever. Keep doing this for new async button handlers.
 - SMS sent from anywhere (owner Inbox, or an employee's OTW/Running Late/invoice-text in the field portal) must also be logged to `inbox_threads` via `logOutboundSmsToInbox` (`lib/messaging.ts`) so it's visible in the owner's Inbox from any device.
+- **Never await Supabase calls inside `supabase.auth.onAuthStateChange`.** supabase-js runs the callback while holding its auth lock; a query inside it (e.g. `resolveUserRole`) deadlocked sign-in/sign-out after a token refresh ("That's taking too long"). `App.tsx` defers the handler with `setTimeout(…, 0)` — keep it that way.
+- **Hooks before early returns in `App.tsx`.** Public pages (`#/estimate/ID`, `#/client`, lead form, legal…) return early; those returns must sit *below every hook* or switching pages crashes with React #310/#300. Public customer routes are listed in `isPublicCustomerHash()` (`lib/supabase.ts`) — the auth bootstrap never redirects them into the portal/CRM.
+- **Sign-out clears the session explicitly** with `clearLocalAuthSession()` (`lib/supabase.ts`), because supabase-js keeps the session when the logout request fails.
+- **Money**: `fmt()` shows cents when present ($0.50, $1.06) — never round money to whole dollars. Deposits: `computeDepositAmount` (`depositType` "percent" | "amount"), capped at the total.
+- **Payments are priced server-side.** `functions/api/_lib/amountDue.ts` computes what a customer owes (`payType` full/deposit/remaining, verified promo/referral) for Stripe and Square; the browser's amount is never trusted. Paying an already-approved quote/invoice skips `approve_estimate` and confirms via the provider's `confirm_invoice_payment`.
+- **Public lead form** (`#/lead-form?oid=…`) → `submit_lead_form` in `functions/api/public-data.ts`, which verifies the business id and builds the lead row server-side from a fixed field list. Keep it that way — it's how leads reach the right business when many businesses use the app.
 
 ## Working features — do not break
 
@@ -72,3 +78,21 @@ IDs are real UUID v4, generated via `uid()` in `lib/utils.ts` (uses `crypto.rand
 - **SMS Inbox sync**: routes through the `inbox_threads` table (see Critical rules) — if messages sent from the field portal aren't showing in the owner's Inbox, first check that table exists and RLS allows read/write.
 - Casing mismatches on employee shift/location columns — see Database section.
 - Non-UUID ids breaking inserts against `uuid` columns — see Database section.
+
+## Verifying changes
+
+- `npx tsc -b` and `npm run build` must pass. Functions: `npx esbuild functions/api/<file>.ts --bundle --format=esm --platform=neutral --outfile=/dev/null`.
+- UI and flows: drive the real app with the Playwright scripts in `scripts/e2e/` (mocked Supabase + `/api`, see its README). Check desktop **and** phone width — the owner uses an iPhone. Look at the screenshots.
+- The local `.env` anon key is outdated (production builds get a `sb_publishable_…` key from Cloudflare), so local dev can't talk to the real database — use the mocked scripts.
+
+## Alfred Cockpit (owner → Claude requests)
+
+`smockspressurewash@gmail.com` files bugs/ideas/questions on the in-app Cockpit (`CockpitPage.tsx`, table `cockpit_items`). `.github/workflows/cockpit.yml` runs Claude Code with `.claude/commands/cockpit.md` (approval → private preview branch → make live / discard / undo). `functions/api/cockpit-sync.ts` is the bridge and sends the owner phone notifications.
+
+## Generic template (crm-starter)
+
+There is a generic, industry-neutral copy of this CRM in a separate repo (`F0rger123/crm-starter`). Changes that aren't CrewBoss- or pressure-washing-specific should also go there. If you can't reach that repo (e.g. running in GitHub Actions), add a line to `docs/TEMPLATE_PORT_QUEUE.md` describing the change and commit, so a later session ports it. Never port the Alfred Cockpit.
+
+## Database access
+
+Production Supabase ref is `boaqaihymgmrhnjtiqrs`. Agents don't have SQL access to it; new SQL goes in the next `supabase/migrations/` file and the owner runs it in that project's SQL Editor — always tell them to check the project ref first.

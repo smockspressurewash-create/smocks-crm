@@ -2,7 +2,7 @@
 description: Pick up and work the owner's Alfred Cockpit requests (bugs / ideas / questions filed in the CRM)
 ---
 
-Work the CrewBoss owner's Alfred Cockpit queue. The owner (smockspressurewash@gmail.com) files items on the CRM's "Alfred Cockpit" page; they reach you through `/api/cockpit-sync` on production. The owner is not technical: every note you write is read on a phone.
+Work the CrewBoss owner's Alfred Cockpit queue. Before touching code, read `CLAUDE.md` (rules that prevent known bugs, how to verify) and `scripts/e2e/README.md` (browser checks). The owner (smockspressurewash@gmail.com) files items on the CRM's "Alfred Cockpit" page; they reach you through `/api/cockpit-sync` on production. The owner is not technical: every note you write is read on a phone.
 
 ## API
 
@@ -31,6 +31,8 @@ Notes are the conversation. The owner's replies appear as `[time] You: …`. Sta
 
 Plain notes (no marker) are progress updates.
 
+The owner gets a phone notification for every `APPROVAL NEEDED`, `QUESTION`, `PREVIEW READY` and `LIVE` note (and when an item is marked done), showing the first ~200 characters. So start those notes with the point: one sentence on what changed or what you need, then **"To test: …"** with the exact taps on an iPhone.
+
 Decide what to do from the **last** note:
 - Last note is yours and starts with `APPROVAL NEEDED:`, `QUESTION:` or `PREVIEW READY:` → the owner hasn't answered; skip the item silently (don't post again).
 - Last note is a `You:` reply → act on it (see below).
@@ -58,7 +60,7 @@ Explain consequences concretely, e.g. "This changes how invoices are emailed to 
    ```
    Post progress as you go (≈ 20 "Finding the code", 45 "Making the change", 70 "Checking it builds", 85 "Publishing a private preview").
 4. Follow CLAUDE.md (toasts on success and failure, `.select("id")` on writes, uuid ids…). New SQL goes in the next `supabase/migrations/` file and needs `APPROVAL NEEDED:` (the developer has to run it).
-5. Verify: `npx tsc -b` and `npm run build` must pass. Use Playwright on the changed screen when a browser is available.
+5. Verify: `npx tsc -b` and `npm run build` must pass. For UI or flow changes, start `npm run dev -- --port 5181 --host 127.0.0.1` in the background and run (or adapt) the matching script in `scripts/e2e/` at phone width — the owner uses an iPhone.
 6. Commit (message ends with `Co-Authored-By: Claude <noreply@anthropic.com>`), `git push -u origin $B --force-with-lease`.
 7. Get the preview link Cloudflare builds for the branch: `https://$B.smocks-crm.pages.dev` (branch name lowercased, max 28 chars). Wait until it responds 200 (up to ~5 minutes: `curl -s -o /dev/null -w '%{http_code}'`). If `gh` works, the Cloudflare check run on the commit also lists the URL.
 8. Post `progress: 100`, `previewUrl`, and a note starting `PREVIEW READY:` — what changed, exactly what to tap to try it, and that only someone with the link sees it. Leave `in_progress`.
@@ -77,8 +79,11 @@ Explain consequences concretely, e.g. "This changes how invoices are emailed to 
   Then `status: done`, `progress: null`, `previewUrl: ""`, note `LIVE: <what changed>. It's live for everyone now (takes ~2 minutes to appear). Tap Undo on this card if you want it back the way it was. (merge <short sha>)`.
 - `Discard this change.` → `git push origin --delete $B`, note "Discarded — nothing changed for anyone.", `status: done`, `progress: null`, `previewUrl: ""`.
 - `Undo this change.` → find the merge sha in the `LIVE:` note, `git revert -m 1 <sha>` on master, build, push. Note "Undone — it's back the way it was for everyone (about 2 minutes).", `status: done`.
+- `Not fixed yet: …` on a card that was done/live → it's reopened. Read the whole conversation, reproduce what they describe, find why the earlier fix didn't work (don't repeat it), and go through the preview flow again on a fresh `$B` branch from master.
 - Anything else → treat it as more detail or an answer, continue from where you were.
 
 If a build or push fails, don't ship. Leave `in_progress`, set `progress: null`, and post a plain note saying what went wrong and what you'll try or need.
+
+When a change that went live isn't CrewBoss- or pressure-washing-specific, add a line to `docs/TEMPLATE_PORT_QUEUE.md` (date, merge sha, what) in the same commit so it gets ported to the generic template.
 
 Keep the developer informed in the session output too: one line per item handled.
