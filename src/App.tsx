@@ -5,7 +5,7 @@ import {
   Calendar, MessageSquare, Megaphone, Star, Zap, Share2, UserPlus,
   Bot, Database, Users2, Truck, DollarSign, FlaskConical, BarChart3, GraduationCap,
   TrendingUp, PiggyBank, Wallet, Heart, Gift, Monitor, Tag,
-  Bell, Settings, X, Lock, Globe, ChevronLeft, ChevronRight, Plus, Undo2, Redo2, CheckCircle, Eye, EyeOff, Menu, AlertTriangle, Trash2, BookOpen, UserCheck, Target, LayoutGrid, ClipboardCheck
+  Bell, Settings, X, Lock, Globe, ChevronLeft, ChevronRight, Plus, Undo2, Redo2, CheckCircle, Eye, EyeOff, Menu, AlertTriangle, Trash2, BookOpen, UserCheck, Target, Gauge, ClipboardCheck
 } from "lucide-react";
 
 import { useGlobalStyles } from "./hooks/useGlobalStyles";
@@ -5486,7 +5486,7 @@ export function App() {
   const navGroupsWithFeedback = navGroups.map(g => g.label === "Account & More" ? { ...g, items: [...g.items, { id: "feedback", label: "Feedback", icon: MessageSquare }] } : g);
   const visibleNavGroups = (isCockpitOwner
     // First in the sidebar, not last — at the bottom of a long menu nobody found it.
-    ? [{ label: "Developer", items: [{ id: "cockpit", label: "Alfred Cockpit", icon: LayoutGrid }] }, ...navGroupsWithFeedback]
+    ? [{ label: "Developer", items: [{ id: "cockpit", label: "Alfred Cockpit", icon: Gauge }] }, ...navGroupsWithFeedback]
     : navGroupsWithFeedback
   )
     .map(g => ({ ...g, items: g.items.filter(item => !managerBlocked(item.id)) }))
