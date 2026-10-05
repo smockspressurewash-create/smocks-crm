@@ -98,7 +98,7 @@ export function CockpitPage({ ownerId, toast }: { ownerId: string; toast?: (msg:
           is the honest placeholder for that request rather than faking a
           number. */}
       <Glass className="p-3 mb-5 text-xs text-white/70 leading-relaxed">
-        Add a bug, idea or question here and Claude picks it up automatically while the developer's Claude Code session is running: it moves the card to <b>In Progress</b>, fixes it, ships it, and moves it to <b>Done</b> with a note. Tap a card to read Claude's notes. Questions back to you show up in the notes too.
+        Add a bug, idea or question here and Claude picks it up automatically, usually within 15 minutes, day or night: it moves the card to <b>In Progress</b>, fixes it, ships it, and moves it to <b>Done</b> with a note. Tap a card to read Claude's notes. Questions back to you show up in the notes too.
       </Glass>
 
       {loading ? (

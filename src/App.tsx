@@ -4149,6 +4149,11 @@ export function App() {
           if (initial) { setHasCrmSession(true); setLastOwnerSessionFlag(true); }
           else { setHasCrmSession(false); setLastOwnerSessionFlag(false); }
           setCrmRole(initRole === "manager" ? "manager" : "owner");
+          // BUG FIX — the signed-in email was only captured on a fresh sign-in,
+          // never for a session restored on page load, so anything gated on it
+          // (the Developer → Alfred Cockpit menu, feedback-board admin) vanished
+          // after any reload.
+          if (initial?.user?.email) setCrmUserEmail(initial.user.email);
           if (initial?.user?.id) { setCrmUserId(initOwnerId || initial.user.id); setLastOwnerId(initOwnerId || initial.user.id); }
           applyGoogleIdentity(initial, initOwnerId || initial?.user?.id);
           if (isOAuthCallback && initIsGoogle) {
@@ -5480,7 +5485,8 @@ export function App() {
   // instead of competing with Dashboard/Alfred/Inbox for top billing.
   const navGroupsWithFeedback = navGroups.map(g => g.label === "Account & More" ? { ...g, items: [...g.items, { id: "feedback", label: "Feedback", icon: MessageSquare }] } : g);
   const visibleNavGroups = (isCockpitOwner
-    ? [...navGroupsWithFeedback, { label: "Developer", items: [{ id: "cockpit", label: "Alfred Cockpit", icon: LayoutGrid }] }]
+    // First in the sidebar, not last — at the bottom of a long menu nobody found it.
+    ? [{ label: "Developer", items: [{ id: "cockpit", label: "Alfred Cockpit", icon: LayoutGrid }] }, ...navGroupsWithFeedback]
     : navGroupsWithFeedback
   )
     .map(g => ({ ...g, items: g.items.filter(item => !managerBlocked(item.id)) }))
