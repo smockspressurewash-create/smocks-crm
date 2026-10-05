@@ -178,10 +178,23 @@ export function CockpitPage({ ownerId, toast }: { ownerId: string; toast?: (msg:
     setReplying(true);
     const stamp = new Date().toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
     const notes = ((viewing.claude_notes || "").trim() ? viewing.claude_notes.trim() + NL + NL : "") + `[${stamp}] You: ${msg}`;
-    const { error, data } = await (supabase as any).from("cockpit_items").update({ claude_notes: notes, status: "in_progress", updated_at: new Date().toISOString() }).eq("id", viewing.id).select("id");
+    // Reset the progress bar (it may still say 100% from the preview) and
+    // label what happens next, so the card doesn't claim it's finished.
+    const label = msg === REPLIES.makeLive ? "Making it live — starting"
+      : msg === REPLIES.discard ? "Discarding the preview"
+      : msg === REPLIES.undo ? "Undoing the change"
+      : msg === REPLIES.approve ? "Approved — starting"
+      : msg === REPLIES.cancel ? "Cancelling"
+      : msg.startsWith("Not fixed yet:") ? "Reopened — looking into it"
+      : "Waiting for Claude to pick this up";
+    const progressPatch = { progress: null, progress_label: label };
+    let { error, data } = await (supabase as any).from("cockpit_items").update({ claude_notes: notes, status: "in_progress", ...progressPatch, updated_at: new Date().toISOString() }).eq("id", viewing.id).select("id");
+    if (error && /progress/i.test(error.message || "")) {
+      ({ error, data } = await (supabase as any).from("cockpit_items").update({ claude_notes: notes, status: "in_progress", updated_at: new Date().toISOString() }).eq("id", viewing.id).select("id"));
+    }
     setReplying(false);
     if (error || !data?.length) { toast?.("Couldn't send — " + (error?.message || "no matching item"), "red"); return; }
-    setItems(prev => prev.map(i => i.id === viewing.id ? { ...i, claude_notes: notes, status: "in_progress" } : i));
+    setItems(prev => prev.map(i => i.id === viewing.id ? { ...i, claude_notes: notes, status: "in_progress", ...progressPatch } : i));
     if (!text) setReply("");
     const woke = await wakeClaude();
     toast?.(woke ? "Sent ✓ — Claude is starting on it now" : "Sent ✓ — Claude will see it on the next check", "green");
