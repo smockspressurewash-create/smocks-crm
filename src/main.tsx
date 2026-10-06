@@ -4,6 +4,7 @@ import { App } from "./App";
 import { supabase } from "./lib/supabase";
 import { ErrorBoundary } from "./components/ui/ErrorBoundary";
 import { installGlobalHaptics } from "./lib/haptics";
+import { needsPreviewSignIn, completePreviewSignIn } from "./lib/preview";
 import "./index.css";
 
 // AUDIT 1 — the only ErrorBoundary in the app previously lived INSIDE App.tsx
@@ -68,10 +69,15 @@ if (currentBundle) {
 // something fixable here).
 installGlobalHaptics();
 
-ReactDOM.createRoot(document.getElementById("root")!).render(
+const mount = () => ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <ErrorBoundary>
       <App />
     </ErrorBoundary>
   </React.StrictMode>
 );
+
+// Cockpit preview links carry a one-time sign-in token — finish signing in
+// before the app first renders, so it opens signed in on the right screen.
+if (needsPreviewSignIn()) completePreviewSignIn().finally(mount);
+else mount();

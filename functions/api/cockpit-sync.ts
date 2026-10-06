@@ -81,19 +81,24 @@ const previewLogin = async (context: { request: Request; env: Record<string, str
   const email = await ownerFromSession(context);
   if (!email) return json({ error: "Unauthorized" }, 401);
   const body = await context.request.json().catch(() => ({})) as { previewUrl?: string };
-  const previewUrl = String(body.previewUrl || "").replace(/\/?$/, "/");
-  if (!/^https:\/\/[a-z0-9-]+\.smocks-crm\.pages\.dev\/$/.test(previewUrl)) return json({ error: "Not a CrewBoss preview link" }, 400);
+  // previewUrl may point at a screen: https://cockpit-xxxx.smocks-crm.pages.dev/#/customers
+  const m = String(body.previewUrl || "").match(/^(https:\/\/[a-z0-9-]+\.smocks-crm\.pages\.dev)\/?(?:#\/?([A-Za-z0-9\/_?=&.-]*))?$/);
+  if (!m || m[1] === "https://smocks-crm.pages.dev") return json({ error: "Not a CrewBoss preview link" }, 400);
+  const origin = m[1];
+  const go = (m[2] || "").slice(0, 200);
   const key = context.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!key) return json({ error: "SUPABASE_SERVICE_ROLE_KEY isn't set." }, 503);
   const res = await fetch(`${SUPABASE_URL}/auth/v1/admin/generate_link`, {
     method: "POST",
     headers: { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ type: "magiclink", email, redirect_to: previewUrl }),
+    body: JSON.stringify({ type: "magiclink", email, redirect_to: origin + "/" }),
   });
   const data = await res.json().catch(() => null) as any;
-  const url = data?.action_link || data?.properties?.action_link;
-  if (!res.ok || !url) return json({ error: "Couldn't create a sign-in link for the preview", detail: data?.msg || data?.error_description || res.status }, 502);
-  return json({ url });
+  const hashed = data?.hashed_token || data?.properties?.hashed_token;
+  if (!res.ok || !hashed) return json({ error: "Couldn't create a sign-in link for the preview", detail: data?.msg || data?.error_description || res.status }, 502);
+  // The preview app redeems the one-time token itself (src/lib/preview.ts →
+  // verifyOtp), so this doesn't depend on Supabase's redirect allow-list.
+  return json({ url: `${origin}/?th=${encodeURIComponent(hashed)}${go ? "&go=" + encodeURIComponent(go) : ""}` });
 };
 
 // Start the GitHub Actions run right away instead of waiting for the next

@@ -16,6 +16,7 @@ import { useAutomationEngine } from "./hooks/useAutomationEngine";
 import { useScheduledCampaigns } from "./hooks/useScheduledCampaigns";
 import { useIsMobile } from "./hooks/useIsMobile";
 import { supabase, clearLocalAuthSession, isPublicCustomerHash } from "./lib/supabase";
+import { IS_PREVIEW, LIVE_COCKPIT_URL } from "./lib/preview";
 import { getPlanLimits, hasPlanFeature, FEATURE_MIN_TIER_LABEL, PLAN_TIER_LABEL, type PlatformSubscription } from "./lib/planLimits";
 import { GBtn } from "./components/ui/GBtn";
 import { SafePage } from "./components/ui/ErrorBoundary";
@@ -5435,7 +5436,7 @@ export function App() {
   // is explicitly false, set at signup); pre-existing accounts have it
   // undefined and skip straight to the main app. Re-openable from
   // Settings → Onboarding, which also flips it back to false.
-  if (settings.onboardingComplete === false) {
+  if (settings.onboardingComplete === false && !IS_PREVIEW) {
     return (
       <OnboardingFlow
         settings={settings}
@@ -6420,7 +6421,7 @@ export function App() {
       <SopModal open={page === "sops"} onClose={() => setPage("dashboard")} editable ownerId={crmUserId} employees={employees} toast={toast} />
 
       {/* Company first-run setup modal */}
-      {companySetupOpen && (
+      {companySetupOpen && !IS_PREVIEW && (
         <div className="fixed inset-0 z-[200] bg-black/80 backdrop-blur flex items-center justify-center p-4">
           <div className="w-full max-w-sm bg-black/95 border border-red-900/40 rounded-2xl p-6 shadow-2xl space-y-4">
             {setupStep === 1 ? (
@@ -6537,15 +6538,22 @@ export function App() {
       </div>
       {/* BUG FIX — replaces the old always-visible header "Notify Me" toggle
           with a one-time opt-in pop-up (see PushOptInPrompt.tsx). */}
-      {hasCrmSession && crmUserId && <PushOptInPrompt ownerId={crmUserId} />}
-      {hasCrmSession && crmRole === "owner" && !showProductTour && (
+      {hasCrmSession && crmUserId && !IS_PREVIEW && <PushOptInPrompt ownerId={crmUserId} />}
+      {IS_PREVIEW && (
+        <div className="fixed bottom-[76px] md:bottom-4 left-1/2 -translate-x-1/2 z-[300] flex items-center gap-2 px-3 py-1.5 rounded-full bg-purple-950/95 border border-purple-500/50 text-xs text-purple-100 shadow-xl whitespace-nowrap" style={{ marginBottom: "env(safe-area-inset-bottom, 0px)" }}>
+          <span className="font-semibold">Preview</span>
+          <span className="text-purple-200/70 hidden sm:inline">— only you can see this change</span>
+          <a href={LIVE_COCKPIT_URL} className="ml-1 px-2 py-0.5 rounded-full bg-purple-500/30 font-semibold">Back to Cockpit</a>
+        </div>
+      )}
+      {hasCrmSession && crmRole === "owner" && !showProductTour && !IS_PREVIEW && (
         <OnboardingChecklist
           settings={settings} setSettings={setSettings}
           customers={customers} jobs={jobs} estimates={estimates} employees={employees}
           setPage={setPage} toast={toast}
         />
       )}
-      {showProductTour && (
+      {showProductTour && !IS_PREVIEW && (
         <ProductTour
           onNav={setPage}
           onFinish={() => setSettings((prev: any) => ({ ...prev, productTourPending: false, productTourComplete: true }))}

@@ -63,7 +63,10 @@ Explain consequences concretely, e.g. "This changes how invoices are emailed to 
 5. Verify: `npx tsc -b` and `npm run build` must pass. For UI or flow changes, start `npm run dev -- --port 5181 --host 127.0.0.1` in the background and run (or adapt) the matching script in `scripts/e2e/` at phone width — the owner uses an iPhone.
 6. Commit (message ends with `Co-Authored-By: Claude <noreply@anthropic.com>`), `git push -u origin $B --force-with-lease`.
 7. Get the preview link Cloudflare builds for the branch: `https://$B.smocks-crm.pages.dev` (branch name lowercased, max 28 chars). Wait until it responds 200 (up to ~5 minutes: `curl -s -o /dev/null -w '%{http_code}'`). If `gh` works, the Cloudflare check run on the commit also lists the URL.
-8. Post `progress: 100`, `previewUrl`, and a note starting `PREVIEW READY:` — what changed, exactly what to tap to try it, and that only someone with the link sees it. Leave `in_progress`.
+8. Post `progress: 100`, `previewUrl`, and a note starting `PREVIEW READY:` — what changed and exactly what to tap to try it. Leave `in_progress`.
+   - **Point `previewUrl` at the screen the change is on**, e.g. `https://$B.smocks-crm.pages.dev/#/customers` (any app route: `#/dashboard`, `#/jobs`, `#/invoices`, `#/cockpit`, `#/client` for the customer portal…). The owner's "Open the preview" button signs them in automatically (one-time token, `src/lib/preview.ts`) and opens that screen; previews skip first-run pop-ups and show a "Preview — Back to Cockpit" bar.
+   - The preview is signed in as the owner. If the change is in the employee portal or a customer-facing page, say in the note how to reach it from there.
+   - Wait until the preview actually serves your commit before posting (`curl -s https://$B.smocks-crm.pages.dev/ | grep build-sha` shows the commit).
 
 ## Owner replied
 

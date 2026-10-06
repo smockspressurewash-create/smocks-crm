@@ -17,6 +17,7 @@ Needs Google Chrome installed (`channel: "chrome"`); GitHub's ubuntu runners hav
 | `smock-dep1.cjs` | $1 quote with 50% deposit, tax, flat deposit — amounts shown and sent (cents) |
 | `smock-emp.cjs` | Employee signed in on the device opens a customer link; sign-out when the logout request fails |
 | `smock-builder.cjs` | Owner → Quotes → New on a phone: horizontal overflow, AI pricing "Add", deposit display |
+| `cockpit-preview.cjs` | A Cockpit preview link signs in from its one-time token, opens the right screen, no pop-ups, Preview bar (run vite on 5182; uses cockpit-*.localhost) |
 | `cockpit-ui.cjs` | Alfred Cockpit visible after reload for the owner email, card states (question, approval, progress, preview, live) |
 | `lead-embed.cjs` | Lead form embedded in an iframe on another origin submits with the business id |
 

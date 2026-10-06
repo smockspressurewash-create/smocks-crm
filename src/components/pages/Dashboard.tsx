@@ -1,5 +1,6 @@
 // auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import { IS_PREVIEW } from "../../lib/preview";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
   Settings, Bell, Menu, X, Plus, Search, Edit, Trash2, Send,
@@ -1006,7 +1007,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
           when this tab isn't focused, not just via the in-app bell/toast and
           email. Only shown when permission hasn't been asked yet or was
           dismissed this session; never shown again once granted or denied. */}
-      {desktopNotifsSupported() && desktopNotifPermission() === "default" && !desktopNotifDismissed && (
+      {!IS_PREVIEW && desktopNotifsSupported() && desktopNotifPermission() === "default" && !desktopNotifDismissed && (
         <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-blue-950/20 border border-blue-700/30 text-xs text-blue-300">
           <Bell size={13} className="flex-shrink-0" />
           <span className="flex-1">Enable desktop alerts to get notified instantly when a crew member reports a problem — even if this tab isn't open.</span>
