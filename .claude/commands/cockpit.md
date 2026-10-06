@@ -96,6 +96,6 @@ Make it live / Discard / Undo are normally done before you start by `scripts/coc
 
 **Keep the card moving.** Update `progress` + `progressLabel` at least every few minutes of work, with honest numbers. The owner watches the bar.
 
-When a change that went live isn't CrewBoss- or pressure-washing-specific, add a line to `docs/TEMPLATE_PORT_QUEUE.md` (date, merge sha, what) in the same commit so it gets ported to the generic template.
+When a change isn't CrewBoss- or pressure-washing-specific, add a line to `docs/TEMPLATE_PORT_QUEUE.md` (date, card title, what) in the preview branch's commit, so it ships with the change when it goes live and gets ported to the generic template.
 
 Keep the developer informed in the session output too: one line per item handled.

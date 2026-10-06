@@ -20,7 +20,8 @@ const build = () => { try { sh("npx tsc -b && npm run build"); return null; } ca
 const testHint = (item) => {
   const preview = String(item.claude_notes || "").split("\n\n").reverse().find(n => /PREVIEW READY:/.test(n)) || "";
   const m = preview.match(/To test:\s*([^]*?)(?:Only (?:someone|people) with|$)/i);
-  return m ? m[1].trim().replace(/\s+/g, " ") : "";
+  // The change is live now — point at the app, not the preview.
+  return m ? m[1].trim().replace(/\s+/g, " ").replace(/open the preview( link)?( on your iPhone)?/gi, "open CrewBoss$2") : "";
 };
 
 // Push master, merging in anything that landed meanwhile (once).
