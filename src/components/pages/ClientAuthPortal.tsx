@@ -184,16 +184,32 @@ export function ClientAuthPortal({
   const [findOpen, setFindOpen] = useState(false);
   const [connectingOwnerId, setConnectingOwnerId] = useState<string | null>(null);
   const [connectedOwnerIds, setConnectedOwnerIds] = useState<string[]>([]);
+  // Each keystroke searches; only the latest search may update the list,
+  // and a search can never spin forever (15s limit with a message).
+  const searchSeq = useRef(0);
+  const [findError, setFindError] = useState("");
   const searchBusinesses = async (q: string) => {
     setFindQuery(q);
-    if (q.trim().length < 2) { setFindResults([]); return; }
+    setFindError("");
+    const seq = ++searchSeq.current;
+    if (q.trim().length < 2) { setFindResults([]); setFindBusy(false); return; }
     setFindBusy(true);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 15000);
     try {
-      const res = await fetch("/api/public-data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "search_businesses", query: q.trim() }) });
+      const res = await fetch("/api/public-data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "search_businesses", query: q.trim() }), signal: ctrl.signal });
       const data = await res.json().catch(() => null);
+      if (seq !== searchSeq.current) return;
+      if (!res.ok) throw new Error(data?.error || "Search failed");
       setFindResults(data?.businesses || []);
-    } catch { setFindResults([]); }
-    finally { setFindBusy(false); }
+    } catch (e: any) {
+      if (seq !== searchSeq.current) return;
+      setFindResults([]);
+      setFindError(e?.name === "AbortError" ? "Search took too long — check your connection and try again." : "Couldn't search right now — please try again.");
+    } finally {
+      clearTimeout(timer);
+      if (seq === searchSeq.current) setFindBusy(false);
+    }
   };
   const requestConnect = async (ownerId: string) => {
     setConnectingOwnerId(ownerId);
@@ -487,6 +503,7 @@ export function ClientAuthPortal({
             <GInput placeholder="Search by business name..." value={findQuery} onChange={(e: any) => searchBusinesses(e.target.value)} className="!text-sm !pl-9" />
           </div>
           {findBusy && <div className="text-center text-xs text-white/30">Searching…</div>}
+          {findError && <div className="text-center text-xs text-red-400">{findError}</div>}
           <div className="space-y-2">
             {findResults.map(b => {
               const isConnecting = connectingOwnerId === b.ownerId;
@@ -507,7 +524,7 @@ export function ClientAuthPortal({
                 </Glass>
               );
             })}
-            {!findBusy && findQuery.trim().length >= 2 && findResults.length === 0 && (
+            {!findBusy && !findError && findQuery.trim().length >= 2 && findResults.length === 0 && (
               <div className="text-center text-xs text-white/30 py-4">No businesses found matching "{findQuery}" — double-check the spelling, or ask them for their direct signup link instead.</div>
             )}
           </div>
@@ -1195,6 +1212,7 @@ export function ClientAuthPortal({
             <GInput placeholder="Search by business name..." value={findQuery} onChange={(e: any) => searchBusinesses(e.target.value)} className="!text-sm !pl-9" />
           </div>
           {findBusy && <div className="text-center text-xs text-white/30">Searching…</div>}
+          {findError && <div className="text-center text-xs text-red-400">{findError}</div>}
           <div className="space-y-2 max-h-[50vh] overflow-y-auto">
             {findResults.filter(b => !(portalData?.accounts || []).some(a => (a.customer as any).owner_id === b.ownerId)).map(b => {
               const isConnecting = connectingOwnerId === b.ownerId;
@@ -1215,7 +1233,7 @@ export function ClientAuthPortal({
                 </div>
               );
             })}
-            {!findBusy && findQuery.trim().length >= 2 && findResults.length === 0 && (
+            {!findBusy && !findError && findQuery.trim().length >= 2 && findResults.length === 0 && (
               <div className="text-center text-xs text-white/30 py-4">No businesses found matching "{findQuery}"</div>
             )}
           </div>

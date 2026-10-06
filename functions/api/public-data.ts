@@ -758,9 +758,12 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       if (q.length < 2) return json({ businesses: [] });
       const rows = await sb(serviceRoleKey, `app_settings?select=owner_id,data`);
       const all: any[] = Array.isArray(rows.data) ? rows.data : [];
-      const needle = q.toLowerCase();
+      // Ignore case, spaces and punctuation, so "smocks" finds "Smock's".
+      const norm = (v: string) => String(v || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+      const needle = norm(q);
+      if (!needle) return json({ businesses: [] });
       const matches = all
-        .filter(r => (r.data?.companyName || "").toLowerCase().includes(needle))
+        .filter(r => norm(r.data?.companyName).includes(needle))
         .slice(0, 20)
         .map(r => ({ ownerId: r.owner_id, companyName: r.data?.companyName || "Unnamed business", companyPhone: r.data?.companyPhone || "", logoUrl: r.data?.logoUrl || "" }));
       return json({ businesses: matches });
@@ -783,12 +786,18 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       const insert = await sb(serviceRoleKey, `customers`, {
         method: "POST", headers: { Prefer: "return=representation" },
         body: JSON.stringify({
-          id: crypto.randomUUID(), owner_id: ownerId, email, firstName: firstName || "New", lastName: lastName || "Customer",
-          phone: phone || "", tags: [], createdAt: new Date().toISOString().slice(0, 10), totalSpent: 0,
+          id: crypto.randomUUID(), owner_id: ownerId, email, firstName: String(firstName || "New").slice(0, 80), lastName: String(lastName || "Customer").slice(0, 80),
+          // address/notes included like submit_lead_form — the insert used to
+          // omit them and was rejected, so "Connect" always failed.
+          phone: String(phone || "").slice(0, 40), address: "", notes: "Asked to connect from the customer portal.",
+          tags: [], createdAt: new Date().toISOString().slice(0, 10), totalSpent: 0,
           pipelineStage: "lead", leadSource: "Client Portal Self-Signup",
         }),
       });
-      if (!insert.ok) return json({ error: "Failed to request connection" }, 500);
+      if (!insert.ok) {
+        console.error("[request_customer_link] insert failed:", insert.status, JSON.stringify(insert.data));
+        return json({ error: "Couldn't send your request to that business — please try again or contact them directly.", detail: insert.data?.message || insert.status }, 500);
+      }
       return json({ success: true, customer: Array.isArray(insert.data) ? insert.data[0] : insert.data });
     }
 
