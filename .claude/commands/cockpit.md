@@ -67,6 +67,8 @@ Explain consequences concretely, e.g. "This changes how invoices are emailed to 
 
 ## Owner replied
 
+Make it live / Discard / Undo are normally done before you start by `scripts/cockpit/fast-actions.mjs` (git only, no thinking needed). You only see them when it couldn't finish — then `.cockpit-handoff.md` has the reason (merge conflict or build error). Fix that, then publish exactly as below.
+
 - `Yes, go ahead.` → continue the plan you asked about (step 3 onward).
 - `Cancel — don't make this change.` → delete any branch you made (`git push origin --delete $B`), note "Cancelled — nothing was changed.", `status: done`, `progress: null`.
 - `Make it live for everyone.` →
@@ -90,7 +92,9 @@ Explain consequences concretely, e.g. "This changes how invoices are emailed to 
 - `Not fixed yet: …` on a card that was done/live → it's reopened. Read the whole conversation, reproduce what they describe, find why the earlier fix didn't work (don't repeat it), and go through the preview flow again on a fresh `$B` branch from master.
 - Anything else → treat it as more detail or an answer, continue from where you were.
 
-If a build or push fails, don't ship. Leave `in_progress`, set `progress: null`, and post a plain note saying what went wrong and what you'll try or need.
+**When something fails, fix it yourself first.** A failing `tsc`/build/check is your problem to solve, not the owner's: read the error, fix it, and retry — up to 3 attempts — updating the card's `progressLabel` ("Fixing a build error (attempt 2)"). Only if you still can't, leave the card `in_progress`, `progress: null`, and post a plain note: what went wrong in one sentence, what you tried, and what happens next. Never leave a card silent.
+
+**Keep the card moving.** Update `progress` + `progressLabel` at least every few minutes of work, with honest numbers. The owner watches the bar.
 
 When a change that went live isn't CrewBoss- or pressure-washing-specific, add a line to `docs/TEMPLATE_PORT_QUEUE.md` (date, merge sha, what) in the same commit so it gets ported to the generic template.
 

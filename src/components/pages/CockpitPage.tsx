@@ -79,8 +79,15 @@ const STATE_BADGE: Record<string, { label: string; cls: string }> = {
 
 // Progress bar while Claude works. Shows the real % when Claude reports it
 // (migration 0100), otherwise an indeterminate sliding bar.
-function ProgressBar({ item }: { item: CockpitItem }) {
+const minutesSince = (iso?: string) => iso ? Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000)) : 0;
+// No update for this long while Claude should be working → show a warning
+// and a "Nudge Claude" button instead of an endless spinner.
+const STALL_MINUTES = 15;
+
+function ProgressBar({ item, onNudge }: { item: CockpitItem; onNudge?: () => void }) {
   const pct = typeof item.progress === "number" ? item.progress : null;
+  const quiet = minutesSince(item.updated_at);
+  const stalled = quiet >= STALL_MINUTES;
   return (
     <div className="mt-2">
       <div className="flex items-center justify-between text-[10px] text-white/50 mb-1">
@@ -93,6 +100,13 @@ function ProgressBar({ item }: { item: CockpitItem }) {
           : <div className="absolute inset-y-0 w-1/3 rounded-full bg-gradient-to-r from-transparent via-red-500 to-transparent animate-[cockpitSlide_1.4s_ease-in-out_infinite]" />}
       </div>
       <style>{`@keyframes cockpitSlide { 0% { left: -33% } 100% { left: 100% } }`}</style>
+      <div className="text-[10px] text-white/35 mt-1">{quiet < 1 ? "Updated just now" : `Last update ${quiet} min ago`}</div>
+      {stalled && (
+        <div className="mt-1.5 text-[11px] text-yellow-300/90 flex items-center justify-between gap-2">
+          <span>No update in {quiet} min — it may be stuck.</span>
+          {onNudge && <button type="button" onClick={e => { e.stopPropagation(); onNudge(); }} className="px-2 py-1 rounded-lg border border-yellow-500/40 text-yellow-200 font-semibold flex-shrink-0">Nudge Claude</button>}
+        </div>
+      )}
     </div>
   );
 }
@@ -155,6 +169,12 @@ export function CockpitPage({ ownerId, toast }: { ownerId: string; toast?: (msg:
       const out = await res.json().catch(() => ({}));
       return !!out?.woke;
     } catch { return false; }
+  };
+
+  // Restart the worker for anything stuck (it picks up every waiting card).
+  const nudge = async () => {
+    const woke = await wakeClaude();
+    toast?.(woke ? "Nudged — Claude is starting again" : "Couldn't start Claude right now — it'll retry on the next check (within ~15 min)", woke ? "green" : "red");
   };
 
   const addItem = async () => {
@@ -268,7 +288,7 @@ export function CockpitPage({ ownerId, toast }: { ownerId: string; toast?: (msg:
                             {item.description && <div className="text-xs text-white/40 mt-0.5 line-clamp-2">{item.description}</div>}
                             {st && STATE_BADGE[st] && <span className={"inline-block mt-1.5 text-[10px] font-semibold px-2 py-0.5 rounded-full border " + STATE_BADGE[st].cls}>{STATE_BADGE[st].label}</span>}
                             {last && <div className="text-[11px] text-green-300/80 mt-1 line-clamp-2">💬 {stripStamp(last).replace(/^(APPROVAL NEEDED|PREVIEW READY|QUESTION|LIVE):s*/, "")}</div>}
-                            {(st === "working" || st === "replied") && <ProgressBar item={item} />}
+                            {(st === "working" || st === "replied") && <ProgressBar item={item} onNudge={nudge} />}
                           </div>
                         </div>
                         <div className="flex items-center justify-between mt-2">
@@ -314,7 +334,7 @@ export function CockpitPage({ ownerId, toast }: { ownerId: string; toast?: (msg:
             </div>
             {viewing.description && <div className="text-sm text-white/70 whitespace-pre-wrap">{viewing.description}</div>}
 
-            {(state === "working" || state === "replied") && <ProgressBar item={viewing} />}
+            {(state === "working" || state === "replied") && <ProgressBar item={viewing} onNudge={nudge} />}
 
             {state === "approval" && (
               <div className="p-3 rounded-xl bg-yellow-950/30 border border-yellow-600/40 space-y-2">

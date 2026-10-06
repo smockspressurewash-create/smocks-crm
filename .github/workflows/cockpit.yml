@@ -1,19 +1,21 @@
 # Alfred Cockpit, 24/7.
 #
-# Every 15 minutes this checks the owner's Alfred Cockpit board (the CRM's
-# private request page). Most runs see an empty queue and finish in seconds.
-# When there are open items, it runs Claude Code with the /cockpit procedure
-# (.claude/commands/cockpit.md): fix, verify, push to master (Cloudflare
-# deploys), and post notes back to the board.
+# Started instantly when the owner adds a card or replies (the CRM calls
+# /api/cockpit-sync?wake=1 → workflow_dispatch), plus a 15-minute schedule
+# as a backup. Each run:
+#   1. queue.mjs        — marks waiting cards "starting" (5%) right away
+#   2. fast-actions.mjs — Make it live / Discard / Undo straight from git,
+#                         with real progress, only "live" once the live
+#                         site serves it; problems are handed to Claude
+#   3. Claude Code      — new cards, free-text replies, and anything handed
+#                         over (.claude/commands/cockpit.md)
+#   4. finish.mjs       — always runs: no card is left spinning; failed runs
+#                         say so and leftovers get one automatic re-run
 #
 # Claude runs on a Claude Pro/Max subscription via CLAUDE_CODE_OAUTH_TOKEN
 # (created once with `claude setup-token`) — no API credits.
 #
-# Repository secrets needed:
-#   CLAUDE_CODE_OAUTH_TOKEN  — from `claude setup-token`
-#   COCKPIT_SYNC_KEY         — same value as the Cloudflare env var
-#
-# Run it right now from GitHub: Actions → Alfred Cockpit → Run workflow.
+# Repository secrets: CLAUDE_CODE_OAUTH_TOKEN, COCKPIT_SYNC_KEY.
 
 name: Alfred Cockpit
 
@@ -21,6 +23,11 @@ on:
   schedule:
     - cron: "*/15 * * * *"
   workflow_dispatch:
+    inputs:
+      chained:
+        description: "Internal: set when a run re-queues leftovers"
+        required: false
+        default: ""
 
 concurrency:
   group: alfred-cockpit
@@ -29,49 +36,43 @@ concurrency:
 permissions:
   contents: write
   checks: read
+  actions: write
   id-token: write
 
 jobs:
   cockpit:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      COCKPIT_SYNC_KEY: ${{ secrets.COCKPIT_SYNC_KEY }}
     steps:
-      - name: Check the queue
-        id: queue
-        env:
-          KEY: ${{ secrets.COCKPIT_SYNC_KEY }}
-        run: |
-          if [ -z "$KEY" ]; then echo "COCKPIT_SYNC_KEY secret is missing"; exit 1; fi
-          body=$(curl -sf -H "x-cockpit-key: $KEY" https://smocks-crm.pages.dev/api/cockpit-sync) || { echo "Cockpit endpoint unreachable"; exit 1; }
-          # Items that need Claude: new ones, plus ones where the owner replied last.
-          # (In-progress items still waiting on the owner's answer are skipped.)
-          open=$(echo "$body" | jq '[.items[] | select(.status == "backlog" or (((.claude_notes // "") | split("\n\n") | last) | test("\\] You:")))] | length')
-          echo "open=$open" >> "$GITHUB_OUTPUT"
-          echo "Cockpit items needing work: $open"
-
       - uses: actions/checkout@v4
-        if: steps.queue.outputs.open != '0'
         with:
           fetch-depth: 0
 
       - uses: actions/setup-node@v4
-        if: steps.queue.outputs.open != '0'
         with:
           node-version: 20
-          cache: npm
+
+      - name: Check the queue
+        id: queue
+        run: node scripts/cockpit/queue.mjs
 
       - name: Prepare workspace
-        if: steps.queue.outputs.open != '0'
-        env:
-          KEY: ${{ secrets.COCKPIT_SYNC_KEY }}
+        if: steps.queue.outputs.any == '1'
         run: |
-          npm ci
-          mkdir -p .secrets && printf '%s' "$KEY" > .secrets/cockpit-key
+          npm ci --no-audit --no-fund
+          mkdir -p .secrets && printf '%s' "$COCKPIT_SYNC_KEY" > .secrets/cockpit-key
           git config user.name "smockspressurewash-create"
           git config user.email "smockspressurewash@gmail.com"
 
+      - name: Make live / discard / undo
+        id: fast
+        if: steps.queue.outputs.fast != '0' && steps.queue.outputs.fast != ''
+        run: node scripts/cockpit/fast-actions.mjs
+
       - name: Work the queue with Claude
-        if: steps.queue.outputs.open != '0'
+        if: steps.queue.outputs.claude != '0' || steps.fast.outputs.handoffs > 0
         uses: anthropics/claude-code-action@v1
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -81,8 +82,16 @@ jobs:
           prompt: |
             Follow .claude/commands/cockpit.md exactly to work the Alfred Cockpit queue.
             You are running unattended in GitHub Actions; git is configured and can push branches and master.
-            Changes go to a cockpit-<id> branch and a private preview first; only merge to master when the owner taps "Make it live for everyone".
-            Skip Playwright UI checks if a browser isn't available.
+            If .cockpit-handoff.md exists, it lists Make-it-live / Undo requests the automatic publisher couldn't finish (merge conflict or failed build) with the error — fix those first, then publish them exactly as the procedure says.
+            Post progress (percentage + step) on every card as you go; never leave a card without an update for more than a few minutes.
           claude_args: >-
-            --max-turns 120
+            --max-turns 150
             --allowedTools "Bash,Read,Edit,Write,Glob,Grep"
+
+      - name: Leave no card spinning
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ATTEMPT_CHAIN: ${{ inputs.chained == '1' && 'stop' || '' }}
+        run: node scripts/cockpit/finish.mjs
