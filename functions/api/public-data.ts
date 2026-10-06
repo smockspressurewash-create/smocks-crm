@@ -26,6 +26,25 @@ const sb = async (serviceRoleKey: string, path: string, init?: RequestInit) => {
   return { ok: res.ok, status: res.status, data };
 };
 
+// Insert one row, dropping any column this database doesn't have yet
+// (PostgREST rejects the whole row over one unknown column). Returns which
+// columns were dropped so callers can log it. Used for public inserts
+// (lead form, customer portal) so a missing optional column never loses a lead.
+const insertTolerant = async (serviceRoleKey: string, table: string, row: Record<string, unknown>) => {
+  let current = { ...row };
+  const dropped: string[] = [];
+  for (let i = 0; i < 8; i++) {
+    const res = await sb(serviceRoleKey, table, { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify(current) });
+    if (res.ok) return { ...res, dropped };
+    const col = (String(res.data?.message || "").match(/Could not find the '([^']+)' column/) || [])[1];
+    if (!col || !(col in current) || col === "id" || col === "owner_id") return { ...res, dropped };
+    dropped.push(col);
+    const { [col]: _omit, ...rest } = current;
+    current = rest;
+  }
+  return { ok: false, status: 500, data: { message: "too many unknown columns" }, dropped };
+};
+
 // Verifies a Supabase access token and returns the session's own email —
 // used by get_customer_portal_data so a customer can only ever fetch THEIR
 // OWN data (matched by their verified JWT email, never a client-claimed one).
@@ -396,9 +415,9 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       };
       // Optional columns (UTM / SMS consent) may not exist on every schema;
       // retry with the core fields so the lead is never lost over them.
-      let insert = await sb(serviceRoleKey, `customers`, { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ ...core, ...extras }) });
-      if (!insert.ok) insert = await sb(serviceRoleKey, `customers`, { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify(core) });
-      if (!insert.ok) return json({ error: "Failed to save lead" }, 500);
+      const insert = await insertTolerant(serviceRoleKey, "customers", { ...core, ...extras });
+      if (insert.dropped.length) console.warn("[submit_lead_form] saved without missing columns:", insert.dropped.join(", "));
+      if (!insert.ok) { console.error("[submit_lead_form] insert failed:", insert.status, JSON.stringify(insert.data)); return json({ error: "Failed to save lead" }, 500); }
       return json({ success: true });
     }
 
@@ -783,17 +802,15 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       if (!ownerId) return json({ error: "Missing ownerId" }, 400);
       const existing = await sb(serviceRoleKey, `customers?owner_id=eq.${encodeURIComponent(ownerId)}&email=ilike.${encodeURIComponent(email)}&select=id`);
       if (Array.isArray(existing.data) && existing.data.length > 0) return json({ error: "You're already connected to this business" }, 409);
-      const insert = await sb(serviceRoleKey, `customers`, {
-        method: "POST", headers: { Prefer: "return=representation" },
-        body: JSON.stringify({
+      const insert = await insertTolerant(serviceRoleKey, "customers", {
           id: crypto.randomUUID(), owner_id: ownerId, email, firstName: String(firstName || "New").slice(0, 80), lastName: String(lastName || "Customer").slice(0, 80),
           // address/notes included like submit_lead_form — the insert used to
           // omit them and was rejected, so "Connect" always failed.
           phone: String(phone || "").slice(0, 40), address: "", notes: "Asked to connect from the customer portal.",
           tags: [], createdAt: new Date().toISOString().slice(0, 10), totalSpent: 0,
           pipelineStage: "lead", leadSource: "Client Portal Self-Signup",
-        }),
       });
+      if (insert.dropped.length) console.warn("[request_customer_link] saved without missing columns:", insert.dropped.join(", "));
       if (!insert.ok) {
         console.error("[request_customer_link] insert failed:", insert.status, JSON.stringify(insert.data));
         return json({ error: "Couldn't send your request to that business — please try again or contact them directly.", detail: insert.data?.message || insert.status }, 500);
