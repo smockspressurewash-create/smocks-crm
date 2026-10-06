@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Lock, Mail, User, Phone, LogOut, CreditCard, Receipt, CheckCircle, Clock, Gift, Copy, Repeat, ImageIcon, ChevronRight, FileText, Briefcase, CalendarClock, Eye, EyeOff, Search, Plus, Building2 } from "lucide-react";
 import { supabase } from "../../lib/supabase";
-import { fmt, uid, today, mediaSrc } from "../../lib/utils";
+import { fmt, uid, today, mediaSrc, withTimeout } from "../../lib/utils";
 import type { Customer, Estimate, Job, AppSettings } from "../../types";
 import { Glass } from "../ui/Glass";
 import { CrewBossMark } from "../ui/CrewBossMark";
@@ -198,12 +198,21 @@ export function ClientAuthPortal({
   const requestConnect = async (ownerId: string) => {
     setConnectingOwnerId(ownerId);
     try {
-      const { data: sessData } = await supabase.auth.getSession();
-      const token = sessData.session?.access_token;
-      const res = await fetch("/api/public-data", {
-        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ action: "request_customer_link", ownerId, firstName, lastName, phone }),
-      });
+      const { data: sessData } = await withTimeout<any>(supabase.auth.getSession() as any, 8000, "Checking your sign-in");
+      const token = sessData?.session?.access_token;
+      if (!token) throw new Error("You're signed out — please sign in again and retry");
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 20000);
+      let res: Response;
+      try {
+        res = await fetch("/api/public-data", {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ action: "request_customer_link", ownerId, firstName, lastName, phone }),
+          signal: ctrl.signal,
+        });
+      } catch (e: any) {
+        throw new Error(e?.name === "AbortError" ? "That took too long — check your connection and try again" : (e?.message || "Couldn't reach the server"));
+      } finally { clearTimeout(timer); }
       const data = await res.json().catch(() => null);
       if (!res.ok || data?.error) throw new Error(data?.error || "Request failed");
       setConnectedOwnerIds(prev => [...prev, ownerId]);
