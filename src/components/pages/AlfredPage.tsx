@@ -194,6 +194,19 @@ const speakAloud = (text: string, elevenlabsKey?: string): Promise<void> => new 
   window.speechSynthesis.speak(utterance);
 });
 
+// Deposit fields for an estimate/invoice Alfred creates (same shape the
+// estimate builder saves). The owner must decide whether the customer may
+// also pay in full — never guess; the model relays the question.
+const alfredDepositFields = (inputs: any, total: number): { depositRequired: number; depositType: string; depositMandatory: boolean } | { error: string } => {
+  const pct = Number(inputs?.depositPercent) || 0, amt = Number(inputs?.depositAmount) || 0;
+  if (!pct && !amt) return { depositRequired: 0, depositType: "amount", depositMandatory: false };
+  if (pct && amt) return { error: "Use depositPercent OR depositAmount, not both." };
+  if (pct < 0 || pct > 100) return { error: "depositPercent must be between 0 and 100." };
+  if (amt < 0 || amt > total) return { error: "The deposit can't be more than the total." };
+  if (typeof inputs?.depositMandatory !== "boolean") return { error: "NEEDS_CLARIFICATION — nothing was created yet. Ask the user: \"Should they only be able to pay the deposit now, or choose between paying the deposit now or paying in full?\" Then call again with depositMandatory true (deposit only) or false (their choice)." };
+  return pct ? { depositRequired: pct, depositType: "percent", depositMandatory: inputs.depositMandatory } : { depositRequired: amt, depositType: "amount", depositMandatory: inputs.depositMandatory };
+};
+
 export function AlfredPage({ conversations, setConversations, activeConvId, setActiveConvId, memory = [], setMemory, personality, setPersonality, apiKey, openSettings, toast, jobs = [], setJobs, estimates = [], setEstimates, customers = [], setCustomers, employees = [], automations = [], setAutomations = () => {}, stats, setWins, goals = [], setGoals, setSettings, settings = {} as AppSettings, modelStatus = {}, setModelStatus = () => {}, onNav, onSpotlight, expenses = [], setExpenses, entries = [], chemicals = [], ownerId = "", reviews = [], setReviews = () => {}, vehicles = [], setVehicles = () => {}, maintenance = [], setMaintenance = () => {}, trainingModules = [], services = [], isActivePage = true, currentPageName = "alfred", cursorContext = "", onResolveScreenHighlight }: { conversations?: any; setConversations?: any; activeConvId?: any; setActiveConvId?: any; memory?: any; setMemory?: any; personality?: any; setPersonality?: any; apiKey?: any; openSettings?: any; toast?: any; jobs?: any; setJobs?: any; estimates?: any; setEstimates?: any; customers?: any; setCustomers?: any; employees?: any; automations?: any; setAutomations?: any; stats?: any; setWins?: any; goals?: any; setGoals?: any; setSettings?: any; settings?: AppSettings; modelStatus?: any; setModelStatus?: any; onNav?: any; onSpotlight?: (step: { page: string; type?: string; id?: string; label?: string }) => void; expenses?: any[]; setExpenses?: any; entries?: any[]; chemicals?: any[]; ownerId?: string; reviews?: any[]; setReviews?: any; vehicles?: any[]; setVehicles?: any; maintenance?: any[]; setMaintenance?: any; trainingModules?: any[]; services?: any[];
   // FEATURE — "keep talking to it while looking through the CRM... Alfred
   // should have the context of the screen you're on." isActivePage drives
@@ -2463,9 +2476,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           }
           const items = (inputs.lineItems || []).map(li => ({ id: uid(), description: li.description, quantity: li.quantity || 1, unitPrice: li.unitPrice || 0 }));
           const subtotal = items.reduce((s, i) => s + i.quantity * i.unitPrice, 0);
-          const tax = subtotal * ((Number(settings.taxRate) || 6) / 100);
-          const total = subtotal + tax;
-          const newE = { id: uid(), customerId: c.id, lineItems: items, subtotal, discount: 0, depositRequired: 0, tax, total, status: "pending", createdAt: today(), validUntil: daysFromNow(30), viewed: false, viewedAt: null, terms: "Payment due upon completion.", notes: inputs.notes || "", owner_id: ownerId };
+          const tax = Math.round(subtotal * ((Number(settings.taxRate) || 6) / 100) * 100) / 100;
+          const total = Math.round((subtotal + tax) * 100) / 100;
+          const depE = alfredDepositFields(inputs, total);
+          if ("error" in depE) return depE;
+          const newE = { id: uid(), customerId: c.id, lineItems: items, subtotal, discount: 0, depositRequired: 0, tax, total, ...depE, status: "pending", createdAt: today(), validUntil: daysFromNow(30), viewed: false, viewedAt: null, terms: "Payment due upon completion.", notes: inputs.notes || "", owner_id: ownerId };
           let savedE: any = null;
           let saveErrorE: any = null;
           try {
@@ -3115,10 +3130,12 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             ? inputs.lineItems.map((li: any) => ({ id: uid(), description: li.description, quantity: li.quantity || 1, unitPrice: li.unitPrice || 0 }))
             : [{ id: uid(), description: inputs.description || "Service", quantity: 1, unitPrice: Number(inputs.amount) || 0 }];
           const subtotal = items.reduce((s: number, i: any) => s + i.quantity * i.unitPrice, 0);
-          const tax = subtotal * ((Number(settings.taxRate) || 6) / 100);
-          const total = subtotal + tax;
+          const tax = Math.round(subtotal * ((Number(settings.taxRate) || 6) / 100) * 100) / 100;
+          const total = Math.round((subtotal + tax) * 100) / 100;
+          const depInv = alfredDepositFields(inputs, total);
+          if ("error" in depInv) return depInv;
           const newInv = {
-            id: uid(), customerId: c.id, lineItems: items, subtotal, discount: 0, depositRequired: 0, tax, total,
+            id: uid(), customerId: c.id, lineItems: items, subtotal, discount: 0, depositRequired: 0, tax, total, ...depInv,
             status: "approved", createdAt: today(), validUntil: daysFromNow(30), viewed: false, viewedAt: null,
             terms: "Payment due upon receipt.", notes: inputs.notes || "", invoiced: true, invoicedAt: today(), owner_id: ownerId,
           };
@@ -4453,7 +4470,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     {
       name: "create_estimate",
       description: "Create a new estimate for a customer. Provide line items with description, quantity, unitPrice. Tax is added automatically.",
-      input_schema: { type: "object", properties: { customerId: { type: "string" }, customerName: { type: "string" }, lineItems: { type: "array", items: { type: "object", properties: { description: { type: "string" }, quantity: { type: "number" }, unitPrice: { type: "number" } }, required: ["description", "unitPrice"] } }, notes: { type: "string" } }, required: ["lineItems"] }
+      input_schema: { type: "object", properties: { customerId: { type: "string" }, customerName: { type: "string" }, lineItems: { type: "array", items: { type: "object", properties: { description: { type: "string" }, quantity: { type: "number" }, unitPrice: { type: "number" } }, required: ["description", "unitPrice"] } }, notes: { type: "string" }, depositPercent: { type: "number", description: "Require a deposit of this % of the total (e.g. 50). Use this OR depositAmount." }, depositAmount: { type: "number", description: "Require a flat dollar deposit. Use this OR depositPercent." }, depositMandatory: { type: "boolean", description: "REQUIRED whenever a deposit is set. true = the customer can only pay the deposit now; false = they choose between the deposit now or paying in full. If the user didn't say, ask them first." } }, required: ["lineItems"] }
     },
     {
       name: "send_estimate",
@@ -4512,8 +4529,8 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     },
     {
       name: "create_invoice",
-      description: "Create and save an invoice for a customer for a flat amount or itemized line items — this is a bill for completed work, due immediately (unlike create_estimate, which is a pending quote awaiting approval). After creating it, call send_estimate — pass the returned invoiceId AS send_estimate's estimateId param — to actually deliver it to the customer. Creating alone does not notify the customer.",
-      input_schema: { type: "object", properties: { customerId: { type: "string" }, customerName: { type: "string" }, amount: { type: "number", description: "Flat total if not using itemized lineItems" }, description: { type: "string", description: "Line description when using a flat amount, e.g. 'House wash'" }, lineItems: { type: "array", items: { type: "object", properties: { description: { type: "string" }, quantity: { type: "number" }, unitPrice: { type: "number" } }, required: ["description", "unitPrice"] } }, notes: { type: "string" } } }
+      description: "Create and save an invoice for a customer for a flat amount or itemized line items, optionally with a deposit (depositPercent / depositAmount) — a bill due now (unlike create_estimate, which is a pending quote awaiting approval). After creating it, call send_estimate — pass the returned invoiceId AS send_estimate's estimateId param — to actually deliver it to the customer. Creating alone does not notify the customer.",
+      input_schema: { type: "object", properties: { customerId: { type: "string" }, customerName: { type: "string" }, amount: { type: "number", description: "Flat total if not using itemized lineItems" }, description: { type: "string", description: "Line description when using a flat amount, e.g. 'House wash'" }, lineItems: { type: "array", items: { type: "object", properties: { description: { type: "string" }, quantity: { type: "number" }, unitPrice: { type: "number" } }, required: ["description", "unitPrice"] } }, notes: { type: "string" }, depositPercent: { type: "number", description: "Require a deposit of this % of the total (e.g. 50). Use this OR depositAmount." }, depositAmount: { type: "number", description: "Require a flat dollar deposit. Use this OR depositPercent." }, depositMandatory: { type: "boolean", description: "REQUIRED whenever a deposit is set. true = the customer can only pay the deposit now; false = they choose between the deposit now or paying in full. If the user didn't say, ask them first." } } }
     },
     {
       name: "mark_invoice_paid",

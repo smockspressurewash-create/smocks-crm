@@ -20,6 +20,7 @@
 // POST /api/cockpit-sync?wake=1     → (owner's Supabase session) start the GitHub run now
 
 import { sendWebPush } from "./_lib/webPush";
+import { textCockpitPhones } from "./_lib/cockpitBridge";
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 const VAPID_PUBLIC_KEY = "BFqKy2PtHrcVhocXAUh9rCTn6C1PEXIk0X_jyY7xwWBeH6r8w7ybe7lQEtNdtA8luYVn2s0j77XPYJiTCyTfAYA";
@@ -124,7 +125,8 @@ const OPTIONAL_COLUMNS = ["progress", "progress_label", "preview_url"];
 // the same Web Push the CRM already uses (push_subscriptions, owner rows).
 // On iPhone this only arrives when CrewBoss is added to the Home Screen and
 // notifications are turned on there (iOS 16.4+).
-const notifyOwner = async (env: Record<string, string>, ownerId: string, itemTitle: string, note: string, status?: string) => {
+const notifyOwner = async (env: Record<string, string>, ownerId: string, item: { id: string; title: string; preview_url?: string | null }, note: string, status?: string) => {
+  const itemTitle = item.title || "Cockpit item";
   const text = note.trim();
   const marker = (text.match(/^(APPROVAL NEEDED|PREVIEW READY|QUESTION|LIVE):/) || [])[1];
   const asksQuestion = !marker && /\?[\s)\]"']*$/.test(text);
@@ -135,6 +137,9 @@ const notifyOwner = async (env: Record<string, string>, ownerId: string, itemTit
   else if (marker === "LIVE") title = "Live for everyone";
   else if (status === "done") title = "Done";
   else return;
+  // Text Will's and the developer's phones too (they can reply to Alfred).
+  try { await textCockpitPhones(env, ownerId, item, title, text || "Finished.", marker || (asksQuestion ? "QUESTION" : undefined)); }
+  catch (e: any) { console.error("[cockpit-sync] text failed:", e?.message); }
   const vapidPrivate = env.VAPID_PRIVATE_KEY;
   if (!vapidPrivate || !ownerId) return;
   const key = env.SUPABASE_SERVICE_ROLE_KEY;
@@ -173,7 +178,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     const prev = String(rows[0].claude_notes || "").trim();
     patch.claude_notes = (prev ? prev + "\n\n" : "") + `[${stamp}] ${String(body.note).slice(0, 4000)}`;
   }
-  const send = (p: Record<string, unknown>) => db(key, `cockpit_items?id=eq.${encodeURIComponent(body.id!)}&select=id,status,owner_id,title`, { method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify(p) });
+  const send = (p: Record<string, unknown>) => db(key, `cockpit_items?id=eq.${encodeURIComponent(body.id!)}&select=id,status,owner_id,title,preview_url`, { method: "PATCH", headers: { Prefer: "return=representation" }, body: JSON.stringify(p) });
   let res = await send(patch);
   let rows = await res.json().catch(() => null);
   let skipped: string[] = [];
@@ -188,7 +193,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
   if (!res.ok) return json({ error: "Update failed", detail: rows }, 502);
   if (!Array.isArray(rows) || rows.length === 0) return json({ error: "Item not found" }, 404);
   if (body.note || body.status === "done") {
-    try { await notifyOwner(context.env, rows[0].owner_id, rows[0].title || "Cockpit item", String(body.note || ""), body.status); }
+    try { await notifyOwner(context.env, rows[0].owner_id, { id: rows[0].id, title: rows[0].title || "Cockpit item", preview_url: rows[0].preview_url }, String(body.note || ""), body.status); }
     catch (e: any) { console.error("[cockpit-sync] push failed:", e?.message); }
   }
   return json({ success: true, item: { id: rows[0].id, status: rows[0].status }, ...(skipped.length ? { skipped, hint: "Run supabase/migrations/0100_cockpit_progress_preview.sql" } : {}) });

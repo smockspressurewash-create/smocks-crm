@@ -33,6 +33,7 @@
 
 import { syncEmployeeJobToCalendar } from "./employeeCalendarSync";
 import { stripMarkdownForSms } from "./textFormat";
+import { COCKPIT_TOOLS, cockpitPrompt, cockpitSender, runCockpitTool } from "./cockpitBridge";
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 
@@ -299,6 +300,11 @@ const smsDepositFields = (input: any, total: number, allowRemove = false): { dep
   if (pct < 0 || pct > 100) return { error: "depositPercent must be between 0 and 100." };
   if (amt < 0 || (total > 0 && amt > total)) return { error: "depositAmount can't be more than the total." };
   if (!pct && !amt && !allowRemove) return { depositRequired: 0, depositType: "amount", depositMandatory: false };
+  // The owner has to decide whether the customer may also pay in full —
+  // don't guess. The model relays this question and calls again.
+  if ((pct || amt) && typeof input.depositMandatory !== "boolean") {
+    return { error: "NEEDS_CLARIFICATION — nothing was created yet. Ask the owner: \"Should they only be able to pay the deposit now, or choose between paying the deposit now or paying in full?\" Then call again with depositMandatory true (deposit only) or false (their choice)." };
+  }
   return pct ? { depositRequired: pct, depositType: "percent", depositMandatory: !!input.depositMandatory }
              : { depositRequired: amt, depositType: "amount", depositMandatory: amt > 0 && !!input.depositMandatory };
 };
@@ -888,7 +894,7 @@ const TOOLS = [
         notes: { type: "string" },
         depositPercent: { type: "number", description: "Require a deposit of this % of the total (e.g. 50 for 50%). Use this OR depositAmount, not both." },
         depositAmount: { type: "number", description: "Require a flat dollar deposit (e.g. 100 for $100). Use this OR depositPercent." },
-        depositMandatory: { type: "boolean", description: "true = customer must pay the deposit up front (can't choose pay-in-full or pay-later). Default false." },
+        depositMandatory: { type: "boolean", description: "REQUIRED whenever a deposit is set. true = the customer can only pay the deposit now; false = they choose between paying the deposit now or paying in full. If the owner didn't say, ask them first." },
       },
       required: ["customerName"],
     },
@@ -922,7 +928,7 @@ const TOOLS = [
         invoiced: { type: "boolean", description: "true = this is an invoice (payment due now), false/omitted = a quote awaiting approval" },
         depositPercent: { type: "number", description: "Require a deposit of this % of the total (e.g. 50 for 50%). Use this OR depositAmount, not both." },
         depositAmount: { type: "number", description: "Require a flat dollar deposit (e.g. 100 for $100). Use this OR depositPercent." },
-        depositMandatory: { type: "boolean", description: "true = customer must pay the deposit up front (can't choose pay-in-full or pay-later). Default false." },
+        depositMandatory: { type: "boolean", description: "REQUIRED whenever a deposit is set. true = the customer can only pay the deposit now; false = they choose between paying the deposit now or paying in full. If the owner didn't say, ask them first." },
       },
       required: ["customerName", "amount"],
     },
@@ -937,7 +943,7 @@ const TOOLS = [
         customerName: { type: "string" },
         depositPercent: { type: "number", description: "Require a deposit of this % of the total (e.g. 50 for 50%). Use this OR depositAmount, not both." },
         depositAmount: { type: "number", description: "Require a flat dollar deposit (e.g. 100 for $100). Use this OR depositPercent." },
-        depositMandatory: { type: "boolean", description: "true = customer must pay the deposit up front (can't choose pay-in-full or pay-later). Default false." },
+        depositMandatory: { type: "boolean", description: "REQUIRED whenever a deposit is set. true = the customer can only pay the deposit now; false = they choose between paying the deposit now or paying in full. If the owner didn't say, ask them first." },
       },
     },
   },
@@ -1364,6 +1370,10 @@ const executeToolCore = async (ctx: Ctx, name: string, input: Record<string, any
       return { error: `The owner has turned off Alfred's "${__cap}" capability in Settings → Alfred → Capabilities — this action can't be performed until they turn it back on.` };
     }
     switch (name) {
+      // Alfred Cockpit by text — only from Will's and the developer's phones
+      // (see _lib/cockpitBridge.ts).
+      case "cockpit_report": case "cockpit_status": case "cockpit_reply": case "cockpit_decide":
+        return runCockpitTool(ctx.env, ctx.ownerId, cockpitSender(ctx.fromPhone), name, input);
       case "get_business_stats": {
         const [jobs, estimates] = await Promise.all([
           sbGet(ctx, `jobs?select=id,status,amount,completedAt,createdAt${ownerScope(ctx)}&limit=2000`),
@@ -2929,7 +2939,7 @@ CRITICAL — NEVER INVENT A CUSTOMER: only call create_customer with a name the 
       const abortTimer = setTimeout(() => controller.abort(), 12000);
       try {
         const result = await Promise.race([
-          callSmsModel(modelKey, apiKey, systemPrompt, convMessages, def.supportsTools ? TOOLS : []),
+          callSmsModel(modelKey, apiKey, systemPrompt + (cockpitSender(ctx.fromPhone) ? cockpitPrompt(cockpitSender(ctx.fromPhone)!) : ""), convMessages, def.supportsTools ? (cockpitSender(ctx.fromPhone) ? [...TOOLS, ...COCKPIT_TOOLS] : TOOLS) : []),
           new Promise<never>((_, reject) => controller.signal.addEventListener("abort", () => reject(new Error("timed out")))),
         ]);
         clearTimeout(abortTimer);

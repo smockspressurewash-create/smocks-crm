@@ -13,6 +13,7 @@
 // nothing here touches other employees, customers, money, or CRM-wide data.
 
 import { stripMarkdownForSms } from "./textFormat";
+import { COCKPIT_TOOLS, cockpitPrompt, cockpitSender, runCockpitTool } from "./cockpitBridge";
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 const SMS_MODELS: Record<string, { provider: string; modelId: string; endpoint: string; maxTokens: number }> = {
@@ -177,6 +178,9 @@ const getEmployeeGoogleToken = async (ctx: Ctx, employee: any): Promise<string |
 const executeTool = async (ctx: Ctx, employee: any, name: string, input: Record<string, any>): Promise<any> => {
   try {
     switch (name) {
+      // Alfred Cockpit by text — only from the developer's / Will's phone.
+      case "cockpit_report": case "cockpit_status": case "cockpit_reply": case "cockpit_decide":
+        return runCockpitTool(ctx.env, ctx.ownerId, cockpitSender(employee?.phone), name, input);
       case "clock_in": {
         if (employee.dayClockInAt) return { error: "Already clocked in for today." };
         const patch = { dayClockInAt: Date.now(), dayLunchStartAt: null, dayPausedMinutes: 0 };
@@ -413,7 +417,8 @@ You can ONLY act on THIS employee's own record and THEIR OWN assigned jobs' cust
     while (rounds < 6) {
       rounds++;
       try {
-        const result = await callModel(modelKey, apiKey, systemPrompt, convMessages, TOOLS);
+        const cockpitWho = cockpitSender(employee?.phone);
+        const result = await callModel(modelKey, apiKey, systemPrompt + (cockpitWho ? cockpitPrompt(cockpitWho) : ""), convMessages, cockpitWho ? [...TOOLS, ...COCKPIT_TOOLS] : TOOLS);
         if (result.text) localFinal = result.text;
         if (result.toolUses.length > 0 && result.stopReason === "tool_use") {
           convMessages.push({ role: "assistant", content: result.raw });
