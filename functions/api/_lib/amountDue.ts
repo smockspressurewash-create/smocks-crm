@@ -48,8 +48,8 @@ export async function computeAmountDue(opts: {
   let payType: PayType = opts.payType === "deposit" ? "deposit" : opts.payType === "remaining" ? "remaining" : "full";
   // A deposit already on record always means the balance is what's due.
   if (hasRemainingBalance) payType = "remaining";
-  // Deposits only secure a future job — not offered once it's invoiced.
-  if (payType === "deposit" && est.invoiced) payType = "full";
+  // An invoice is paid in full unless the owner put a deposit on it.
+  if (payType === "deposit" && est.invoiced && !(Number(est.depositRequired) > 0)) payType = "full";
   if (payType === "remaining" && !hasRemainingBalance) payType = "full";
 
   let base: number;

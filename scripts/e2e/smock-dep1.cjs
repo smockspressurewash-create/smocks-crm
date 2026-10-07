@@ -7,6 +7,8 @@ const OWNER = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const cust = { id: "c1", firstName: "Test", lastName: "C", email: "t@example.com", owner_id: OWNER };
 const mk = (id, extra) => ({ id, customerId: "c1", owner_id: OWNER, status: "pending", lineItems: [{ id: "l1", description: "House wash", quantity: 1, unitPrice: 1 }], ...extra });
 const cases = {
+  "invoice-pct50-$1.06": mk("e0000000-0000-4000-8000-0000000000f4", { status: "approved", invoiced: true, subtotal: 1, tax: 0.06, total: 1.06, depositRequired: 50, depositType: "percent" }),
+  "invoice-no-deposit": mk("e0000000-0000-4000-8000-0000000000f5", { status: "approved", invoiced: true, subtotal: 1, tax: 0.06, total: 1.06 }),
   "pct50-$1": mk("e0000000-0000-4000-8000-0000000000f1", { subtotal: 1, tax: 0, total: 1, depositRequired: 50, depositType: "percent" }),
   "pct50-$1.06tax": mk("e0000000-0000-4000-8000-0000000000f2", { subtotal: 1, tax: 0.06, total: 1.06, depositRequired: 50, depositType: "percent" }),
   "flat$1-$1": mk("e0000000-0000-4000-8000-0000000000f3", { subtotal: 1, tax: 0, total: 1, depositRequired: 1, depositType: "amount" }),
@@ -25,9 +27,13 @@ const cases = {
     const page = await ctx.newPage();
     await page.goto(BASE + "/#/estimate/" + est.id); await page.waitForTimeout(3500);
     const top = (await page.evaluate(() => document.body.innerText)).replace(/\s+/g, " ").match(/QUOTE TOTAL.*?SERVICES|Quote total.*?Services/i);
-    await page.getByText("Review & Sign").click(); await page.waitForTimeout(500);
-    await page.getByText("Type Name").click(); await page.locator("input").last().fill("Test C"); await page.waitForTimeout(300);
-    await page.getByText("Continue to Payment").click(); await page.waitForTimeout(900);
+    const viewBtn = (await page.locator("button").filter({ hasText: /Review & Sign|Pay / }).first().innerText()).trim();
+    if (/Review & Sign/.test(viewBtn)) {
+      await page.getByText("Review & Sign").click(); await page.waitForTimeout(500);
+      await page.getByText("Type Name").click(); await page.locator("input").last().fill("Test C"); await page.waitForTimeout(300);
+      await page.getByText("Continue to Payment").click(); await page.waitForTimeout(900);
+    } else { await page.locator("button").filter({ hasText: /Pay / }).first().click(); await page.waitForTimeout(900); }
+    console.log(k, "view button:", viewBtn);
     const opts = (await page.evaluate(() => document.body.innerText)).replace(/\s+/g, " ").match(/Payment Options.*?Promo/);
     const dep = page.getByText(/deposit/i).first(); if (await dep.isVisible()) await dep.click(); await page.waitForTimeout(300);
     const charged = ((await page.evaluate(() => document.body.innerText)).match(/Total charged today\s*\$[\d,.]+/) || [""])[0].replace(/\s+/g, " ");

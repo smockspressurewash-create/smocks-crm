@@ -249,7 +249,11 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
   const hasRemainingBalance = alreadyPaid > 0 && !e?.paidFull && remainingAmt > 0;
   // FEATURE (round 13, item 4) — mandatory deposit only applies before the
   // job exists/is invoiced and before any partial payment is already on record.
-  const isDepositMandatory = !!e?.depositMandatory && Number(e?.depositRequired) > 0 && !e?.invoiced && !hasRemainingBalance;
+  // An invoice only offers a deposit when the owner set one on it on
+  // purpose (e.g. Alfred "send an invoice with a 50% deposit"); otherwise an
+  // invoice is for completed work and is paid in full (FIX 21 below).
+  const invoiceDeposit = !!e?.invoiced && Number(e?.depositRequired) > 0 && !hasRemainingBalance;
+  const isDepositMandatory = !!e?.depositMandatory && Number(e?.depositRequired) > 0 && (!e?.invoiced || invoiceDeposit) && !hasRemainingBalance;
   // BUG FIX — "View & Pay Invoice" links always opened on "Review & Sign",
   // even for an invoice that was already signed or already paid in full, so a
   // customer could re-sign and get charged a second time. An invoice (or an
@@ -611,7 +615,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                 <div>
                   <div className="text-xs text-white/50 uppercase tracking-wider">{fullyPaid ? "Paid in full" : hasRemainingBalance ? "Balance due" : e.invoiced ? "Amount due" : "Quote total"}</div>
                   {(Number(e.tax) > 0 || effectiveTax > 0) && <div className="text-[11px] text-white/40 mt-0.5">Includes {fmt(effectiveTax)} tax</div>}
-                  {!fullyPaid && !hasRemainingBalance && !e.invoiced && Number(e.depositRequired) > 0 && <div className="text-[11px] text-yellow-300/90 mt-0.5">Deposit due now {fmt(depositAmt)} · balance after service {fmt(Math.max(0, effectiveTotal - depositAmt))}</div>}
+                  {!fullyPaid && !hasRemainingBalance && (!e.invoiced || invoiceDeposit) && Number(e.depositRequired) > 0 && <div className="text-[11px] text-yellow-300/90 mt-0.5">Deposit due now {fmt(depositAmt)} · balance after service {fmt(Math.max(0, effectiveTotal - depositAmt))}</div>}
                 </div>
                 <div className="text-2xl font-black tabular-nums">{fmt(hasRemainingBalance ? remainingAmt : effectiveTotal)}</div>
               </div>
@@ -736,7 +740,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                 </Glass>
               ) : (
                 <GBtn onClick={() => setStep(alreadySigned ? "payment" : "sign")} className="w-full !py-3 text-base font-bold" style={accentColor ? { background: accentColor } : undefined}>
-                  {alreadySigned ? "Pay " + fmt(hasRemainingBalance ? remainingAmt : effectiveTotal) + " →" : "Review & Sign →"}
+                  {alreadySigned ? (invoiceDeposit ? (isDepositMandatory ? "Pay " + fmt(depositAmt) + " deposit →" : "Pay deposit or in full →") : "Pay " + fmt(hasRemainingBalance ? remainingAmt : effectiveTotal) + " →") : "Review & Sign →"}
                 </GBtn>
               )}
               {(!e.status || e.status === "pending") && !e.invoiced && !fullyPaid && (
@@ -826,10 +830,10 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                   A deposit is required to book this job.
                 </div>
               )}
-              <div className={"grid gap-3 " + (hasRemainingBalance || e?.invoiced || isDepositMandatory ? "grid-cols-1" : "grid-cols-2")}>
+              <div className={"grid gap-3 " + (hasRemainingBalance || (e?.invoiced && !invoiceDeposit) || isDepositMandatory ? "grid-cols-1" : "grid-cols-2")}>
                 {(hasRemainingBalance
                   ? [{ k: "remaining", l: "Pay Remaining Balance", sub: fmt(remainingAmt) + " due — " + fmt(alreadyPaid) + " already paid" }]
-                  : e?.invoiced
+                  : e?.invoiced && !invoiceDeposit
                   ? [{ k: "full", l: "Pay in Full", sub: fmt(e.total) + " due for completed service" }]
                   : isDepositMandatory
                   ? [{ k: "deposit", l: "Pay a Deposit Now", sub: "Deposit Due Now: " + fmt(depositAmt) + " · Balance Due After Service: " + fmt(depositBalanceAmt) + " · required to book" }]

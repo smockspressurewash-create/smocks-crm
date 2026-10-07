@@ -877,7 +877,7 @@ const TOOLS = [
   },
   {
     name: "create_invoice",
-    description: "Create a new invoice (payment due now, not a quote) for a customer, with one or more line items. Does NOT text it to the customer — call send_estimate after (or in the same reply) with the returned invoiceId to actually deliver it.",
+    description: "Create a new invoice (payment due now, not a quote) for a customer, with one or more line items, optionally with a deposit (depositPercent or depositAmount — the customer can then pay the deposit now and the rest later). Does NOT text it to the customer — call send_invoice after (or in the same reply) with the returned invoiceId to actually deliver it.",
     input_schema: {
       type: "object",
       properties: {
@@ -886,6 +886,9 @@ const TOOLS = [
         amount: { type: "number", description: "Single line item total, if not using lineItems" },
         lineItems: { type: "array", items: { type: "object", properties: { description: { type: "string" }, quantity: { type: "number" }, unitPrice: { type: "number" } } }, description: "Use instead of description/amount for multiple line items" },
         notes: { type: "string" },
+        depositPercent: { type: "number", description: "Require a deposit of this % of the total (e.g. 50 for 50%). Use this OR depositAmount, not both." },
+        depositAmount: { type: "number", description: "Require a flat dollar deposit (e.g. 100 for $100). Use this OR depositPercent." },
+        depositMandatory: { type: "boolean", description: "true = customer must pay the deposit up front (can't choose pay-in-full or pay-later). Default false." },
       },
       required: ["customerName"],
     },
@@ -909,7 +912,7 @@ const TOOLS = [
   },
   {
     name: "create_estimate",
-    description: "Create a new quote/estimate for a customer with one line item description and a total amount, optionally requiring a deposit (depositPercent or depositAmount). Does NOT text it to the customer — call send_estimate after (or in the same reply) to actually deliver it. For 'send an invoice for $X' set invoiced true (invoices can't have a deposit). To redo an earlier quote with a deposit, create a new one with the same customer/description/amount plus the deposit, or use set_estimate_deposit on the existing one.",
+    description: "Create a new quote/estimate for a customer with one line item description and a total amount, optionally requiring a deposit (depositPercent or depositAmount). Does NOT text it to the customer — call send_estimate after (or in the same reply) to actually deliver it. For 'send an invoice for $X' set invoiced true; invoices can have a deposit too. To redo an earlier quote with a deposit, create a new one with the same customer/description/amount plus the deposit, or use set_estimate_deposit on the existing one.",
     input_schema: {
       type: "object",
       properties: {
@@ -1644,12 +1647,12 @@ const executeToolCore = async (ctx: Ctx, name: string, input: Record<string, any
       case "send_invoice": {
         let inv: any = null;
         if (input.invoiceId) {
-          inv = (await sbGet(ctx, `estimates?id=eq.${encodeURIComponent(input.invoiceId)}&select=id,customerId,total,paidAt`))[0];
+          inv = (await sbGet(ctx, `estimates?id=eq.${encodeURIComponent(input.invoiceId)}&select=id,customerId,total,paidAt,depositRequired,depositType`))[0];
         } else if (input.customerName) {
           const cust = await findCustomerByName(ctx, input.customerName);
           if (!cust) return { error: `No customer found matching "${input.customerName}".` };
-          const rows = await sbGet(ctx, `estimates?customerId=eq.${encodeURIComponent(cust.id)}&invoiced=eq.true&select=id,customerId,total,paidAt,invoicedAt${ownerScope(ctx)}`);
-          const unpaid = rows.filter((e: any) => !e.paidAt).sort((a: any, b: any) => (b.invoicedAt || "").localeCompare(a.invoicedAt || ""));
+          const rows = await sbGet(ctx, `estimates?customerId=eq.${encodeURIComponent(cust.id)}&invoiced=eq.true&select=id,customerId,total,paidAt,invoicedAt,createdAt,depositRequired,depositType${ownerScope(ctx)}`);
+          const unpaid = rows.filter((e: any) => !e.paidAt).sort((a: any, b: any) => ((b.invoicedAt || b.createdAt || "") + b.id).localeCompare((a.invoicedAt || a.createdAt || "") + a.id));
           inv = unpaid[0];
           if (!inv) return { error: `${input.customerName} has no unpaid invoice on file.` };
         } else {
@@ -1660,9 +1663,11 @@ const executeToolCore = async (ctx: Ctx, name: string, input: Record<string, any
         const cust = (await sbGet(ctx, `customers?id=eq.${encodeURIComponent(inv.customerId)}&select=phone,firstName,lastName`))[0];
         if (!cust?.phone) return { error: "That customer has no phone number on file." };
         const link = `${ctx.origin}/#/estimate/${inv.id}`;
-        const res = await sendSms(ctx, cust.phone, `Hi ${cust.firstName || ""}, here's your invoice from ${ctx.companyName} for $${Number(inv.total || 0).toFixed(2)}: ${link}`, false, { name: `${cust.firstName || ""} ${cust.lastName || ""}`.trim(), customerId: inv.customerId });
+        const invDeposit = Number(inv.depositRequired) > 0 ? depositDollars({ depositRequired: Number(inv.depositRequired), depositType: inv.depositType || "amount" }, Number(inv.total) || 0) : 0;
+        const invDepositText = invDeposit > 0 ? ` A deposit of $${invDeposit.toFixed(2)} is due now; the rest ($${Math.max(0, Number(inv.total) - invDeposit).toFixed(2)}) after service.` : "";
+        const res = await sendSms(ctx, cust.phone, `Hi ${cust.firstName || ""}, here's your invoice from ${ctx.companyName} for $${Number(inv.total || 0).toFixed(2)}.${invDepositText} View and pay: ${link}`, false, { name: `${cust.firstName || ""} ${cust.lastName || ""}`.trim(), customerId: inv.customerId });
         if (!res.ok) return { error: res.error };
-        return { success: true, sentTo: `${cust.firstName} ${cust.lastName}`, amount: inv.total };
+        return { success: true, sentTo: `${cust.firstName} ${cust.lastName}`, amount: inv.total, ...(invDeposit > 0 ? { depositDueNow: invDeposit } : {}), link };
       }
       // FEATURE — "mark the Jones invoice as paid, they paid me cash." A
       // genuinely common request Alfred had no tool for at all — same
@@ -2087,16 +2092,18 @@ const executeToolCore = async (ctx: Ctx, name: string, input: Record<string, any
         // Ctx doesn't carry the owner's configured tax rate (a text-Alfred-
         // only gap vs. the in-app version, which reads settings.taxRate
         // directly) — 6% matches this app's own default fallback elsewhere.
-        const tax = subtotal * 0.06;
-        const total = subtotal + tax;
+        const tax = Math.round(subtotal * 0.06 * 100) / 100;
+        const total = Math.round((subtotal + tax) * 100) / 100;
+        const dep = smsDepositFields(input, total);
+        if ("error" in dep) return { error: dep.error };
         const row = {
-          id: crypto.randomUUID(), customerId: cust.id, lineItems: items, subtotal, discount: 0, depositRequired: 0, tax, total,
+          id: crypto.randomUUID(), customerId: cust.id, lineItems: items, subtotal, discount: 0, depositRequired: 0, tax, total, ...dep,
           status: "approved", createdAt: today(), validUntil: today(), viewed: false, viewedAt: null,
           terms: "Payment due upon receipt.", notes: input.notes || "", invoiced: true, invoicedAt: today(),
         };
         const res = await sbWrite(ctx, "estimates", "POST", row);
         if (!res.ok) return { error: res.error };
-        return { success: true, invoiceId: row.id, customer: `${cust.firstName} ${cust.lastName}`.trim(), total };
+        return { success: true, invoiceId: row.id, customer: `${cust.firstName} ${cust.lastName}`.trim(), total, ...(Number(dep.depositRequired) > 0 ? { depositDueNow: depositDollars(dep, total), balanceAfter: Math.max(0, Math.round((total - depositDollars(dep, total)) * 100) / 100) } : {}), next: "Call send_invoice with this invoiceId to text it to the customer." };
       }
       case "request_employee": {
         const job = await findJob(ctx, { jobId: input.jobId, customerName: input.customerName });
@@ -2141,7 +2148,7 @@ const executeToolCore = async (ctx: Ctx, name: string, input: Record<string, any
         const amount = Number(input.amount) || 0;
         if (amount <= 0) return { error: "amount must be greater than 0" };
         const invoiced = !!input.invoiced;
-        const dep = invoiced ? null : smsDepositFields(input, amount);
+        const dep = smsDepositFields(input, amount);
         if (dep && "error" in dep) return { error: dep.error };
         const row = {
           id: crypto.randomUUID(), customerId: cust.id,
@@ -2180,11 +2187,11 @@ const executeToolCore = async (ctx: Ctx, name: string, input: Record<string, any
       case "send_estimate": {
         let est: any = null;
         if (input.estimateId) {
-          est = (await sbGet(ctx, `estimates?id=eq.${encodeURIComponent(input.estimateId)}&select=id,customerId,total,invoiced,paidAt`))[0];
+          est = (await sbGet(ctx, `estimates?id=eq.${encodeURIComponent(input.estimateId)}&select=id,customerId,total,invoiced,paidAt,depositRequired,depositType`))[0];
         } else if (input.customerName) {
           const cust = await findCustomerByName(ctx, input.customerName);
           if (!cust) return { error: `No customer found matching "${input.customerName}".` };
-          const rows = await sbGet(ctx, `estimates?customerId=eq.${encodeURIComponent(cust.id)}&select=id,customerId,total,invoiced,paidAt,createdAt${ownerScope(ctx)}`);
+          const rows = await sbGet(ctx, `estimates?customerId=eq.${encodeURIComponent(cust.id)}&select=id,customerId,total,invoiced,paidAt,createdAt,depositRequired,depositType${ownerScope(ctx)}`);
           est = rows.sort((a: any, b: any) => (b.createdAt || "").localeCompare(a.createdAt || ""))[0];
           if (!est) return { error: `${input.customerName} has no estimate on file.` };
         } else {
@@ -2195,9 +2202,11 @@ const executeToolCore = async (ctx: Ctx, name: string, input: Record<string, any
         if (!cust?.phone) return { error: "That customer has no phone number on file." };
         const link = `${ctx.origin}/#/estimate/${est.id}`;
         const label = est.invoiced ? "invoice" : "estimate";
-        const res = await sendSms(ctx, cust.phone, `Hi ${cust.firstName || ""}, here's your ${label} from ${ctx.companyName} for $${Number(est.total || 0).toFixed(2)}: ${link}`, false, { name: `${cust.firstName || ""} ${cust.lastName || ""}`.trim(), customerId: est.customerId });
+        const estDeposit = Number(est.depositRequired) > 0 ? depositDollars({ depositRequired: Number(est.depositRequired), depositType: est.depositType || "amount" }, Number(est.total) || 0) : 0;
+        const estDepositText = estDeposit > 0 ? ` A deposit of $${estDeposit.toFixed(2)} is due ${est.invoiced ? "now" : "to book"}; the rest ($${Math.max(0, Number(est.total) - estDeposit).toFixed(2)}) after service.` : "";
+        const res = await sendSms(ctx, cust.phone, `Hi ${cust.firstName || ""}, here's your ${label} from ${ctx.companyName} for $${Number(est.total || 0).toFixed(2)}.${estDepositText} View ${est.invoiced ? "and pay" : "and sign"}: ${link}`, false, { name: `${cust.firstName || ""} ${cust.lastName || ""}`.trim(), customerId: est.customerId });
         if (!res.ok) return { error: res.error };
-        return { success: true, sentTo: cust.firstName, amount: est.total, type: label };
+        return { success: true, sentTo: cust.firstName, amount: est.total, type: label, ...(estDeposit > 0 ? { depositDueNow: estDeposit } : {}), link };
       }
       case "text_me": {
         if (!ctx.fromPhone) return { error: "Don't know which number to text back." };
