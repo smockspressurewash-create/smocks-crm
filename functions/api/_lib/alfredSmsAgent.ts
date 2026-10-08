@@ -42,19 +42,22 @@ const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 // Pages Functions build with no access to src/. Keep in sync if a model is
 // added/renamed there.
 const SMS_MODELS: Record<string, { provider: string; modelId: string; endpoint: string; name: string; maxTokens: number; supportsTools: boolean }> = {
-  claude: { provider: "anthropic", modelId: "claude-sonnet-4-20250514", endpoint: "https://api.anthropic.com/v1/messages", name: "Claude", maxTokens: 500, supportsTools: true },
+  claude: { provider: "anthropic", modelId: "claude-sonnet-5-5", endpoint: "https://api.anthropic.com/v1/messages", name: "Claude", maxTokens: 500, supportsTools: true },
   openai: { provider: "openai", modelId: "gpt-4o", endpoint: "https://api.openai.com/v1/chat/completions", name: "GPT-4o", maxTokens: 500, supportsTools: true },
   gemini: { provider: "google", modelId: "gemini-2.5-flash", endpoint: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent", name: "Gemini", maxTokens: 500, supportsTools: true },
-  groq: { provider: "openai-compat", modelId: "llama-3.3-70b-versatile", endpoint: "https://api.groq.com/openai/v1/chat/completions", name: "Groq", maxTokens: 500, supportsTools: true },
+  groq: { provider: "openai-compat", modelId: "openai/gpt-oss-120b", endpoint: "https://api.groq.com/openai/v1/chat/completions", name: "Groq", maxTokens: 500, supportsTools: true },
   mistral: { provider: "openai-compat", modelId: "mistral-large-latest", endpoint: "https://api.mistral.ai/v1/chat/completions", name: "Mistral", maxTokens: 500, supportsTools: true },
   // BUG FIX — kept in sync with src/lib/api.ts's MODELS: the old Kimi K2.6
   // and Nemotron 70B slugs are dead on NVIDIA's catalog (confirmed live —
   // "Function ... not found for account"), same ids the in-app chat had.
-  nvidia_kimi: { provider: "openai-compat", modelId: "deepseek-ai/deepseek-v4-flash-0731", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", name: "DeepSeek V4 Flash", maxTokens: 500, supportsTools: true },
+  nvidia_kimi: { provider: "openai-compat", modelId: "deepseek-ai/deepseek-v4.1-flash", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", name: "DeepSeek V4.1 Flash", maxTokens: 500, supportsTools: true },
   nvidia_nemotron: { provider: "openai-compat", modelId: "nvidia/nemotron-3.5-lightning-30b-a3b", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", name: "Nemotron 3.5 Lightning", maxTokens: 500, supportsTools: true },
-  nvidia_deepseek_r1: { provider: "openai-compat", modelId: "deepseek-ai/deepseek-r1", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", name: "DeepSeek R1", maxTokens: 500, supportsTools: true },
-  nvidia_qwen: { provider: "openai-compat", modelId: "qwen/qwen2.5-7b-instruct", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", name: "Qwen 2.5 7B", maxTokens: 500, supportsTools: true },
+  nvidia_deepseek_r1: { provider: "openai-compat", modelId: "moonshotai/kimi-k3", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", name: "Kimi K3", maxTokens: 500, supportsTools: true },
+  nvidia_qwen: { provider: "openai-compat", modelId: "nvidia/nemotron-3-super-120b-a12b", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", name: "Nemotron 3 Super 120B", maxTokens: 500, supportsTools: true },
   nvidia_muse: { provider: "openai-compat", modelId: "meta/muse-glimmer-30b", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", name: "Muse Glimmer 30B", maxTokens: 500, supportsTools: true },
+  // OpenRouter's free router (picks a free model that's up) and Cerebras's free tier.
+  openrouter: { provider: "openai-compat", modelId: "openrouter/free", endpoint: "https://openrouter.ai/api/v1/chat/completions", name: "OpenRouter", maxTokens: 500, supportsTools: true },
+  cerebras: { provider: "openai-compat", modelId: "gpt-oss-120b", endpoint: "https://api.cerebras.ai/v1/chat/completions", name: "Cerebras", maxTokens: 500, supportsTools: true },
 };
 const DEFAULT_MODEL_PRIORITY = ["claude", "openai", "gemini", "groq", "mistral"];
 

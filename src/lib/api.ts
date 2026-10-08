@@ -5,10 +5,10 @@
 
 export interface ModelDef {
   id: string;           // Short key: "claude", "openai", etc.
-  modelId: string;      // Actual API model ID: "claude-sonnet-4-20250514"
+  modelId: string;      // Actual API model ID: "claude-sonnet-5-5"
   name: string;
   label: string;
-  provider: "anthropic" | "openai" | "google" | "groq" | "mistral" | "nvidia" | "openrouter";
+  provider: "anthropic" | "openai" | "google" | "groq" | "mistral" | "nvidia" | "openrouter" | "cerebras";
   endpoint: string;
   maxTokens: number;
   contextWindow: number;
@@ -23,9 +23,9 @@ export interface ModelDef {
 export const MODELS: Record<string, ModelDef> = {
   claude: {
     id: "claude",
-    modelId: "claude-sonnet-4-20250514",
+    modelId: "claude-sonnet-5-5",
     name: "Claude",
-    label: "Claude Sonnet 4 (Recommended)",
+    label: "Claude Sonnet 5.5 (Recommended)",
     provider: "anthropic",
     endpoint: "https://api.anthropic.com/v1/messages",
     maxTokens: 4096,
@@ -68,9 +68,9 @@ export const MODELS: Record<string, ModelDef> = {
   },
   groq: {
     id: "groq",
-    modelId: "llama-3.3-70b-versatile",
+    modelId: "openai/gpt-oss-120b",
     name: "Groq",
-    label: "Llama 3.3 70B via Groq",
+    label: "GPT-OSS 120B via Groq",
     provider: "groq",
     endpoint: "https://api.groq.com/openai/v1/chat/completions",
     maxTokens: 4096,
@@ -106,9 +106,9 @@ export const MODELS: Record<string, ModelDef> = {
   // at changed.
   nvidia_kimi: {
     id: "nvidia_kimi",
-    modelId: "deepseek-ai/deepseek-v4-flash-0731",
-    name: "DeepSeek V4 Flash",
-    label: "DeepSeek V4 Flash (NVIDIA — Free)",
+    modelId: "deepseek-ai/deepseek-v4.1-flash",
+    name: "DeepSeek V4.1 Flash",
+    label: "DeepSeek V4.1 Flash (NVIDIA — Free)",
     provider: "nvidia",
     endpoint: "https://integrate.api.nvidia.com/v1/chat/completions",
     maxTokens: 16384,
@@ -116,7 +116,7 @@ export const MODELS: Record<string, ModelDef> = {
     color: "from-green-500 to-emerald-700",
     needsKey: true,
     supportsTools: true,
-    keyUrl: "https://build.nvidia.com/deepseek-ai/deepseek-v4-flash-0731",
+    keyUrl: "https://build.nvidia.com/deepseek-ai/deepseek-v4.1-flash",
     apiLabel: "NVIDIA API Key",
     free: true,
   },
@@ -158,9 +158,9 @@ export const MODELS: Record<string, ModelDef> = {
   },
   nvidia_deepseek_r1: {
     id: "nvidia_deepseek_r1",
-    modelId: "deepseek-ai/deepseek-r1",
-    name: "DeepSeek R1",
-    label: "DeepSeek R1 (NVIDIA — Free)",
+    modelId: "moonshotai/kimi-k3",
+    name: "Kimi K3",
+    label: "Kimi K3 (NVIDIA — Free)",
     provider: "nvidia",
     endpoint: "https://integrate.api.nvidia.com/v1/chat/completions",
     maxTokens: 8192,
@@ -168,15 +168,15 @@ export const MODELS: Record<string, ModelDef> = {
     color: "from-green-500 to-emerald-700",
     needsKey: true,
     supportsTools: true,
-    keyUrl: "https://build.nvidia.com/deepseek-ai/deepseek-r1",
+    keyUrl: "https://build.nvidia.com/moonshotai/kimi-k3",
     apiLabel: "NVIDIA API Key",
     free: true,
   },
   nvidia_qwen: {
     id: "nvidia_qwen",
-    modelId: "qwen/qwen2.5-7b-instruct",
-    name: "Qwen 2.5 7B",
-    label: "Qwen 2.5 7B (NVIDIA — Free)",
+    modelId: "nvidia/nemotron-3-super-120b-a12b",
+    name: "Nemotron 3 Super 120B",
+    label: "Nemotron 3 Super 120B (NVIDIA — Free)",
     provider: "nvidia",
     endpoint: "https://integrate.api.nvidia.com/v1/chat/completions",
     maxTokens: 4096,
@@ -184,8 +184,26 @@ export const MODELS: Record<string, ModelDef> = {
     color: "from-green-500 to-emerald-700",
     needsKey: true,
     supportsTools: true,
-    keyUrl: "https://build.nvidia.com/qwen/qwen2_5-7b-instruct",
+    keyUrl: "https://build.nvidia.com/nvidia/nemotron-3-super-120b-a12b",
     apiLabel: "NVIDIA API Key",
+    free: true,
+  },
+  // Cerebras: free tier (rate-limited), OpenAI-compatible, very fast, and
+  // GPT-OSS 120B handles tool calling. Key from cloud.cerebras.ai.
+  cerebras: {
+    id: "cerebras",
+    modelId: "gpt-oss-120b",
+    name: "Cerebras",
+    label: "GPT-OSS 120B via Cerebras (Free)",
+    provider: "cerebras",
+    endpoint: "https://api.cerebras.ai/v1/chat/completions",
+    maxTokens: 4096,
+    contextWindow: 65536,
+    color: "from-orange-400 to-red-600",
+    needsKey: true,
+    supportsTools: true,
+    keyUrl: "https://cloud.cerebras.ai/",
+    apiLabel: "Cerebras API Key",
     free: true,
   },
   // BUG FIX — re-added. Originally removed because the hardcoded model
@@ -201,9 +219,9 @@ export const MODELS: Record<string, ModelDef> = {
   // free pricing AND tool support — not just free pricing like before.
   openrouter: {
     id: "openrouter",
-    modelId: "z-ai/glm-5.2:free",
+    modelId: "nvidia/nemotron-3-super-120b-a12b:free",
     name: "OpenRouter",
-    label: "OpenRouter (GLM 5.2 — Free, tool-capable)",
+    label: "OpenRouter (Nemotron 3 Super — Free, tool-capable)",
     provider: "openrouter",
     endpoint: "https://openrouter.ai/api/v1/chat/completions",
     maxTokens: 4096,
@@ -233,11 +251,12 @@ export const MODELS: Record<string, ModelDef> = {
 // free pricing only, never checked tool support, so it could serve a free
 // model that could never have called a tool no matter what.
 export const OPENROUTER_FREE_FALLBACKS = [
-  "z-ai/glm-5.2:free",
-  "minimax/minimax-m3:free",
-  "google/gemma-4-31b-it:free",
   "nvidia/nemotron-3-super-120b-a12b:free",
+  "google/gemma-4-31b-it:free",
   "nvidia/nemotron-3.5-lightning:free",
+  "nvidia/nemotron-3-ultra-550b-a55b:free",
+  // OpenRouter's own free router: picks whichever free model is up.
+  "openrouter/free",
 ];
 
 // BUG FIX — "check that OpenRouter API keys work for Alfred": every single

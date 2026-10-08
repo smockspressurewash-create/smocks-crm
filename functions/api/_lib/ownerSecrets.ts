@@ -27,13 +27,15 @@ export const getOwnerSecrets = async (ownerId: string, serviceRoleKey: string): 
   const rows = await res.json().catch(() => []);
   const row = Array.isArray(rows) ? rows[0] : null;
   if (!row) return null;
+  const trim = (v: any) => (typeof v === "string" ? v.trim() : "") || undefined;
   return {
-    twilioAccountSid: row.twilio_account_sid || undefined,
-    twilioAuthToken: row.twilio_auth_token || undefined,
-    twilioFromNumber: row.twilio_from_number || undefined,
-    twilioMessagingServiceSid: row.twilio_messaging_service_sid || undefined,
-    googleRefreshToken: row.google_refresh_token || undefined,
-    modelKeys: row.model_keys && typeof row.model_keys === "object" ? row.model_keys : {},
+    // Trimmed: a pasted value with a stray space or newline breaks every call.
+    twilioAccountSid: trim(row.twilio_account_sid),
+    twilioAuthToken: trim(row.twilio_auth_token),
+    twilioFromNumber: trim(row.twilio_from_number),
+    twilioMessagingServiceSid: trim(row.twilio_messaging_service_sid),
+    googleRefreshToken: trim(row.google_refresh_token),
+    modelKeys: row.model_keys && typeof row.model_keys === "object" ? Object.fromEntries(Object.entries(row.model_keys).map(([k, v]) => [k, typeof v === "string" ? v.trim() : v])) as Record<string, string> : {},
   };
 };
 

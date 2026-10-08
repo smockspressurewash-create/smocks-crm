@@ -36,7 +36,10 @@ const getOwnerSquareAccount = async (
   const rows = await res.json().catch(() => []);
   const row = Array.isArray(rows) ? rows[0] : null;
   if (!row) return null;
-  return { accessToken: row.square_access_token || undefined, locationId: row.square_location_id || undefined, applicationId: row.square_application_id || undefined, mode: row.square_mode || "sandbox", webhookSignatureKey: row.square_webhook_signature_key || undefined };
+  // Trimmed: a pasted value with a stray space (seen live: " LGCC…" as the
+  // location id) makes every Square payment fail with "location not found".
+  const t = (v: any) => (typeof v === "string" ? v.trim() : "") || undefined;
+  return { accessToken: t(row.square_access_token), locationId: t(row.square_location_id), applicationId: t(row.square_application_id), mode: row.square_mode || "sandbox", webhookSignatureKey: t(row.square_webhook_signature_key) };
 };
 
 const getEstimateOwnerId = async (invoiceId: string, serviceRoleKey: string): Promise<string | null> => {
@@ -134,7 +137,8 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         });
       }
 
-      const { squareAccessToken, squareLocationId, squareApplicationId, squareWebhookSignatureKey } = body;
+      const trimmed = (v: any) => (typeof v === "string" ? v.trim() : v);
+      const squareAccessToken = trimmed(body.squareAccessToken), squareLocationId = trimmed(body.squareLocationId), squareApplicationId = trimmed(body.squareApplicationId), squareWebhookSignatureKey = trimmed(body.squareWebhookSignatureKey);
       const patch: Record<string, any> = { owner_id: callerOwnerId, updated_at: new Date().toISOString(), square_mode: "production" };
       if (squareAccessToken !== undefined && squareAccessToken !== "") patch.square_access_token = squareAccessToken; // blank = leave existing token untouched
       if (squareLocationId !== undefined) patch.square_location_id = squareLocationId || null;

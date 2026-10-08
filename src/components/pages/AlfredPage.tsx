@@ -164,7 +164,7 @@ const speakAloud = (text: string, elevenlabsKey?: string): Promise<void> => new 
       const ttsRes = await fetch("https://api.elevenlabs.io/v1/text-to-speech/" + voiceId, {
         method: "POST",
         headers: { "Content-Type": "application/json", "xi-api-key": elevenlabsKey },
-        body: JSON.stringify({ text: ttsText, model_id: "eleven_monolingual_v1", voice_settings: { stability: 0.5, similarity_boost: 0.75 } })
+        body: JSON.stringify({ text: ttsText, model_id: "eleven_flash_v2_5", voice_settings: { stability: 0.5, similarity_boost: 0.75 } })
       });
       if (ttsRes.ok) {
         const blob = await ttsRes.blob();
@@ -1696,7 +1696,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           const res = await fetch("https://api.anthropic.com/v1/messages", {
             method: "POST",
             headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
-            body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 300, messages: [{ role: "user", content: prompt }] })
+            body: JSON.stringify({ model: "claude-sonnet-5-5", max_tokens: 300, messages: [{ role: "user", content: prompt }] })
           });
           const d = await res.json();
           const text = d.content?.[0]?.text;

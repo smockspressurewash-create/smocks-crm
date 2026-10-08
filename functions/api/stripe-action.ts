@@ -71,7 +71,8 @@ const getOwnerStripeAccount = async (
   const rows = await res.json().catch(() => []);
   const row = Array.isArray(rows) ? rows[0] : null;
   if (!row) return null;
-  return { secretKey: row.stripe_secret_key || undefined, publishableKey: row.stripe_publishable_key || undefined, webhookSecret: row.stripe_webhook_secret || undefined, mode: row.stripe_mode, stripeAccountId: row.stripe_account_id || undefined };
+  const t = (v: any) => (typeof v === "string" ? v.trim() : "") || undefined; // a pasted key with a stray space fails as "invalid API key"
+  return { secretKey: t(row.stripe_secret_key), publishableKey: t(row.stripe_publishable_key), webhookSecret: t(row.stripe_webhook_secret), mode: row.stripe_mode, stripeAccountId: t(row.stripe_account_id) };
 };
 
 // BUG FIX — same RLS-vs-anon-key mismatch as getInvoiceAmountCents below:
