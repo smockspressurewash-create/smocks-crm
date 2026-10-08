@@ -45,6 +45,9 @@ const verifyStripeSignature = async (payload: string, sigHeader: string, secret:
   const timestamp = parts["t"];
   const v1 = parts["v1"];
   if (!timestamp || !v1) return false;
+  // Stripe's recommended replay protection: refuse events signed more than
+  // 5 minutes ago (a captured old request can't be re-sent later).
+  if (Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) return false;
 
   const enc = new TextEncoder();
   const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);

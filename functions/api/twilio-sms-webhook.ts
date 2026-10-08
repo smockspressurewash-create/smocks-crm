@@ -30,6 +30,7 @@
 // guessed.
 
 import { runAlfredSmsAgent, sendAlfredSms } from "./_lib/alfredSmsAgent";
+import { cockpitSender, cockpitSenderFor } from "./_lib/cockpitBridge";
 import { runAlfredCustomerAgent } from "./_lib/alfredCustomerAgent";
 import { getOwnerSecrets } from "./_lib/ownerSecrets";
 
@@ -594,6 +595,39 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // no way to see or diagnose.
     const twilioSidLooksReal = /^AC[0-9a-f]{32}$/i.test(twilioSid || "");
     const effectiveAuthToken = (twilioSidLooksReal && twilioToken) || context.env.TWILIO_AUTH_TOKEN;
+    // Without the account's Auth Token the signature can't be checked, so
+    // anyone who knows this URL could post a fake text "from" the owner's
+    // phone and drive owner-level Alfred. Instead, ask Twilio whether this
+    // exact message really arrived (from/to must match). A message that
+    // doesn't exist is rejected; if Twilio can't be asked, it's let through
+    // as before, so real texts are never lost.
+    if (!twilioSidLooksReal && twilioToken && twilioSid && !context.env.TWILIO_AUTH_TOKEN) {
+      const d10 = (p: string) => String(p || "").replace(/\D/g, "").slice(-10);
+      const sid = params.MessageSid || params.SmsSid || "";
+      const acct = params.AccountSid || "";
+      if (!/^(SM|MM)[0-9a-f]{32}$/i.test(sid) || !/^AC[0-9a-f]{32}$/i.test(acct)) {
+        console.warn("[TwilioSmsWebhook] unsigned request without a real MessageSid/AccountSid — rejecting");
+        return new Response("Invalid request", { status: 403 });
+      }
+      const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 5000);
+      const check = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${acct}/Messages/${sid}.json`, {
+        headers: { Authorization: "Basic " + btoa(`${twilioSid}:${twilioToken}`) }, signal: ctl.signal,
+      }).catch(() => null);
+      clearTimeout(t);
+      if (check?.status === 404) {
+        console.warn("[TwilioSmsWebhook] message", sid, "doesn't exist at Twilio — rejecting forged request");
+        return new Response("Invalid request", { status: 403 });
+      }
+      if (check?.ok) {
+        const m: any = await check.json().catch(() => null);
+        if (!m || d10(m.from) !== d10(params.From || "") || d10(m.to) !== d10(params.To || "")) {
+          console.warn("[TwilioSmsWebhook] message", sid, "from/to don't match Twilio's record — rejecting");
+          return new Response("Invalid request", { status: 403 });
+        }
+      } else {
+        console.warn("[TwilioSmsWebhook] couldn't confirm message", sid, "with Twilio (" + (check?.status ?? "network") + ") — processing anyway");
+      }
+    }
     if (!twilioSidLooksReal && twilioToken) {
       console.warn("[TwilioSmsWebhook] owner", ownerId, "has a Twilio SID that isn't a real Account SID (starts with", (twilioSid || "").slice(0, 2) || "?", "not AC) — likely an API Key pasted into the Account SID field. Skipping signature verification instead of rejecting every inbound text; fix in Settings → Integrations → Twilio using the Account SID/Auth Token from the main Twilio Console dashboard, not an API Key.");
     }
@@ -705,8 +739,13 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         console.warn("[TwilioSmsWebhook] pre-check employee lookup failed, falling back to owner-phone logic:", e?.message);
       }
     }
-    if (alfredSmsEnabled && authorizedPhones.includes(fromDigits) && !assignedEmployeeId && !preResolvedEmployee) {
-      const ctx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, fromPhone: from, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled, ownerAuthorizedPhones: authorizedPhones, alfredPersonality, owmKey, weatherLocation, companyAddress, myEmail, alfredCapabilities, vacationMode, alfredAutonomyLevel, env: context.env as Record<string, string> };
+    // Will's and the developer's phones (cockpitBridge.ts) always reach Alfred
+    // for the Alfred Cockpit; if the number isn't set up for business Alfred
+    // (Settings → AI Models), only the Cockpit tools are offered.
+    const fullAlfred = alfredSmsEnabled && authorizedPhones.includes(fromDigits) && !assignedEmployeeId && !preResolvedEmployee;
+    const cockpitOnly = !fullAlfred && !assignedEmployeeId && !preResolvedEmployee && !!(await cockpitSenderFor(context.env as Record<string, string>, ownerId, from).catch(() => null));
+    if (fullAlfred || cockpitOnly) {
+      const ctx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, fromPhone: from, cockpitOnly, googleProviderToken, googleRefreshToken, googleTokenExpiresAt, testModeEnabled, ownerAuthorizedPhones: authorizedPhones, alfredPersonality, owmKey, weatherLocation, companyAddress, myEmail, alfredCapabilities, vacationMode, alfredAutonomyLevel, env: context.env as Record<string, string> };
       // BUG FIX — this branch never logged the OWNER's own inbound text to
       // inbox_threads at all (only to alfred_sms_threads, which the Inbox
       // UI never reads) — sendAlfredSms below only logs Alfred's OUTGOING
@@ -770,7 +809,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
             // was just as unclear in the Inbox list as "Alfred" (see
             // alfredSmsAgent.ts's matching fix) — "You" is what this thread
             // actually is from the owner's own point of view.
-            body: JSON.stringify({ p_owner_id: ownerId || null, p_channel: "sms", p_contact_phone: from, p_contact_name: "You", p_customer_id: null, p_message: newMsg, p_unread: true }),
+            body: JSON.stringify({ p_owner_id: ownerId || null, p_channel: "sms", p_contact_phone: from, p_contact_name: (cockpitSender(from) && !cockpitSender(from)!.isOwner) ? "Developer" : "You", p_customer_id: null, p_message: newMsg, p_unread: true }),
           });
         } catch (e: any) { console.error("[TwilioSmsWebhook] failed to log inbound Alfred text:", e?.message); }
       })());

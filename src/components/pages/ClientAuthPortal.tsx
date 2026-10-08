@@ -1092,16 +1092,16 @@ export function ClientAuthPortal({
             const invId = payingInv?.id;
             setEstimates((prev: Estimate[]) => prev.map(e => e.id === invId ? { ...e, paidAt: today(), squarePaymentId: paymentId, stripePaymentStatus: "paid" as const } as any : e));
             patchActiveEstimates(ests => ests.map(e => e.id === invId ? { ...e, paidAt: today(), squarePaymentId: paymentId, stripePaymentStatus: "paid" as const } as any : e));
-            if (invId) {
-              confirmSquareInvoicePayment(invId, paymentId).catch((e: any) => {
-                console.error("[Payment] confirmSquareInvoicePayment failed:", e?.message);
-                toast?.("Payment received, but confirming it with the business is taking longer than usual — it may take a minute to show as paid.", "yellow");
-              });
-            }
-            sendPaymentReceipt({
+            // The receipt goes out once the payment is recorded (the server
+            // only sends receipts for invoices with a payment on file).
+            const recorded = invId ? confirmSquareInvoicePayment(invId, paymentId).catch((e: any) => {
+              console.error("[Payment] confirmSquareInvoicePayment failed:", e?.message);
+              toast?.("Payment received, but confirming it with the business is taking longer than usual — it may take a minute to show as paid.", "yellow");
+            }) : Promise.resolve();
+            recorded.then(() => sendPaymentReceipt({
               customerPhone: cust.phone, customerEmail: cust.email, customerFirstName: cust.firstName, customerId: cust.id,
               amountCents: Math.round((payingInv?.total || 0) * 100), description: `Invoice #${invId || ""}`, invoiceId: invId,
-            }).catch((e: any) => console.warn("[PaymentReceipt] failed:", e?.message));
+            })).catch((e: any) => console.warn("[PaymentReceipt] failed:", e?.message));
             toast?.("Payment received ✓", "green");
             setPayingInv(null);
           }}
@@ -1155,16 +1155,14 @@ export function ClientAuthPortal({
           // payment with Stripe itself and writes via the service role
           // (same trust level as the webhook), so the invoice is marked
           // paid even on a deployment whose webhook isn't configured yet.
-          if (invId) {
-            confirmInvoicePayment(invId, paymentIntentId).catch((e: any) => {
-              console.error("[Payment] confirmInvoicePayment failed:", e?.message);
-              toast?.("Payment received, but confirming it with the business is taking longer than usual — it may take a minute to show as paid.", "yellow");
-            });
-          }
-          sendPaymentReceipt({
+          const recorded = invId ? confirmInvoicePayment(invId, paymentIntentId).catch((e: any) => {
+            console.error("[Payment] confirmInvoicePayment failed:", e?.message);
+            toast?.("Payment received, but confirming it with the business is taking longer than usual — it may take a minute to show as paid.", "yellow");
+          }) : Promise.resolve();
+          recorded.then(() => sendPaymentReceipt({
             customerPhone: cust.phone, customerEmail: cust.email, customerFirstName: cust.firstName, customerId: cust.id,
             amountCents: Math.round((payingInv?.total || 0) * 100), description: `Invoice #${invId || ""}`, invoiceId: invId,
-          }).catch((e: any) => console.warn("[PaymentReceipt] failed:", e?.message));
+          })).catch((e: any) => console.warn("[PaymentReceipt] failed:", e?.message));
           toast?.("Payment received ✓", "green");
           setPayingInv(null);
         }}

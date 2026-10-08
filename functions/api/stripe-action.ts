@@ -140,6 +140,27 @@ const resolveCallerIsOwnerOrManager = async (accessToken: string): Promise<{ own
   return { ownerId: row.owner_id || uid, role };
 };
 
+// The business a signed-in STAFF member (owner or crew) belongs to, or null.
+// Unlike resolveCallerOwnerId, a customer-portal account (no employees row
+// and no business of its own) is not staff and gets null.
+const resolveStaffOwnerId = async (accessToken: string, serviceRoleKey: string): Promise<string | null> => {
+  if (!accessToken || !serviceRoleKey) return null;
+  const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, { headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${accessToken}` } });
+  const user = userRes.ok ? await userRes.json().catch(() => null) as any : null;
+  if (!user?.id) return null;
+  const sr = { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` };
+  const emp = await (await fetch(`${SUPABASE_URL}/rest/v1/employees?user_id=eq.${encodeURIComponent(user.id)}&select=owner_id&limit=1`, { headers: sr })).json().catch(() => []);
+  if (Array.isArray(emp) && emp[0]?.owner_id) return emp[0].owner_id;
+  const own = await (await fetch(`${SUPABASE_URL}/rest/v1/app_settings?owner_id=eq.${encodeURIComponent(user.id)}&select=owner_id&limit=1`, { headers: sr })).json().catch(() => []);
+  return Array.isArray(own) && own.length ? user.id : null;
+};
+
+// Which Stripe key/account a business charges through.
+const stripeCredsFor = async (ownerId: string, serviceRoleKey: string, platformSecretKey?: string) => {
+  const acct = await getOwnerStripeAccount(ownerId, serviceRoleKey);
+  return acct?.stripeAccountId ? { secretKey: platformSecretKey, stripeAccount: acct.stripeAccountId } : { secretKey: acct?.secretKey || platformSecretKey, stripeAccount: undefined as string | undefined };
+};
+
 const stripeFetch = async (secretKey: string, method: string, path: string, params?: Record<string, string>, stripeAccount?: string, idempotencyKey?: string) => {
   const res = await fetch(`https://api.stripe.com/v1/${path}`, {
     method,
@@ -498,14 +519,41 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       const serviceRoleKey = context.env.SUPABASE_SERVICE_ROLE_KEY;
       if (!serviceRoleKey) return new Response(JSON.stringify({ error: "Receipts require SUPABASE_SERVICE_ROLE_KEY to be configured." }), { status: 500, headers: { "Content-Type": "application/json" } });
 
+      // SECURITY FIX — this needed no sign-in and took the business (a bare
+      // body.ownerId), phone/email, name and amount from the request, so
+      // anyone could make any business text or email any number a fake
+      // "payment received" message. Now: staff (owner/crew) of the business
+      // can send for their own business; anyone else only for an invoice
+      // that really has a payment on record, to that invoice's customer's
+      // own phone/email, for at most the invoice total.
+      const receiptToken = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+      const staffOwnerId = receiptToken ? await resolveStaffOwnerId(receiptToken, serviceRoleKey) : null;
       let resolvedOwnerId: string | null = null;
-      if (body.invoiceId) resolvedOwnerId = await getEstimateOwnerId(body.invoiceId, serviceRoleKey);
-      if (!resolvedOwnerId) {
-        const accessToken = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
-        if (accessToken) resolvedOwnerId = await resolveCallerOwnerId(accessToken);
+      if (body.invoiceId) {
+        const invRes = await fetch(`${SUPABASE_URL}/rest/v1/estimates?id=eq.${encodeURIComponent(body.invoiceId)}&select=*`, { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } });
+        const inv = ((await invRes.json().catch(() => [])) as any[])?.[0];
+        if (!inv?.owner_id) return new Response(JSON.stringify({ error: "Invoice not found." }), { status: 404, headers: { "Content-Type": "application/json" } });
+        resolvedOwnerId = inv.owner_id;
+        if (staffOwnerId !== inv.owner_id) {
+          const hasPayment = !!inv.paidAt || Number(inv.paidDeposit) > 0 || (Array.isArray(inv.paymentLog) && inv.paymentLog.some((e: any) => e?.type === "paid"));
+          if (!hasPayment) return new Response(JSON.stringify({ error: "No payment is recorded on this invoice yet." }), { status: 400, headers: { "Content-Type": "application/json" } });
+          const cRes = await fetch(`${SUPABASE_URL}/rest/v1/customers?id=eq.${encodeURIComponent(inv.customerId || "")}&owner_id=eq.${encodeURIComponent(inv.owner_id)}&select=id,firstName,phone,email`, { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } });
+          const c = ((await cRes.json().catch(() => [])) as any[])?.[0];
+          body.customerPhone = c?.phone || "";
+          body.customerEmail = c?.email || "";
+          body.customerFirstName = c?.firstName || "";
+          body.customerId = c?.id || null;
+          // The amount actually paid, from the invoice's own record.
+          const lastPaid = Array.isArray(inv.paymentLog) ? [...inv.paymentLog].reverse().find((e: any) => e?.type === "paid" && Number(e?.amount) > 0) : null;
+          const paidDollars = Number(lastPaid?.amount) || Number(inv.paidFull) || Number(inv.paidDeposit) || Number(inv.total) || 0;
+          body.amountCents = Math.round(Math.min(paidDollars, Number(inv.total) || paidDollars) * 100);
+        }
+      } else {
+        resolvedOwnerId = staffOwnerId;
       }
-      if (!resolvedOwnerId && body.ownerId) resolvedOwnerId = body.ownerId;
-      if (!resolvedOwnerId) return new Response(JSON.stringify({ error: "Couldn't determine which business this payment belongs to." }), { status: 400, headers: { "Content-Type": "application/json" } });
+      if (!resolvedOwnerId) return new Response(JSON.stringify({ error: "Sign in to send a receipt." }), { status: 401, headers: { "Content-Type": "application/json" } });
+      body.description = String(body.description || "").slice(0, 120);
+      body.customerFirstName = String(body.customerFirstName || "").slice(0, 60);
 
       const settingsRes = await fetch(`${SUPABASE_URL}/rest/v1/app_settings?owner_id=eq.${encodeURIComponent(resolvedOwnerId)}&select=data&limit=1`, {
         headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
@@ -713,7 +761,9 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       case "retrieve_payment_intent": {
         if (!body.id) throw new Error("Missing id");
         const intent = await stripeFetch(secretKey, "GET", `payment_intents/${encodeURIComponent(body.id)}`, undefined, stripeAccount);
-        return json(intent);
+        // Status only — this needs no sign-in, so never hand back the client
+        // secret, the Stripe customer, or card details.
+        return json({ id: intent.id, status: intent.status, amount: intent.amount, currency: intent.currency });
       }
       // AUDIT FIX — ClientAuthPortal.tsx's post-payment write used to PATCH
       // `estimates` directly from the CUSTOMER's own Supabase Auth session.
@@ -857,14 +907,30 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         {
           const accessTokenGuard = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
           const guard = await resolveCallerIsOwnerOrManager(accessTokenGuard);
-          if (!guard) return new Response(JSON.stringify({ error: "Only the business owner or a manager can cancel a recurring plan." }), { status: 403, headers: { "Content-Type": "application/json" } });
+          const staffOwner = serviceRoleKey ? await resolveStaffOwnerId(accessTokenGuard, serviceRoleKey) : null;
+          if (!guard || !staffOwner || staffOwner !== guard.ownerId) return new Response(JSON.stringify({ error: "Only the business owner or a manager can cancel a recurring plan." }), { status: 403, headers: { "Content-Type": "application/json" } });
+          if (!body.subscriptionId) throw new Error("Missing subscriptionId");
+          // Same as refund: the caller's own account, and the plan must be theirs.
+          ({ secretKey, stripeAccount } = await stripeCredsFor(guard.ownerId, serviceRoleKey!, platformSecretKey));
+          if (!secretKey) throw new Error("Stripe isn't configured for this business yet.");
+          const sub = await stripeFetch(secretKey, "GET", `subscriptions/${encodeURIComponent(body.subscriptionId)}`, undefined, stripeAccount);
+          const owned = sub?.metadata?.ownerId === guard.ownerId || (sub?.customer && await verifyStripeCustomerOwnedBy(sub.customer, guard.ownerId, serviceRoleKey!));
+          if (!owned) return new Response(JSON.stringify({ error: "That plan doesn't belong to your business." }), { status: 403, headers: { "Content-Type": "application/json" } });
         }
-        if (!body.subscriptionId) throw new Error("Missing subscriptionId");
         const sub = await stripeFetch(secretKey, "DELETE", `subscriptions/${encodeURIComponent(body.subscriptionId)}`, undefined, stripeAccount);
         return json({ success: true, status: sub.status || "canceled" });
       }
       case "retrieve_checkout_session": {
         if (!body.sessionId) throw new Error("Missing sessionId");
+        // Owner/crew only (InvoicesPage) — a Checkout Session carries the
+        // payer's name, email and address.
+        {
+          const accessTokenGuard = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+          const staffOwner = serviceRoleKey ? await resolveStaffOwnerId(accessTokenGuard, serviceRoleKey) : null;
+          if (!staffOwner) return new Response(JSON.stringify({ error: "Not authenticated — sign in and try again." }), { status: 401, headers: { "Content-Type": "application/json" } });
+          ({ secretKey, stripeAccount } = await stripeCredsFor(staffOwner, serviceRoleKey!, platformSecretKey));
+          if (!secretKey) throw new Error("Stripe isn't configured for this business yet.");
+        }
         const session = await stripeFetch(secretKey, "GET", `checkout/sessions/${encodeURIComponent(body.sessionId)}`, undefined, stripeAccount);
         return json(session);
       }
@@ -963,10 +1029,30 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         // reachable by any authenticated employee session. Now actually
         // requires owner/manager server-side, matching what the comment
         // always claimed.
+        // SECURITY FIX — the Stripe account above is picked from body.invoiceId
+        // when one is sent, and any signed-in account (even a customer-portal
+        // one, which has no employees row) passed the owner/manager check. A
+        // customer could pay an invoice, then refund their own payment by
+        // sending that invoiceId + payment id. Now the refund always runs on
+        // the CALLER's own business account, and the payment must belong to
+        // that business (its invoice or its Stripe customer).
         {
           const accessTokenGuard = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
           const guard = await resolveCallerIsOwnerOrManager(accessTokenGuard);
-          if (!guard) return new Response(JSON.stringify({ error: "Only the business owner or a manager can issue refunds." }), { status: 403, headers: { "Content-Type": "application/json" } });
+          const staffOwner = serviceRoleKey ? await resolveStaffOwnerId(accessTokenGuard, serviceRoleKey) : null;
+          if (!guard || !staffOwner || staffOwner !== guard.ownerId) return new Response(JSON.stringify({ error: "Only the business owner or a manager can issue refunds." }), { status: 403, headers: { "Content-Type": "application/json" } });
+          if (!body.paymentIntentId) throw new Error("Missing paymentIntentId");
+          ({ secretKey, stripeAccount } = await stripeCredsFor(guard.ownerId, serviceRoleKey!, platformSecretKey));
+          if (!secretKey) throw new Error("Stripe isn't configured for this business yet.");
+          const pi = await stripeFetch(secretKey, "GET", `payment_intents/${encodeURIComponent(body.paymentIntentId)}`, undefined, stripeAccount);
+          const piInvoiceOwner = pi?.metadata?.invoiceId ? await getEstimateOwnerId(pi.metadata.invoiceId, serviceRoleKey!) : null;
+          const recorded = async () => {
+            const r = await fetch(`${SUPABASE_URL}/rest/v1/estimates?stripePaymentIntentId=eq.${encodeURIComponent(body.paymentIntentId)}&owner_id=eq.${encodeURIComponent(guard.ownerId)}&select=id&limit=1`, { headers: { apikey: serviceRoleKey!, Authorization: `Bearer ${serviceRoleKey}` } });
+            const rows = await r.json().catch(() => []);
+            return Array.isArray(rows) && rows.length > 0;
+          };
+          const owned = piInvoiceOwner === guard.ownerId || (pi?.customer && await verifyStripeCustomerOwnedBy(pi.customer, guard.ownerId, serviceRoleKey!)) || await recorded();
+          if (!owned) return new Response(JSON.stringify({ error: "That payment doesn't belong to your business." }), { status: 403, headers: { "Content-Type": "application/json" } });
         }
         // OWNER-ONLY — only ever called from InvoicesPage/JobDetailModal
         // (authenticated CRM), never exposed to the customer-facing portal.

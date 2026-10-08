@@ -245,6 +245,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // same caller-auth-token / invoiceId / client-ownerId fallback chain
     // used everywhere else in this file — never a client-claimed secret.
     if (action === "refund_payment") {
+      let refundOwnerId = "";
       // SECURITY FIX (audit finding) — the "OWNER-ONLY" comment above was a
       // UI convention, not server-enforced; any authenticated employee
       // session could call this. Now actually requires owner/manager.
@@ -252,17 +253,16 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         const accessTokenGuard = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
         const guard = await resolveCallerIsOwnerOrManager(accessTokenGuard);
         if (!guard) return json({ error: "Only the business owner or a manager can issue refunds." }, 403);
+        refundOwnerId = guard.ownerId;
       }
-      const { paymentId, invoiceId, amountCents } = body;
+      const { paymentId, amountCents } = body;
       if (!paymentId) return json({ error: "Missing paymentId" }, 400);
-      let ownerId: string | null = null;
-      if (invoiceId) ownerId = await getEstimateOwnerId(invoiceId, serviceRoleKey);
-      if (!ownerId) {
-        const accessTokenHdr = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
-        if (accessTokenHdr) ownerId = await resolveCallerOwnerId(accessTokenHdr);
-      }
-      if (!ownerId && body.ownerId) ownerId = body.ownerId;
-      if (!ownerId) return json({ error: "Could not resolve which business owns this payment" }, 400);
+      // SECURITY FIX — the Square account used to come from body.invoiceId
+      // first, and any signed-in account (even a customer's) passed the check
+      // above, so a customer could refund their own payment by sending their
+      // invoice id. Refunds now always run on the caller's OWN business's
+      // Square account, which only holds that business's payments.
+      const ownerId = refundOwnerId;
       const acct = await getOwnerSquareAccount(ownerId, serviceRoleKey);
       if (!acct?.accessToken) return json({ error: "Square isn't configured for this business." }, 500);
 

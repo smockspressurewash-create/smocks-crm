@@ -33,7 +33,7 @@
 
 import { syncEmployeeJobToCalendar } from "./employeeCalendarSync";
 import { stripMarkdownForSms } from "./textFormat";
-import { COCKPIT_TOOLS, cockpitPrompt, cockpitSender, runCockpitTool } from "./cockpitBridge";
+import { COCKPIT_TOOLS, cockpitPrompt, cockpitSender, cockpitSenderFor, runCockpitTool } from "./cockpitBridge";
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 
@@ -228,6 +228,9 @@ type Ctx = {
   // totally separate thread also named "Alfred", which read as duplicate/
   // missing conversations even though nothing was actually lost.
   ownerAuthorizedPhones?: string[];
+  // A Cockpit phone (cockpitBridge.ts) that isn't set up for business Alfred:
+  // only the Cockpit tools, none of the business tools.
+  cockpitOnly?: boolean;
   // Which of the in-app Alfred's personalities (Settings → Alfred) the
   // owner picked — see PERSONALITY_PROMPTS below.
   alfredPersonality?: string;
@@ -2666,6 +2669,7 @@ const executeToolCore = async (ctx: Ctx, name: string, input: Record<string, any
 // never held up regardless of autonomy level, same scope the existing
 // capability gate already uses.
 const executeTool = async (ctx: Ctx, name: string, input: Record<string, any>): Promise<any> => {
+  if (ctx.cockpitOnly && !name.startsWith("cockpit_")) return { error: "From this number Alfred can only handle Alfred Cockpit requests (CrewBoss app fixes), not business data." };
   const cap = SMS_TOOL_CAPABILITY[name];
   if (!cap || AUTONOMY_EXEMPT_TOOLS.has(name)) return executeToolCore(ctx, name, input);
   const autonomy = resolveEffectiveAutonomy(ctx);
@@ -2877,6 +2881,15 @@ BE CONCISE — this is a text message, and every extra sentence costs real API t
 
 CRITICAL — NEVER INVENT A CUSTOMER: only call create_customer with a name the owner actually gave you in THIS conversation. If a request names a customer who isn't already in the CRM (e.g. "for my client John Smith" and no match comes back), create that customer using exactly that name — do not substitute, invent, or default to any other name for any reason.`;
 
+  // Will's and the developer's phones also get the Alfred Cockpit
+  // (cockpitBridge.ts); a Cockpit phone not set up for business Alfred gets
+  // only the Cockpit.
+  const cockpitWho = await cockpitSenderFor(ctx.env, ctx.ownerId, ctx.fromPhone).catch(() => null);
+  const promptForSender = ctx.cockpitOnly && cockpitWho
+    ? `You are Alfred, texting over SMS with ${cockpitWho.label} about the CrewBoss app (${ctx.companyName}). The current date/time is ${nowLocal} (UTC). Keep replies short, plain text, no markdown. From this number you can only use the Alfred Cockpit tools below — you can't look up or change business data (customers, jobs, invoices); if they ask for that, say it has to come from Will's own Alfred number or the app.` + cockpitPrompt(cockpitWho)
+    : systemPrompt + (cockpitWho ? cockpitPrompt(cockpitWho) : "");
+  const toolsForSender = ctx.cockpitOnly ? COCKPIT_TOOLS : cockpitWho ? [...TOOLS, ...COCKPIT_TOOLS] : TOOLS;
+
   let finalText = "";
   let succeeded = false;
   // Plain-English log of what actually happened, built up across every tool
@@ -2939,7 +2952,7 @@ CRITICAL — NEVER INVENT A CUSTOMER: only call create_customer with a name the 
       const abortTimer = setTimeout(() => controller.abort(), 12000);
       try {
         const result = await Promise.race([
-          callSmsModel(modelKey, apiKey, systemPrompt + (cockpitSender(ctx.fromPhone) ? cockpitPrompt(cockpitSender(ctx.fromPhone)!) : ""), convMessages, def.supportsTools ? (cockpitSender(ctx.fromPhone) ? [...TOOLS, ...COCKPIT_TOOLS] : TOOLS) : []),
+          callSmsModel(modelKey, apiKey, promptForSender, convMessages, def.supportsTools ? toolsForSender : []),
           new Promise<never>((_, reject) => controller.signal.addEventListener("abort", () => reject(new Error("timed out")))),
         ]);
         clearTimeout(abortTimer);

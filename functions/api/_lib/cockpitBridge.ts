@@ -23,6 +23,27 @@ export const COCKPIT_PHONES: Record<string, { label: string; isOwner: boolean }>
 const digits10 = (phone?: string) => String(phone || "").replace(/\D/g, "").slice(-10);
 export const cockpitSender = (phone?: string) => COCKPIT_PHONES[digits10(phone)] || null;
 
+// The Cockpit belongs to one CrewBoss account. Texts that reach another
+// business's Alfred number never get Cockpit tools, even from these phones.
+const cockpitOwnerCache = new Map<string, boolean>();
+export const isCockpitOwner = async (env: Record<string, string> | undefined, ownerId?: string | null): Promise<boolean> => {
+  if (!ownerId || !env?.SUPABASE_SERVICE_ROLE_KEY) return false;
+  if (cockpitOwnerCache.has(ownerId)) return cockpitOwnerCache.get(ownerId)!;
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/admin/users/${encodeURIComponent(ownerId)}`, {
+    headers: { apikey: env.SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}` },
+  }).catch(() => null);
+  if (!res?.ok) return false; // not cached: try again next time
+  const user: any = await res.json().catch(() => null);
+  const ok = String(user?.email || "").toLowerCase() === COCKPIT_OWNER_EMAIL;
+  cockpitOwnerCache.set(ownerId, ok);
+  return ok;
+};
+// Who's texting, if it's a Cockpit phone texting the Cockpit owner's Alfred.
+export const cockpitSenderFor = async (env: Record<string, string> | undefined, ownerId: string | null | undefined, phone?: string) => {
+  const who = cockpitSender(phone);
+  return who && (await isCockpitOwner(env, ownerId)) ? who : null;
+};
+
 // Exact replies the Cockpit workflow (scripts/cockpit, .claude/commands/cockpit.md) acts on.
 const DECISIONS: Record<string, string> = {
   approve: "Yes, go ahead.",
@@ -79,7 +100,8 @@ ALFRED COCKPIT (you're texting with ${sender.label}): besides normal business he
 - If unclear, ask one short question: "Is that a problem with the app itself, or something about your business data?"
 - "Status?", "is it done?" → cockpit_status. Answers to Claude's questions or more detail → cockpit_reply. "Yes go ahead", "make it live", "discard", "undo", "cancel" about a Cockpit item → cockpit_decide (with the #ref if they gave one; otherwise the most recent item waiting on them).
 - "It's still broken" / "you didn't fix it right" about a finished item → cockpit_reply (it reopens it).
-Always include the #ref when you mention a Cockpit item.${sender.isOwner ? "" : " This person is the developer, an employee — they may act on Cockpit items, but preview sign-in links only go to Will."}`;
+Always include the #ref when you mention a Cockpit item. If they give a #ref you can't find, say so and list the open ones (cockpit_status) — never act on a different item.
+WHO THIS IS: ${sender.isOwner ? "Will, the owner." : "the developer who builds CrewBoss for Will — NOT Will. Wherever the instructions above say \"the owner\", this conversation is with the developer instead: don't call them Will, and don't save standing preferences or change Alfred's settings for Will on their say-so. They may act on Cockpit items; preview sign-in links only go to Will."} Will and the developer each have their own separate text thread with you.`;
 
 const sb = (env: Record<string, string>, path: string, init?: RequestInit) =>
   fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
@@ -115,6 +137,9 @@ const findItem = async (env: Record<string, string>, ownerId: string, ref?: stri
     const words = r.split(/\s+/).filter(w => w.length > 2);
     const byTitle = items.filter(i => words.length && words.every(w => String(i.title).toLowerCase().includes(w)));
     if (byTitle.length) return byTitle[0];
+    // They named a request we can't find: never fall back to a different
+    // one (a "make live #zzzz" must not publish some other change).
+    return null;
   }
   // Most recent item waiting on them, then most recent open item.
   const waiting = items.find(i => i.status === "in_progress" && /^(APPROVAL NEEDED|QUESTION|PREVIEW READY):/.test(stripStamp(lastNote(i.claude_notes))));
@@ -147,6 +172,7 @@ const appendOwnerReply = async (env: Record<string, string>, item: any, message:
 export const runCockpitTool = async (env: Record<string, string>, ownerId: string | null, sender: { label: string; isOwner: boolean } | null, name: string, input: Record<string, any>): Promise<any> => {
   if (!sender) return { error: "The Alfred Cockpit is only available from Will's and the developer's phones." };
   if (!ownerId || !env.SUPABASE_SERVICE_ROLE_KEY) return { error: "Cockpit isn't available right now (server setup)." };
+  if (!(await isCockpitOwner(env, ownerId))) return { error: "The Alfred Cockpit isn't available on this business's number." };
 
   if (name === "cockpit_report") {
     const id = crypto.randomUUID();
@@ -155,7 +181,7 @@ export const runCockpitTool = async (env: Record<string, string>, ownerId: strin
     const res = await sb(env, "cockpit_items", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ id, owner_id: ownerId, title: String(input.title || "Request").slice(0, 140), description, type, status: "backlog", claude_notes: "" }) });
     if (!res.ok) return { error: "Couldn't file it on the Cockpit — " + (await res.text().catch(() => "")).slice(0, 160) };
     const woke = await wake(env);
-    return { success: true, ref: refOf(id), title: input.title, startedNow: woke, note: woke ? "Claude is starting on it now." : "Claude will pick it up within ~15 minutes." };
+    return { success: true, ref: refOf(id), title: input.title, startedNow: woke, note: woke ? "Claude is starting on it now." : "Claude couldn't be started right away; it'll be picked up at the next scheduled check (GitHub can delay those by hours). Opening the Cockpit page and tapping Nudge starts it now." };
   }
 
   if (name === "cockpit_status") {
@@ -228,6 +254,28 @@ export const textCockpitPhones = async (env: Record<string, string>, ownerId: st
       body += `\nTry it: ${link}${who.isOwner ? "" : " (sign in with Will's login, or ask him to check)"}`;
     }
     if (how) body += `\n${how}`;
-    await sendTwilio(secrets.twilioAccountSid, secrets.twilioAuthToken, secrets.twilioFromNumber, "+1" + digits, body.slice(0, 1500));
+    body = body.slice(0, 1500);
+    const to = "+1" + digits;
+    if (await sendTwilio(secrets.twilioAccountSid, secrets.twilioAuthToken, secrets.twilioFromNumber, to, body)) {
+      await rememberSent(env, ownerId, to, body).catch(() => {});
+    }
   }
+};
+
+// Put the Cockpit text into that phone's Alfred conversation (so a reply
+// like "yes" or "make it live" has context) and into the Inbox.
+const rememberSent = async (env: Record<string, string>, ownerId: string, phone: string, body: string) => {
+  const q = `alfred_sms_threads?owner_id=eq.${encodeURIComponent(ownerId)}&phone=eq.${encodeURIComponent(phone)}`;
+  const rows: any[] = await (await sb(env, `${q}&select=messages&limit=1`)).json().catch(() => []);
+  const msg = { role: "assistant", content: body, ts: Date.now() };
+  if (Array.isArray(rows) && rows.length) {
+    const messages = [...(Array.isArray(rows[0].messages) ? rows[0].messages : []), msg];
+    await sb(env, q, { method: "PATCH", body: JSON.stringify({ messages, updated_at: new Date().toISOString() }) });
+  } else {
+    await sb(env, "alfred_sms_threads", { method: "POST", body: JSON.stringify({ owner_id: ownerId, phone, messages: [msg], updated_at: new Date().toISOString() }) });
+  }
+  await sb(env, "rpc/find_or_create_inbox_thread", {
+    method: "POST",
+    body: JSON.stringify({ p_owner_id: ownerId, p_channel: "sms", p_contact_phone: phone, p_contact_name: COCKPIT_PHONES[digits10(phone)]?.isOwner ? "You" : "Developer", p_customer_id: null, p_message: { id: crypto.randomUUID(), dir: "out", body, ts: Date.now(), via: "alfred" }, p_unread: false }),
+  });
 };

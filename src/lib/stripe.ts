@@ -1,3 +1,5 @@
+import { supabase } from "./supabase";
+
 // ─── Stripe.js loader ──────────────────────────────────────────────────────────
 
 let stripeJsPromise: Promise<any> | null = null;
@@ -62,6 +64,14 @@ export const loadStripeJs = (publishableKey: string, stripeAccount?: string): Pr
 // treatment CLAUDE.md requires for user-facing action buttons elsewhere in
 // the app (field-portal withTimeout wrapper).
 const stripeAction = async (action: string, params: Record<string, any> = {}, accessToken?: string): Promise<any> => {
+  // Send the signed-in user's session when the caller didn't pass one —
+  // owner-only actions (refunds, Checkout lookups) are refused without it.
+  if (!accessToken) {
+    accessToken = await Promise.race([
+      supabase.auth.getSession().then(r => r.data.session?.access_token).catch(() => undefined),
+      new Promise<undefined>(r => setTimeout(() => r(undefined), 3000)),
+    ]);
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 20000);
   let res: Response;

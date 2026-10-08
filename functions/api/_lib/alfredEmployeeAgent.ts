@@ -13,7 +13,7 @@
 // nothing here touches other employees, customers, money, or CRM-wide data.
 
 import { stripMarkdownForSms } from "./textFormat";
-import { COCKPIT_TOOLS, cockpitPrompt, cockpitSender, runCockpitTool } from "./cockpitBridge";
+import { COCKPIT_TOOLS, cockpitPrompt, cockpitSender, cockpitSenderFor, runCockpitTool } from "./cockpitBridge";
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 const SMS_MODELS: Record<string, { provider: string; modelId: string; endpoint: string; maxTokens: number }> = {
@@ -407,6 +407,7 @@ export const runAlfredEmployeeAgent = async (
 
 You can ONLY act on THIS employee's own record and THEIR OWN assigned jobs' customers — never mention or look up other employees, other business data, or any customer not on one of their own jobs today, you don't have tools for any of that here. You can: clock them in/out (clock_in/clock_out), check their hours (get_my_hours), list their own upcoming jobs (list_my_upcoming_jobs), add/delete events on their own connected Google Calendar (add_my_calendar_event/delete_my_calendar_event — tell them to connect it from their portal's Google tab if not connected), and text the next customer(s) on THEIR OWN schedule today that the crew is running behind (notify_upcoming_customers_running_late — e.g. "text my next 3 clients I'm running late"). If a tool result has an "error", tell them exactly what went wrong — never claim something succeeded unless the tool actually said so.`;
 
+  const cockpitWho = await cockpitSenderFor(ctx.env, ctx.ownerId, employee?.phone).catch(() => null);
   let finalText = "";
   for (const modelKey of chain) {
     const apiKey = modelKeys[modelKey];
@@ -417,7 +418,6 @@ You can ONLY act on THIS employee's own record and THEIR OWN assigned jobs' cust
     while (rounds < 6) {
       rounds++;
       try {
-        const cockpitWho = cockpitSender(employee?.phone);
         const result = await callModel(modelKey, apiKey, systemPrompt + (cockpitWho ? cockpitPrompt(cockpitWho) : ""), convMessages, cockpitWho ? [...TOOLS, ...COCKPIT_TOOLS] : TOOLS);
         if (result.text) localFinal = result.text;
         if (result.toolUses.length > 0 && result.stopReason === "tool_use") {

@@ -198,7 +198,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     if (action === "approve_estimate") {
       const { id, signedAt, sigData, payChoice, paid, totalPaid, payType, job } = body;
       if (!id) return json({ error: "Missing id" }, 400);
-      const estRes = await sb(serviceRoleKey, `estimates?id=eq.${encodeURIComponent(id)}&select=owner_id,customerId,paidDeposit,paidFull,status`);
+      const estRes = await sb(serviceRoleKey, `estimates?id=eq.${encodeURIComponent(id)}&select=owner_id,customerId,paidDeposit,paidFull,status,total`);
       const est = Array.isArray(estRes.data) ? estRes.data[0] : null;
       if (!est) return json({ error: "Not found" }, 404);
       // SECURITY FIX (audit finding) — this never checked the estimate's
@@ -212,18 +212,35 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       if (est.status === "approved") {
         return json({ error: "This estimate has already been approved." }, 409);
       }
-      const patch: Record<string, any> = { status: "approved", signedAt: signedAt || null, sigData: sigData || null, payChoice: payChoice || null };
-      if (paid) patch.paidAt = new Date().toISOString().slice(0, 10);
-      if (payType === "deposit") patch.paidDeposit = totalPaid;
-      if (payType === "full") patch.paidFull = totalPaid;
-      if (payType === "remaining") patch.paidFull = (est.paidDeposit || 0) + (totalPaid || 0);
+      // SECURITY FIX — this used to also write paidAt / paidDeposit / paidFull
+      // from what the browser claimed (`paid`, `totalPaid`, `payType`), so
+      // anyone with a quote link could mark it paid without paying. Payments
+      // are now recorded only by the provider-verified confirm_invoice_payment
+      // actions (stripe-action.ts / square-action.ts) and the Stripe webhook;
+      // ClientPortal calls confirm right after a payment.
+      void payType; void totalPaid;
+      const patch: Record<string, any> = { status: "approved", signedAt: signedAt || null, sigData: typeof sigData === "string" ? sigData.slice(0, 500000) : null, payChoice: ["now", "later", "deposit"].includes(payChoice) ? payChoice : null };
       const upd = await sb(serviceRoleKey, `estimates?id=eq.${encodeURIComponent(id)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify(patch) });
       if (!upd.ok) return json({ error: "Failed to update estimate" }, 500);
 
       if (job) {
+        // The job is built here from the estimate itself — the browser only
+        // contributes its checklist. (It used to insert whatever object was
+        // sent, amount included.)
+        const custRow = est.customerId ? await sb(serviceRoleKey, `customers?id=eq.${encodeURIComponent(est.customerId)}&select=address`) : null;
+        const isUuid = (v: any) => typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+        const list = (v: any) => Array.isArray(v) ? v.slice(0, 100) : [];
+        const safeJob = {
+          id: isUuid(job.id) ? job.id : crypto.randomUUID(), owner_id: est.owner_id, customerId: est.customerId,
+          address: (Array.isArray(custRow?.data) && custRow.data[0]?.address) || "", amount: Number(est.total) || 0,
+          status: "scheduled", scheduledDate: "", duration: 2, priority: "normal", crew: [],
+          checklist: list(job.checklist), preChecklist: list(job.preChecklist), photos: [], chemicalsUsed: [], equipment: [],
+          tags: ["Needs Scheduling"], commLog: [], notes: "From approved estimate #" + String(id).slice(-4).toUpperCase(),
+          createdAt: new Date().toISOString().slice(0, 10), estimateId: id,
+        };
         const jobIns = await sb(serviceRoleKey, `jobs`, {
           method: "POST", headers: { Prefer: "return=minimal" },
-          body: JSON.stringify({ ...job, owner_id: est.owner_id }),
+          body: JSON.stringify(safeJob),
         });
         if (!jobIns.ok) console.error("[public-data approve_estimate] job insert failed for estimate", id, "— owner never got a job row for this approval");
       }
@@ -643,12 +660,29 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // submit_review below: resolves owner_id server-side from the promo/
     // referrer row itself, never trusted from the client, and writes with the
     // service role.
+    // SECURITY FIX — both used to run on every call with no limit: anyone
+    // could add referral credit (money the business owes a customer) over
+    // and over, or use up a promo's redemptions. Now each needs the quote it
+    // was used on — same business, a different customer than the referrer —
+    // and counts once per quote (sms_dedupe is the shared once-only table).
+    const oncePerQuote = async (kind: string, estimateId: string, ownerId: string, notCustomerId?: string): Promise<string | null> => {
+      if (!estimateId) return "Missing estimateId";
+      const estRow = await sb(serviceRoleKey, `estimates?id=eq.${encodeURIComponent(estimateId)}&select=owner_id,customerId,status`);
+      const est = Array.isArray(estRow.data) ? estRow.data[0] : null;
+      if (!est || est.owner_id !== ownerId || est.status === "rejected") return "That quote doesn't match.";
+      if (notCustomerId && est.customerId === notCustomerId) return "A customer can't refer themselves.";
+      const ins = await sb(serviceRoleKey, `sms_dedupe`, { method: "POST", headers: { Prefer: "resolution=ignore-duplicates,return=representation" }, body: JSON.stringify({ sid: `${kind}:${estimateId}` }) });
+      if (ins.ok && Array.isArray(ins.data) && ins.data.length === 0) return "Already counted for this quote.";
+      return null;
+    };
     if (action === "redeem_promotion") {
       const { promoId } = body;
       if (!promoId) return json({ error: "Missing promoId" }, 400);
-      const promoRow = await sb(serviceRoleKey, `promotions?id=eq.${encodeURIComponent(promoId)}&select=id,redeemedCount`);
+      const promoRow = await sb(serviceRoleKey, `promotions?id=eq.${encodeURIComponent(promoId)}&select=id,redeemedCount,owner_id`);
       const promo = Array.isArray(promoRow.data) ? promoRow.data[0] : null;
       if (!promo) return json({ error: "Promotion not found" }, 404);
+      const notOk = await oncePerQuote("promo", String(body.estimateId || ""), promo.owner_id);
+      if (notOk) return json({ error: notOk }, 409);
       const upd = await sb(serviceRoleKey, `promotions?id=eq.${encodeURIComponent(promoId)}&select=id`, {
         method: "PATCH", headers: { Prefer: "return=representation" },
         body: JSON.stringify({ redeemedCount: (Number(promo.redeemedCount) || 0) + 1 }),
@@ -664,6 +698,8 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       if (!cust) return json({ error: "Referrer not found" }, 404);
       const ownerId = cust.owner_id;
       if (!ownerId) return json({ error: "Referrer has no owner_id" }, 400);
+      const notOk = await oncePerQuote("referral", String(body.estimateId || ""), ownerId, referrerId);
+      if (notOk) return json({ error: notOk }, 409);
       const settingsRow = await sb(serviceRoleKey, `app_settings?owner_id=eq.${encodeURIComponent(ownerId)}&select=data&limit=1`);
       const referrerCredit = Number(settingsRow.ok && Array.isArray(settingsRow.data) ? settingsRow.data[0]?.data?.referralSettings?.referrerCredit : 0) || 0;
       const nextCredit = (Number(cust.referralCreditOwed) || 0) + referrerCredit;
@@ -684,10 +720,12 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     if (action === "log_outbound_sms") {
       const { customerId, contactName, contactPhone, smsBody } = body;
       if (!customerId || !contactPhone || !smsBody) return json({ error: "Missing customerId/contactPhone/smsBody" }, 400);
-      const custRow = await sb(serviceRoleKey, `customers?id=eq.${encodeURIComponent(customerId)}&select=owner_id`);
+      const custRow = await sb(serviceRoleKey, `customers?id=eq.${encodeURIComponent(customerId)}&select=owner_id,phone`);
       const ownerId = Array.isArray(custRow.data) ? custRow.data[0]?.owner_id : null;
       if (!ownerId) return json({ error: "Customer not found" }, 404);
       const normPhone = (p: string) => (p || "").replace(/\D/g, "");
+      // Only that customer's own number (this needs no sign-in).
+      if (normPhone(custRow.data[0]?.phone).slice(-10) !== normPhone(contactPhone).slice(-10)) return json({ error: "Phone doesn't match this customer" }, 400);
       const existingRow = await sb(serviceRoleKey, `inbox_threads?channel=eq.sms&owner_id=eq.${encodeURIComponent(ownerId)}&select=*`);
       const rows: any[] = Array.isArray(existingRow.data) ? existingRow.data : [];
       const existing = rows.find(r => normPhone(r.contact_phone) === normPhone(contactPhone));

@@ -417,13 +417,13 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
     // as this component's other anonymous writes (mark_estimate_viewed, etc).
     if (appliedPromo?.kind === "promotion") {
       const promoId = appliedPromo.promo.id;
-      fetch("/api/public-data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "redeem_promotion", promoId }) })
+      fetch("/api/public-data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "redeem_promotion", promoId, estimateId: e.id }) })
         .catch((err: any) => console.warn("[ClientPortal] redeem_promotion failed:", err?.message));
     } else if (appliedPromo?.kind === "referral") {
       const referrer = appliedPromo.referrer;
       const nextCredit = (Number(referrer.referralCreditOwed) || 0) + (Number(referralSettings.referrerCredit) || 0);
       setCustomers?.((prev: any[]) => prev.map(cust => cust.id === referrer.id ? { ...cust, referralCreditOwed: nextCredit } : cust));
-      fetch("/api/public-data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "credit_referral", referrerId: referrer.id }) })
+      fetch("/api/public-data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "credit_referral", referrerId: referrer.id, estimateId: e.id }) })
         .catch((err: any) => console.warn("[ClientPortal] credit_referral failed:", err?.message));
     }
     if (onApprove) onApprove(e.id, {
@@ -439,7 +439,10 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
     // through the server-verified confirm action — same one the customer
     // login portal uses. Without this, a Square payment from an invoice link
     // was charged but never marked paid (Stripe also has its webhook).
-    if (paymentIntentId && alreadySigned && e?.id) {
+    // approve_estimate no longer records payments (it can't verify them), so
+    // every payment from this page — first approval included — is confirmed
+    // here.
+    if (paymentIntentId && e?.id) {
       const confirm = provider === "square" ? confirmSquareInvoicePayment(e.id, paymentIntentId) : confirmInvoicePayment(e.id, paymentIntentId);
       Promise.resolve(confirm).catch((err: any) => {
         console.error("[ClientPortal] confirm invoice payment failed:", err?.message);
