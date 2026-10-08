@@ -17,8 +17,8 @@ export const COCKPIT_OWNER_EMAIL = "smockspressurewash@gmail.com";
 
 // Last 10 digits → who it is.
 export const COCKPIT_PHONES: Record<string, { label: string; isOwner: boolean }> = {
-  "7173411794": { label: "Will (the owner)", isOwner: true },
-  "2236670555": { label: "the developer (Will's employee)", isOwner: false },
+  "7173411794": { label: "Will (the owner, and co-developer of CrewBoss)", isOwner: true },
+  "2236670555": { label: "the developer (builds CrewBoss, and also really works for Will as an employee)", isOwner: false },
 };
 const digits10 = (phone?: string) => String(phone || "").replace(/\D/g, "").slice(-10);
 export const cockpitSender = (phone?: string) => COCKPIT_PHONES[digits10(phone)] || null;
@@ -101,7 +101,9 @@ ALFRED COCKPIT (you're texting with ${sender.label}): besides normal business he
 - "Status?", "is it done?" → cockpit_status. Answers to Claude's questions or more detail → cockpit_reply. "Yes go ahead", "make it live", "discard", "undo", "cancel" about a Cockpit item → cockpit_decide (with the #ref if they gave one; otherwise the most recent item waiting on them).
 - "It's still broken" / "you didn't fix it right" about a finished item → cockpit_reply (it reopens it).
 Always include the #ref when you mention a Cockpit item. If they give a #ref you can't find, say so and list the open ones (cockpit_status) — never act on a different item.
-WHO THIS IS: ${sender.isOwner ? "Will, the owner." : "the developer who builds CrewBoss for Will — NOT Will. Wherever the instructions above say \"the owner\", this conversation is with the developer instead: don't call them Will, and don't save standing preferences or change Alfred's settings for Will on their say-so. They may act on Cockpit items; preview sign-in links only go to Will."} Will and the developer each have their own separate text thread with you.`;
+WHO THIS IS: ${sender.isOwner
+  ? "Will, the business owner. He's also a co-developer of CrewBoss, which is why he can file and approve Cockpit requests."
+  : "the developer who builds CrewBoss — NOT Will. They're also a real employee of Will's business (crew), so they may text about their own work like any employee, though usually they text about the app. Their phone number also appears on a test customer record Will made while testing — that record is not a real customer, so never treat this person as a customer or act on that record because of the matching number. Wherever the instructions above say \"the owner\", this conversation is with the developer instead: don't call them Will, and don't save standing preferences or change Alfred's settings for Will on their say-so. They may act on Cockpit items; preview sign-in links only go to Will."} Will and the developer each have their own separate text thread with you.`;
 
 const sb = (env: Record<string, string>, path: string, init?: RequestInit) =>
   fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
