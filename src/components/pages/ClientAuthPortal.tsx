@@ -233,6 +233,10 @@ export function ClientAuthPortal({
       if (!res.ok || data?.error) throw new Error(data?.error || "Request failed");
       setConnectedOwnerIds(prev => [...prev, ownerId]);
       toast?.("Request sent ✓ — they'll confirm you as a customer soon", "green");
+      // Open the new account right away instead of leaving the customer on
+      // the search screen with nothing to do.
+      setFindOpen(false);
+      fetchPortalData();
     } catch (e: any) {
       toast?.(e?.message || "Couldn't send that request", "red");
     } finally {
@@ -281,6 +285,22 @@ export function ClientAuthPortal({
 
   const active = demoMode ? demoAccount : (portalData?.accounts?.[activeIdx] || null);
   const cust = active?.customer || null;
+
+  // Mark outstanding invoices as viewed once per session so the owner gets a
+  // "client opened invoice" notification (BUG 15 / FEATURE 5). Guarded so it
+  // fires at most once per invoice per portal load. Must stay above the early
+  // returns below: it used to sit after them, so the first reload after a
+  // customer tapped "Connect" (no account → account) crashed with React #310.
+  const viewedMarkedRef = useRef<Set<string>>(new Set());
+  const unpaidInvoiceIds = cust ? (active?.estimates || []).filter(e => e.customerId === cust.id && e.invoiced && !e.paidAt && !(e as any).clientViewedAt).map(e => e.id) : [];
+  useEffect(() => {
+    if (demoMode) return;
+    unpaidInvoiceIds.forEach(id => {
+      if (viewedMarkedRef.current.has(id)) return;
+      viewedMarkedRef.current.add(id);
+      (supabase as any).from("estimates").update({ clientViewedAt: new Date().toISOString() }).eq("id", id).then(() => {}).catch(() => {});
+    });
+  }, [unpaidInvoiceIds.join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const ownerId = (cust as any)?.owner_id;
@@ -496,7 +516,8 @@ export function ClientAuthPortal({
           <div className="text-center space-y-1.5">
             <Building2 size={32} className="mx-auto text-white/20" />
             <div className="text-white font-semibold">Find a business</div>
-            <div className="text-xs text-white/40">Search for the company you work with — we'll let them know you'd like to connect.</div>
+            <div className="text-xs text-white/40">Search for the company you hire — we'll let them know you'd like to connect.</div>
+            <div className="text-[11px] text-white/30">Work for the business? Don't connect here — open the invite link your boss sent you.</div>
           </div>
           <div className="relative">
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30" />
@@ -560,19 +581,6 @@ export function ClientAuthPortal({
     ? myInvoicesAll.filter(e => (active?.jobs || []).find((j: any) => j.id === e.jobId)?.address === propertyFilterAddress)
     : myInvoicesAll;
   const outstanding = myInvoices.filter(e => !e.paidAt);
-
-  // Mark outstanding invoices as viewed once per session so the owner gets a
-  // "client opened invoice" notification (BUG 15 / FEATURE 5). Writes only to
-  // Supabase (owner's source of truth); guarded so it fires at most once per
-  // invoice per portal load.
-  const viewedMarkedRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    outstanding.forEach(inv => {
-      if ((inv as any).clientViewedAt || viewedMarkedRef.current.has(inv.id)) return;
-      viewedMarkedRef.current.add(inv.id);
-      (supabase as any).from("estimates").update({ clientViewedAt: new Date().toISOString() }).eq("id", inv.id).then(() => {}).catch(() => {});
-    });
-  }, [outstanding.map(i => i.id).join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
   const paid = myInvoices.filter(e => !!e.paidAt);
   const myJobsList = active?.jobs || [];
   const myJobs = myJobsList.filter(j => j.customerId === cust.id && (!propertyFilterAddress || j.address === propertyFilterAddress)).sort((a, b) => (b.scheduledDate || "").localeCompare(a.scheduledDate || ""));
@@ -710,6 +718,11 @@ export function ClientAuthPortal({
       <div className="max-w-2xl mx-auto p-4 space-y-4">
         {(portalData?.accounts?.length || 0) <= 1 && (
           <button onClick={() => setFindOpen(true)} className="w-full text-center text-[11px] text-white/30 hover:text-white/60 transition flex items-center justify-center gap-1.5"><Plus size={11} />Connect to another business</button>
+        )}
+        {(cust as any).pipelineStage === "lead" && !demoMode && (
+          <Glass className="p-3 text-xs text-white/60">
+            <span className="font-semibold text-white">Request sent to {companyName}.</span> They'll confirm you as a customer — your quotes, jobs and invoices from them will show up here.
+          </Glass>
         )}
         <div className="grid grid-cols-3 gap-3">
           <Stat icon={Receipt} label="Outstanding" value={fmt(outstanding.reduce((s, e) => s + e.total, 0))} />
