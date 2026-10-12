@@ -2223,7 +2223,7 @@ export function App() {
     // owner-notification diff effects: crmRole/hasCrmSession aren't reset on
     // navigating to #/client in the same tab, so without this a customer
     // could see the owner's real goal-progress/reward toast leak on-screen.
-    if (!hasCrmSession || !crmUserId || page === "client") return;
+    if (!hasCrmSession || !!empSession || !crmUserId || page === "client") return;
     if (!goalTrackingSeededRef.current) { goalTrackingSeededRef.current = true; return; }
     const active = (goalsList || []).filter((g: any) => !g.done);
     if (active.length === 0) return;
@@ -2578,7 +2578,11 @@ export function App() {
     // same browser. The crmRole check above is not enough by itself if
     // that stale state still reads "owner." This effect must also confirm
     // the CURRENT page genuinely is the owner CRM, not the client portal.
-    if (!crmUserId || crmRole !== "owner" || page === "client") return;
+    // Employees are signed in as empSession (hasCrmSession false) but their
+    // crmUserId is the OWNER's id and crmRole defaults to "owner" — so those two
+    // checks alone let employees get the owner's check-ins. Require a real
+    // owner/manager session and no employee session.
+    if (!crmUserId || !hasCrmSession || !!empSession || crmRole !== "owner" || page === "client") return;
     // ROUND 5 REWRITE — two separate complaints, one root cause. (1) "creates
     // a new chat every time" — every fire pushed a brand-new conversation via
     // setAlfredConversations, so a session left open all day (up to 3 fires)
@@ -2670,7 +2674,7 @@ export function App() {
     // guard above only ever being evaluated once at mount — see the
     // "round 2" comment above for why a stale-but-unchanged crmUserId alone
     // isn't enough to catch that transition.
-  }, [crmUserId, page]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [crmUserId, page, hasCrmSession, !!empSession]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // AUDIT FIX — same relocation as the general check-in effect above, for the
   // exact same reason: this used to live entirely inside AlfredPage.tsx,
@@ -2680,7 +2684,9 @@ export function App() {
   // of which page is open, matching the check-in effect's own already-fixed
   // pattern.
   useEffect(() => {
-    if (!crmUserId) return;
+    // Owner/manager sessions only — see the check-in effect above. Employees,
+    // customers (#/client) and previews must never get Alfred's briefing.
+    if (!crmUserId || !hasCrmSession || !!empSession || page === "client") return;
     const tryBriefing = () => {
       const todayStr = today();
       const lastDate = (settingsRef.current as any)?.alfredBriefingDate;
@@ -2741,7 +2747,7 @@ export function App() {
     // Deliberately keyed only on crmUserId — same staleness tradeoff as the
     // check-in effect above (reads live jobs/estimates/customers closures
     // from whenever this effect last actually re-subscribed).
-  }, [crmUserId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [crmUserId, hasCrmSession, !!empSession, page]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // AUDIT FIX — "Morning briefings & day summaries do not work... Email
   // summaries do not work": sendDailyBriefingNow (below) always existed but
