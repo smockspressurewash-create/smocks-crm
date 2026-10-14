@@ -2095,7 +2095,7 @@ export function App() {
     // toasting real payment/dispute events — with real customer names and
     // dollar amounts — onto whatever's now open at #/client. Worse than
     // the Alfred case since this is real financial data, not generic stats.
-    if (!hasCrmSession || page === "client") return;
+    if (!hasCrmSession || !!empSession || page === "client") return;
     const snapshot: Record<string, { viewed?: string; paid?: string; failed?: string; refunded?: string; disputed?: string; status?: string }> = {};
     // BUG FIX (user report) — "when someone declines an estimate and I
     // click on it, it takes me to my invoices page." Every event here used
@@ -2281,7 +2281,7 @@ export function App() {
     // could push "Crew arrived"/"Problem reported" to the owner's own
     // device while a customer is using this browser tab, which is both a
     // leak and just wrong.
-    if (!hasCrmSession || page === "client") return;
+    if (!hasCrmSession || !!empSession || page === "client") return;
     const empSnap: Record<string, number | null> = {};
     const jobSnap: Record<string, { status?: string; arrivedAt?: number }> = {};
     const events: { id: string; text: string; at: number; customerId?: string }[] = [];
@@ -2409,7 +2409,7 @@ export function App() {
   const trashFeePendingSeededRef = useRef(false);
   useEffect(() => {
     // BUG FIX (session-bleed audit) — same guard as the two effects above.
-    if (!hasCrmSession || page === "client") return;
+    if (!hasCrmSession || !!empSession || page === "client") return;
     const snap: Record<string, boolean> = {};
     const events: { id: string; text: string; at: number }[] = [];
     for (const j of jobs as any[]) {
@@ -2445,7 +2445,7 @@ export function App() {
   const employeePayConfirmSeededRef = useRef(false);
   useEffect(() => {
     // BUG FIX (session-bleed audit) — same guard as the effects above.
-    if (!hasCrmSession || page === "client") return;
+    if (!hasCrmSession || !!empSession || page === "client") return;
     const snap: Record<string, number> = {};
     const events: { id: string; text: string; at: number; openId: string }[] = [];
     for (const e of employees as any[]) {
@@ -2475,7 +2475,7 @@ export function App() {
   // card) — never more than once per 7 days (localStorage-tracked, not
   // server-side, since missing a beat here has no real consequence).
   useEffect(() => {
-    if (!hasCrmSession || crmRole !== "owner" || page === "client") return;
+    if (!hasCrmSession || !!empSession || crmRole !== "owner" || page === "client") return;
     try {
       const key = "smocks.lastReferralNudgeAt";
       const last = Number(localStorage.getItem(key) || 0);
@@ -2502,7 +2502,7 @@ export function App() {
   // portal screen — an unrelated-job-activity leak, not just a stray write.
   const mediaRetentionSweepDoneRef = useRef(false);
   useEffect(() => {
-    if (!hasCrmSession || page === "client" || mediaRetentionSweepDoneRef.current) return;
+    if (!hasCrmSession || !!empSession || page === "client" || mediaRetentionSweepDoneRef.current) return;
     const days = Number((settings as any)?.mediaRetentionDays) || 0;
     if (days <= 0 || jobs.length === 0) return;
     mediaRetentionSweepDoneRef.current = true;
