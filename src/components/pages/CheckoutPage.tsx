@@ -128,7 +128,7 @@ export function CheckoutPage({
             <ChevronLeft size={16} /> Back to plans
           </button>
           <div className="flex items-center gap-2">
-            <CrewBossMark className="w-6 h-6" />
+            <CrewBossMark className="w-7 h-7" />
             <span className="font-bold text-sm tracking-tight">Crew<span className="text-red-500">Boss</span></span>
           </div>
         </div>

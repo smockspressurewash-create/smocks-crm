@@ -6181,9 +6181,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             {((settings as any)?.logoUrl || inviteBranding?.logoUrl) ? (
               <img src={(settings as any)?.logoUrl || inviteBranding?.logoUrl} alt={settings.companyName || inviteBranding?.companyName || "Company logo"} className="w-16 h-16 rounded-2xl object-contain mx-auto mb-4 shadow-lg bg-white/5" />
             ) : (
-              <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-red-600 to-red-900 flex items-center justify-center mx-auto mb-4 shadow-lg">
-                <CrewBossMark className="w-10 h-10" />
-              </div>
+              <CrewBossMark className="w-16 h-16 mx-auto mb-4 shadow-lg" />
             )}
             <div className="text-xl font-bold">{settings.companyName || inviteBranding?.companyName || "Crew Boss OS"}</div>
             <div className="text-sm text-white/50 mt-1">{inviteRecord ? "Create Your Crew Account" : "Employee Portal"}</div>

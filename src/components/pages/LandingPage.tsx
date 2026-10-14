@@ -36,14 +36,24 @@ import {
 // this string every time the sizzle-reel video files are replaced so the
 // query string forces a fresh fetch (see also public/_headers, which
 // caps how long any cache can go without revalidating going forward).
-const SIZZLE_REEL_VERSION = "6";
+const SIZZLE_REEL_VERSION = "7";
 
 // Minimal video player for the sizzle reel — play/pause only, no native
 // scrubber/duration/mute/skip chrome (those read as a media player, not
 // a promo clip). Tapping the video itself also toggles play/pause.
-function SizzleReelPlayer({ src }: { src: string }) {
+// Plays the vertical (9:16) cut on phones and the widescreen (16:9) cut
+// everywhere else.
+function SizzleReelPlayer({ src, srcVertical, poster, posterVertical }: { src: string; srcVertical?: string; poster?: string; posterVertical?: string }) {
   const videoRef = React.useRef<HTMLVideoElement>(null);
   const [playing, setPlaying] = useState(false);
+  const [vertical, setVertical] = useState(() => typeof window !== "undefined" && !!srcVertical && window.matchMedia("(max-width: 640px)").matches);
+  React.useEffect(() => {
+    if (!srcVertical) return;
+    const mq = window.matchMedia("(max-width: 640px)");
+    const onChange = () => setVertical(mq.matches);
+    mq.addEventListener?.("change", onChange);
+    return () => mq.removeEventListener?.("change", onChange);
+  }, [srcVertical]);
 
   const toggle = () => {
     const v = videoRef.current;
@@ -57,8 +67,10 @@ function SizzleReelPlayer({ src }: { src: string }) {
         ref={videoRef}
         playsInline
         preload="metadata"
-        className="w-full aspect-video bg-black block"
-        src={src}
+        className={"w-full bg-black block " + (vertical ? "aspect-[9/16]" : "aspect-video")}
+        src={vertical && srcVertical ? srcVertical : src}
+        poster={vertical && posterVertical ? posterVertical : poster}
+        key={vertical ? "v" : "h"}
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
         onEnded={() => setPlaying(false)}
@@ -415,10 +427,15 @@ export function LandingPage({
             <h2 className="lp-text-hover text-2xl md:text-3xl font-extrabold tracking-tight mb-2">
               See it <span className="gradient-text">in motion.</span>
             </h2>
-            <p className="text-white/50 text-sm md:text-base">A 40-second look at scheduling, Alfred, invoicing, and the field portal.</p>
+            <p className="text-white/50 text-sm md:text-base">A 43-second look at scheduling, texting Alfred, getting paid, and the field portal.</p>
           </div>
-          <div className="rounded-2xl overflow-hidden border border-white/10 bg-black shadow-2xl shadow-red-950/40">
-            <SizzleReelPlayer src={"/media/sizzle-reel.mp4?v=" + SIZZLE_REEL_VERSION} />
+          <div className="rounded-2xl overflow-hidden border border-white/10 bg-black shadow-2xl shadow-red-950/40 max-w-sm sm:max-w-none mx-auto">
+            <SizzleReelPlayer
+              src={"/media/crewboss-saas-16x9.mp4?v=" + SIZZLE_REEL_VERSION}
+              srcVertical={"/media/crewboss-saas-9x16.mp4?v=" + SIZZLE_REEL_VERSION}
+              poster={"/media/crewboss-saas-16x9.jpg?v=" + SIZZLE_REEL_VERSION}
+              posterVertical={"/media/crewboss-saas-9x16.jpg?v=" + SIZZLE_REEL_VERSION}
+            />
           </div>
         </Reveal>
       </section>

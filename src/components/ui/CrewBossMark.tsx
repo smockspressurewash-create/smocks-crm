@@ -1,30 +1,25 @@
-import React from "react";
+import React, { useId } from "react";
 
-// Brand mark. Kept as a single shared component (used across App.tsx's
-// login/sidebar badges, EmployeePortal's login screen and header,
-// ClientAuthPortal's login screen, and MarketingShared's nav/footer)
-// instead of duplicating the same SVG in six places, since public/favicon.svg
-// is a separate static asset (can't reference a React component) but should
-// stay visually identical.
-//
-// BUG FIX — "the logo on the landing page still isn't right." Root cause,
-// confirmed by reading every call site (App.tsx's login screen,
-// ClientAuthPortal, EmployeePortal, MarketingShared's nav AND footer):
-// this component is ALWAYS rendered inside a `bg-gradient-to-br from-
-// red-600 to-red-900` badge — every single usage, no exceptions. The "B"
-// glyph below was filled #dc2626 (Tailwind red-600) — nearly the exact
-// same red as the badge it sits on. Against a red background, a red
-// letter is camouflaged: the mark visually read as a lone white "C" (or a
-// smudge) everywhere it appeared, which is exactly "not right" without
-// being an obvious crash or layout bug. Both letters are white now — full
-// contrast against every real usage. (favicon.svg is a separate static
-// file with its own black background, where the red B was already fine —
-// left as-is.)
+// Brand mark — the CB monogram (white C, red B on a dark rounded tile).
+// It is the whole app icon, tile included, so call sites render it on its
+// own at the size they want (no red badge around it). public/favicon.svg,
+// public/favicon-maskable.svg and the icon-*.png files are the same drawing
+// as static assets (they can't import a React component) — keep them in
+// sync if this changes.
 export function CrewBossMark({ className = "" }: { className?: string }) {
+  const id = useId().replace(/:/g, "");
   return (
-    <svg viewBox="0 0 100 100" className={className}>
-      <text x="32" y="68" fontFamily="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" fontWeight={800} fontSize={48} fill="#ffffff" textAnchor="middle">C</text>
-      <text x="68" y="68" fontFamily="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" fontWeight={800} fontSize={48} fill="#ffffff" textAnchor="middle">B</text>
+    <svg viewBox="0 0 100 100" className={className} role="img" aria-label="CrewBoss">
+      <defs>
+        <linearGradient id={`cb-tile-${id}`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor="#1d1d22" />
+          <stop offset="1" stopColor="#0a0a0c" />
+        </linearGradient>
+      </defs>
+      <rect width="100" height="100" rx="24" fill={`url(#cb-tile-${id})`} />
+      <rect x="1" y="1" width="98" height="98" rx="23" fill="none" stroke="#ffffff" strokeOpacity="0.09" strokeWidth="2" />
+      <path d="M45.6 36.4 A17.5 17.5 0 1 0 45.6 63.6" fill="none" stroke="#ffffff" strokeWidth="9.5" strokeLinecap="round" />
+      <path d="M58 32.5 V67.5 M58 32.5 H65.5 A7.9 7.9 0 0 1 65.5 48.3 H58 M58 48.3 H67 A9.6 9.6 0 0 1 67 67.5 H58" fill="none" stroke="#ef2b2b" strokeWidth="9" strokeLinejoin="round" strokeLinecap="round" />
     </svg>
   );
 }

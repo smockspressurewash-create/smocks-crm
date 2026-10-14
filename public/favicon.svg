@@ -1,14 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-  <!-- BUG FIX — "the download app logo doesn't fit fully; the corners are
-       cut off." The old design (a small person silhouette + narrow letters)
-       had almost no clearance from the icon edges, so OS-applied icon masks
-       (rounded square on iOS, circle/squircle on Android adaptive icons)
-       clipped it. Replaced per explicit request: solid black background,
-       plain white "C" + red "B", same font stack as the in-app "CrewBoss"
-       wordmark (index.css's base font-family) instead of a generic font,
-       both letters kept well clear of every edge so any OS mask shape
-       still shows the whole mark. -->
-  <rect width="100" height="100" rx="20" fill="#000000"/>
-  <text x="32" y="68" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-weight="800" font-size="48" fill="#ffffff" text-anchor="middle">C</text>
-  <text x="68" y="68" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-weight="800" font-size="48" fill="#dc2626" text-anchor="middle">B</text>
+  <!-- CrewBoss CB monogram — same drawing as src/components/ui/CrewBossMark.tsx. -->
+  <defs><linearGradient id="t" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1d1d22"/><stop offset="1" stop-color="#0a0a0c"/></linearGradient></defs>
+  <rect width="100" height="100" rx="24" fill="url(#t)"/>
+  <rect x="1" y="1" width="98" height="98" rx="23" fill="none" stroke="#ffffff" stroke-opacity="0.09" stroke-width="2"/>
+  <path d="M45.6 36.4 A17.5 17.5 0 1 0 45.6 63.6" fill="none" stroke="#ffffff" stroke-width="9.5" stroke-linecap="round"/><path d="M58 32.5 V67.5 M58 32.5 H65.5 A7.9 7.9 0 0 1 65.5 48.3 H58 M58 48.3 H67 A9.6 9.6 0 0 1 67 67.5 H58" fill="none" stroke="#ef2b2b" stroke-width="9" stroke-linejoin="round" stroke-linecap="round"/>
 </svg>
