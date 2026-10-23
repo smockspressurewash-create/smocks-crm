@@ -13,7 +13,8 @@ import { Upload, Link as LinkIcon, ClipboardPaste, Trash2, CheckCircle } from "l
 import { Modal } from "./Modal";
 import { GBtn } from "./GBtn";
 import { GInput } from "./GInput";
-import { parseDelimited, splitHeader, autoMapColumns, applyMapping, CUSTOM, SKIP, type ImportFieldMap, type ColumnTarget } from "../../lib/customerImport";
+import { parseDelimited, splitHeader, autoMapColumns, applyMapping, sniffColumns, CUSTOM, SKIP, type ImportFieldMap, type ColumnTarget } from "../../lib/customerImport";
+import { readImportFile, IMPORT_FILE_ACCEPT } from "../../lib/spreadsheetFile";
 
 export type { ImportFieldMap };
 
@@ -64,7 +65,7 @@ const DEFAULT_LABELS: Record<string, string> = {
 };
 const PREVIEW_ROWS = 100;
 
-export function ImportDataModal({ open, onClose, title = "Import Data", fieldMap, fieldLabels, fieldExclude, onImport, toast = (() => {}) as any, initialTab = "file", note }: {
+export function ImportDataModal({ open, onClose, title = "Import Data", fieldMap, fieldLabels, fieldExclude, onImport, toast = (() => {}) as any, initialTab = "file", note, reviewExtras }: {
   open: boolean; onClose: () => void; title?: string; fieldMap: ImportFieldMap;
   fieldLabels?: Record<string, string>; fieldExclude?: Record<string, RegExp>;
   // Rows are keyed by field key; columns kept as custom fields arrive as
@@ -72,6 +73,9 @@ export function ImportDataModal({ open, onClose, title = "Import Data", fieldMap
   // default "Imported N rows" toast (or throw to show an error).
   onImport: (rows: Record<string, string>[]) => void | string | Promise<void | string>;
   toast?: (msg: string, tone?: any) => void; initialTab?: "file" | "sheets" | "paste"; note?: string;
+  // Extra controls on the review step (e.g. "import these as customers or
+  // leads"), given the mapped rows so it can show counts.
+  reviewExtras?: (rows: Record<string, string>[]) => React.ReactNode;
 }) {
   const [tab, setTab] = useState<"file" | "sheets" | "paste">(initialTab);
   const [sheetsUrl, setSheetsUrl] = useState("");
@@ -94,11 +98,16 @@ export function ImportDataModal({ open, onClose, title = "Import Data", fieldMap
   const reset = () => { setSrc(null); setMapping([]); setExcluded(new Set()); setEdits({}); setPasteText(""); setSheetsUrl(""); };
   const close = () => { if (busy) return; reset(); onClose(); };
 
-  const startReview = (text: string, fileName?: string) => {
-    let parsed = splitHeader(parseDelimited(text));
-    let map = parsed ? autoMapColumns(parsed.headers, fieldMap, fieldExclude) : [];
+  const startReview = (text: string, fileName?: string) => startReviewRows(parseDelimited(text), text, fileName);
+  const startReviewRows = (table: string[][], text: string, fileName?: string) => {
+    let parsed = splitHeader(table);
+    // No header row (the first line is already a customer): number the
+    // columns and let the values say what they are.
+    const width = Math.max(0, ...table.slice(0, 20).map(r => r.length));
+    if (!parsed && width >= 2) parsed = { headers: Array.from({ length: width }, (_, j) => `Column ${j + 1}`), data: table };
+    let map = parsed ? sniffColumns(parsed.headers, parsed.data, autoMapColumns(parsed.headers, fieldMap, fieldExclude), fieldMap) : [];
     // Nothing recognizable as a table → line-by-line detection instead.
-    if (!parsed || parsed.data.length === 0 || map.every(t => t === CUSTOM || t === SKIP)) {
+    if (text && (!parsed || parsed.data.length === 0 || map.every(t => t === CUSTOM || t === SKIP))) {
       const free = smartParseFreeform(text);
       if (free.data.length > 0) { parsed = free; map = autoMapColumns(free.headers, fieldMap, fieldExclude); }
     }
@@ -113,10 +122,14 @@ export function ImportDataModal({ open, onClose, title = "Import Data", fieldMap
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
-    const r = new FileReader();
-    r.onload = () => startReview(String(r.result || ""), file.name);
-    r.onerror = () => toast("Couldn't read that file", "red");
-    r.readAsText(file);
+    setBusy(true);
+    readImportFile(file)
+      .then(table => {
+        const plain = /\.(csv|tsv|txt)$/i.test(file.name) ? table.map(r => r.join("\t")).join("\n") : "";
+        startReviewRows(table, plain, file.name);
+      })
+      .catch((err: any) => toast(err?.message || "Couldn't read that file", "red"))
+      .finally(() => setBusy(false));
   };
 
   const handleSheetsImport = async () => {
@@ -174,11 +187,11 @@ export function ImportDataModal({ open, onClose, title = "Import Data", fieldMap
 
           {tab === "file" && (
             <div className="space-y-2">
-              <div className="text-xs text-white/50">Any CSV works — exports from Excel, Google Sheets, Google Contacts, Jobber, QuickBooks and other CRMs. Columns are matched automatically and you'll see how before anything is imported.</div>
-              <button onClick={() => fileRef.current?.click()} className="w-full py-8 rounded-xl border-2 border-dashed border-white/15 hover:border-red-600/40 text-white/50 hover:text-white/80 transition text-sm">
-                <Upload size={20} className="mx-auto mb-2" />Click to choose a .csv file
+              <div className="text-xs text-white/50">Excel (.xlsx), CSV, phone or Google contacts (.vcf) and JSON all work — exports from Excel, Google Sheets, Google Contacts, iPhone, Jobber, QuickBooks and other CRMs. Columns are matched by their names and by what's in them, and you'll see how before anything is imported.</div>
+              <button onClick={() => fileRef.current?.click()} disabled={busy} className="w-full py-8 rounded-xl border-2 border-dashed border-white/15 hover:border-red-600/40 text-white/50 hover:text-white/80 transition text-sm">
+                <Upload size={20} className="mx-auto mb-2" />{busy ? "Reading…" : "Click to choose a file"}
               </button>
-              <input ref={fileRef} type="file" accept=".csv,.tsv,.txt,text/csv" onChange={handleFile} className="hidden" />
+              <input ref={fileRef} type="file" accept={IMPORT_FILE_ACCEPT} onChange={handleFile} className="hidden" />
             </div>
           )}
 
@@ -263,6 +276,8 @@ export function ImportDataModal({ open, onClose, title = "Import Data", fieldMap
               </table>
             </div>
           </div>
+
+          {reviewExtras?.(rows.filter((r, i) => !excluded.has(i) && Object.keys(r).length > 0))}
 
           <div className="flex gap-2 justify-end pt-1">
             <GBtn variant="ghost" onClick={() => setSrc(null)} disabled={busy}>Back</GBtn>

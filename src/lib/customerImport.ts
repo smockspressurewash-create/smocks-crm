@@ -62,12 +62,16 @@ export const normalizeHeader = (h: string) =>
 // Finds the header row: the first of the first few rows that has at least two
 // filled cells and reads like labels (no emails, no long digit runs, short).
 // Lets a title line ("Client List — Oct 2026") sit above the real headers.
+const PHONE_LIKE = /^\+?1?[\s.-]?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}$/;
 export function splitHeader(rows: string[][]): { headers: string[]; data: string[][] } | null {
   for (let i = 0; i < Math.min(rows.length - 1, 5); i++) {
     const cells = rows[i];
     const filled = cells.filter(c => c !== "");
     if (filled.length < 2 && rows[i + 1]?.filter(c => c !== "").length > 1) continue;
-    const labelLike = filled.every(c => c.length <= 40 && !/@/.test(c) && !/\d{5,}/.test(c));
+    // A phone number has no 5-digit run ("(717) 555-0100"), so check for
+    // phone-shaped cells too — otherwise a file without a header row loses
+    // its first customer to the header.
+    const labelLike = filled.every(c => c.length <= 40 && !/@/.test(c) && !/\d{5,}/.test(c) && !PHONE_LIKE.test(c) && !/^\$?\d[\d,.]*$/.test(c));
     if (labelLike && filled.length >= 1) {
       const headers = cells.map((c, j) => c || `Column ${j + 1}`);
       return { headers, data: rows.slice(i + 1) };
@@ -136,6 +140,7 @@ export const CUSTOMER_FIELD_MAP: ImportFieldMap = {
   address2: ["address 2", "address line 2", "address2", "street 2", "street address 2", "apt", "apartment", "suite", "unit"],
   company: ["company", "company name", "business", "business name", "organization", "organisation", "organization name", "employer"],
   gateCode: ["gate code", "gatecode", "access code", "door code", "lockbox", "lock box"],
+  birthday: ["birthday", "birth day", "birthdate", "birth date", "date of birth", "dob", "bday", "b day"],
   sqFootage: ["sq footage", "sqfootage", "sqft", "sq ft", "square feet", "square footage", "home size"],
   totalSpent: ["total spent", "totalspent", "lifetime value", "ltv", "revenue", "total revenue", "total sales", "lifetime spend"],
   leadSource: ["lead source", "leadsource", "source", "how found", "how did you hear", "how did you hear about us", "referral source", "marketing source", "channel"],
@@ -161,15 +166,90 @@ export const CUSTOMER_FIELD_LABELS: Record<string, string> = {
   firstName: "First name", lastName: "Last name", fullName: "Full name (split)", email: "Email", phone: "Phone",
   company: "Company", address: "Street address", address2: "Address line 2", city: "City", state: "State", zip: "Zip",
   notes: "Notes", leadSource: "Lead source", status: "Status", tags: "Tags", totalSpent: "Total spent",
-  sqFootage: "Sq footage", gateCode: "Gate code", createdAt: "Customer since",
+  sqFootage: "Sq footage", gateCode: "Gate code", birthday: "Birthday", createdAt: "Customer since",
 };
 
-const LEAD_STATUS = /\b(lead|prospect|potential|inquiry|enquiry|quote|quoted|new lead|follow up)\b/i;
+// ── Recognizing columns by what's in them ──────────────────────────────────
+
+const US_STATES = new Set("AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC".split(" "));
+const US_STATE_NAMES = new Set(["alabama", "alaska", "arizona", "arkansas", "california", "colorado", "connecticut", "delaware", "florida", "georgia", "hawaii", "idaho", "illinois", "indiana", "iowa", "kansas", "kentucky", "louisiana", "maine", "maryland", "massachusetts", "michigan", "minnesota", "mississippi", "missouri", "montana", "nebraska", "nevada", "new hampshire", "new jersey", "new mexico", "new york", "north carolina", "north dakota", "ohio", "oklahoma", "oregon", "pennsylvania", "rhode island", "south carolina", "south dakota", "tennessee", "texas", "utah", "vermont", "virginia", "washington", "west virginia", "wisconsin", "wyoming"]);
+const VALUE_TESTS: [string, (v: string) => boolean, number][] = [
+  ["email", v => /^[\w.+'-]+@[\w-]+(\.[\w-]+)+$/.test(v), 0.7],
+  ["phone", v => { const d = v.replace(/\D/g, ""); return /^[\d\s().+-]+$/.test(v) && (d.length === 10 || (d.length === 11 && d[0] === "1")); }, 0.7],
+  ["zip", v => /^\d{5}(-\d{4})?$/.test(v), 0.8],
+  ["state", v => US_STATES.has(v.toUpperCase()) || US_STATE_NAMES.has(v.toLowerCase()), 0.8],
+  ["address", v => /^\d+[a-z]?\s+[a-z0-9.'-]+(\s+[a-z0-9.'#-]+)*/i.test(v) && /[a-z]{2,}/i.test(v) && !/@/.test(v), 0.6],
+  ["totalSpent", v => /^\$\s?-?[\d,]+(\.\d{1,2})?$/.test(v), 0.8],
+];
+
+// Columns the headers didn't place (kept as custom fields, or a file with no
+// header row at all) get a second look at their values: a column that's
+// mostly emails is the email column whatever it's called, and so on. Only
+// fills fields no other column already took.
+export function sniffColumns(headers: string[], data: string[][], mapping: ColumnTarget[], fieldMap: ImportFieldMap): ColumnTarget[] {
+  const out = mapping.slice();
+  const taken = new Set(out.filter(t => t !== CUSTOM && t !== SKIP));
+  const sample = data.slice(0, 300);
+  headers.forEach((_, i) => {
+    if (out[i] !== CUSTOM) return;
+    const vals = sample.map(r => (r[i] || "").trim()).filter(Boolean);
+    if (vals.length < Math.min(3, sample.length)) return;
+    for (const [field, test, share] of VALUE_TESTS) {
+      if (!(field in fieldMap) || taken.has(field)) continue;
+      if (vals.filter(test).length / vals.length >= share) { out[i] = field; taken.add(field); return; }
+    }
+  });
+  // City has no shape of its own, but it's the plain-words column sitting
+  // right before the state (or zip) in nearly every export.
+  if ("city" in fieldMap && !taken.has("city")) {
+    const anchor = out.indexOf("state") >= 0 ? out.indexOf("state") : out.indexOf("zip");
+    const j = anchor - 1;
+    if (j >= 0 && out[j] === CUSTOM) {
+      const vals = sample.map(r => (r[j] || "").trim()).filter(Boolean);
+      if (vals.length && vals.filter(v => /^[a-z][a-z .'-]{1,30}$/i.test(v)).length / vals.length >= 0.8) { out[j] = "city"; taken.add("city"); }
+    }
+  }
+  // A headerless file's leading text columns are almost always the name.
+  const generated = headers.every(h => /^Column \d+$/.test(h));
+  if (generated && "fullName" in fieldMap && !taken.has("firstName") && !taken.has("fullName")) {
+    const i = out.findIndex((t, j) => t === CUSTOM && sample.some(r => /[a-z]/i.test(r[j] || "")));
+    if (i >= 0) out[i] = "fullName";
+  }
+  return out;
+}
+
+// Excel stores dates as day counts since 1899-12-30; also accepts ISO,
+// US-style and written-out dates. Returns YYYY-MM-DD, or "" when unreadable.
+export function parseDateLoose(raw: string): string {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  if (/^\d{4,5}(\.\d+)?$/.test(s)) {
+    const n = Number(s);
+    if (n > 1000 && n < 80000) return new Date(Date.UTC(1899, 11, 30) + Math.round(n) * 86400000).toISOString().slice(0, 10);
+  }
+  const us = s.match(/^(\d{1,2})[/.-](\d{1,2})(?:[/.-](\d{2,4}))?$/);
+  if (us) {
+    const yr = us[3] ? (us[3].length === 2 ? (Number(us[3]) > 30 ? "19" : "20") + us[3] : us[3]) : "";
+    const mm = us[1].padStart(2, "0"), dd = us[2].padStart(2, "0");
+    if (Number(mm) <= 12 && Number(dd) <= 31) return yr ? `${yr}-${mm}-${dd}` : `--${mm}-${dd}`;
+  }
+  const t = Date.parse(s);
+  return isNaN(t) ? "" : new Date(t).toISOString().slice(0, 10);
+}
+
+const LEAD_STATUS = /^(new )?(lead|prospect|potential( customer)?|inquiry|enquiry)s?$/i;
 const titleCase = (s: string) => s.replace(/\s+/g, " ").trim().replace(/\b\w/g, c => c.toUpperCase());
 
 // One flat import row (field keys + "__custom__:Header" keys) → a customer.
 // Returns null when the row has nothing to identify a person by.
-export function rowToCustomer(r: Record<string, string>): any | null {
+//
+// BUG FIX — "it puts all my customers inside the lead section." Any status
+// containing words like "quote" or "follow up" turned an imported customer
+// into a lead (pipelineStage "lead" is what Lead Intake lists). An import is
+// a customer list unless the owner says otherwise: the status only marks
+// leads when `leadsFromStatus` is passed (the "Use the Status column"
+// choice on the import screen), and then only for statuses that say lead.
+export function rowToCustomer(r: Record<string, string>, opts: { leadsFromStatus?: boolean } = {}): any | null {
   let firstName = (r.firstName || "").trim();
   let lastName = (r.lastName || "").trim();
   if (!firstName && !lastName && r.fullName) {
@@ -201,7 +281,8 @@ export function rowToCustomer(r: Record<string, string>): any | null {
   for (const [k, v] of Object.entries(r)) if (k.startsWith("__custom__:") && v) customFields.push({ key: k.slice(11), value: v });
 
   let createdAt = today();
-  if (r.createdAt) { const t = Date.parse(r.createdAt); if (!isNaN(t)) createdAt = new Date(t).toISOString().slice(0, 10); }
+  if (r.createdAt) { const d = parseDateLoose(r.createdAt); if (/^\d{4}-/.test(d)) createdAt = d; }
+  const birthday = r.birthday ? parseDateLoose(r.birthday) || r.birthday.trim() : "";
 
   const sq = Number(String(r.sqFootage || "").replace(/[^0-9.]/g, ""));
   const c: any = {
@@ -215,7 +296,8 @@ export function rowToCustomer(r: Record<string, string>): any | null {
   if (state) c.state = state;
   if (zip) c.zip = zip;
   if (company) c.company = company;
-  if (status && LEAD_STATUS.test(status)) c.pipelineStage = "lead";
+  if (birthday) c.birthday = birthday;
+  if (opts.leadsFromStatus && status && LEAD_STATUS.test(status)) c.pipelineStage = "lead";
   return c;
 }
 
@@ -226,7 +308,7 @@ const nameKey = (c: any) => `${c.firstName || ""} ${c.lastName || ""}`.toLowerCa
 // what's already there), joins new notes, unions tags and custom fields.
 function mergeInto(base: any, inc: any): any {
   const out = { ...base };
-  for (const k of ["firstName", "lastName", "email", "phone", "address", "city", "state", "zip", "company", "leadSource", "gateCode", "sqFootage"]) {
+  for (const k of ["firstName", "lastName", "email", "phone", "address", "city", "state", "zip", "company", "leadSource", "gateCode", "sqFootage", "birthday"]) {
     if (!out[k] && inc[k]) out[k] = inc[k];
   }
   if (inc.notes && !(out.notes || "").includes(inc.notes)) out.notes = out.notes ? `${out.notes}\n\n${inc.notes}` : inc.notes;

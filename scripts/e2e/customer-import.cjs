@@ -58,7 +58,7 @@ const CSV = "﻿First Name,Last Name,Email Address,Company,Source,Street Address
   const jane = upserts.filter(r => r.firstName === "Jane").pop(), bob = upserts.filter(r => r.firstName === "Bob").pop();
   console.log(JSON.stringify({ mapping, toastText, upsertCount: upserts.length, jane, bob, errs }, null, 1));
   const ok = jane && jane.id === existing[0].id && jane.email === "jane@example.com" && /York, PA 17402/.test(jane.address) && jane.phone && /Dog is friendly/.test(jane.notes) && (jane.customFields || []).some(f => f.key === "Company" && f.value === "Doe, Inc.")
-    && bob && bob.email === "bob@example.com" && bob.leadSource === "Referral" && bob.pipelineStage === "lead";
+    && bob && bob.email === "bob@example.com" && bob.leadSource === "Referral" && !bob.pipelineStage; // imports are customers unless "Leads" / "Use the Status column" is picked
   console.log(ok ? "PASS" : "FAIL");
   await browser.close();
   process.exit(ok ? 0 : 1);

@@ -480,16 +480,23 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
   // customer limit.
   const [importOpen, setImportOpen] = useState<false | "file" | "sheets">(false);
   const [stripeImportOpen, setStripeImportOpen] = useState(false);
+  // Imports land as customers unless the owner picks otherwise on the review
+  // screen — see rowToCustomer's comment for the bug this prevents.
+  const [importAs, setImportAs] = useState<"customers" | "leads" | "status">("customers");
   const handleCustomerImport = async (rows: Record<string, string>[]) => {
-    const incoming = rows.map(rowToCustomer).filter(Boolean) as any[];
+    const incoming = rows.map(r => rowToCustomer(r, { leadsFromStatus: importAs === "status" })).filter(Boolean) as any[];
     if (incoming.length === 0) throw new Error("no rows had a name, company, email or phone");
+    if (importAs === "leads") incoming.forEach(c => { c.pipelineStage = "lead"; });
     const limit = planLimits?.customers ?? null;
     const { next, added, updated, skippedOverLimit } = mergeImportedCustomers(customers, incoming, limit);
     setCustomers(next);
     const result = await saveCustomersTolerant([...added, ...updated]);
     if (result.droppedColumns.length) console.warn("[Import] saved without columns the database doesn't have yet:", result.droppedColumns.join(", "));
     if (result.failed) throw new Error(`${result.failed} customer(s) didn't save to the server — ${result.error}`);
-    return `Imported ${added.length} new customer${added.length !== 1 ? "s" : ""}` +
+    const leadCount = added.filter(c => c.pipelineStage === "lead").length;
+    setImportAs("customers");
+    return `Imported ${added.length} new ${importAs === "leads" ? "lead" : "customer"}${added.length !== 1 ? "s" : ""}` +
+      (importAs === "status" && leadCount ? ` (${leadCount} as leads)` : "") +
       (updated.length ? ` · updated ${updated.length} existing` : "") +
       (skippedOverLimit ? ` · ${skippedOverLimit} skipped (${limit} customer limit)` : "") + " ✓";
   };
@@ -884,6 +891,24 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
 
       <CustomerModal open={modal.open} onClose={() => setModal({ open: false, data: null })} data={modal.data} onSave={save} mapsKey={settings.googleMapsKey || (settings as any).mapsKey || ""} customers={customers} />
       <ImportDataModal open={!!importOpen} initialTab={importOpen || "file"} onClose={() => setImportOpen(false)} title="Import Customers" fieldMap={CUSTOMER_FIELD_MAP} fieldLabels={CUSTOMER_FIELD_LABELS} fieldExclude={CUSTOMER_FIELD_EXCLUDE} onImport={handleCustomerImport} toast={toast}
+        reviewExtras={(rows) => {
+          const statusLeads = rows.filter(r => rowToCustomer(r, { leadsFromStatus: true })?.pipelineStage === "lead").length;
+          return (
+            <div className="rounded-xl border border-white/10 bg-white/5 p-3 space-y-2">
+              <div className="text-xs font-semibold">Import these as</div>
+              <div className="flex flex-wrap gap-1.5">
+                {([["customers", "Customers"], ["leads", "Leads (Lead Intake)"], ["status", "Use the Status column"]] as const).map(([k, l]) => (
+                  <button key={k} type="button" onClick={() => setImportAs(k)} className={"px-3 py-1.5 rounded-lg text-xs border transition " + (importAs === k ? "bg-red-700/40 border-red-600/60 text-white" : "border-white/10 text-white/60 hover:text-white")}>{l}</button>
+                ))}
+              </div>
+              <div className="text-[11px] text-white/45">
+                {importAs === "customers" ? "Everyone goes into Customers. Nobody is put in Lead Intake."
+                  : importAs === "leads" ? "Everyone new goes into Lead Intake. Existing customers that match stay customers."
+                  : `${statusLeads} row(s) have a Status of Lead / Prospect and go to Lead Intake; the rest are customers.`}
+              </div>
+            </div>
+          );
+        }}
         note={"Matching customers (same email, phone, or name) get their missing details filled in instead of being duplicated." + (planLimits?.customers != null ? ` Limit: ${planLimits.customers.toLocaleString()} customers (you have ${customers.length.toLocaleString()}).` : "")} />
       <ImportStripeCustomersModal open={stripeImportOpen} onClose={() => setStripeImportOpen(false)} customers={customers} setCustomers={setCustomers} toast={toast} />
       <CustomerDetail customer={detail} onClose={() => setDetail(null)} onDelete={deleteCustomer} onEdit={(cust: any) => { setDetail(null); setModal({ open: true, data: cust }); }} estimates={estimates} jobs={jobs} employees={employees} timeline={timeline} setTimeline={setTimeline} settings={settings} toast={toast} setCustomers={setCustomers} onOpenEstimate={(estId: string, label?: string) => {

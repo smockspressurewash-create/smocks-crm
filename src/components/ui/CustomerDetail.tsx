@@ -521,6 +521,7 @@ export function CustomerDetail({ customer: c, onClose, onDelete, onEdit, estimat
                     <a href={"https://www.phila.gov/property/#/" + encodeURIComponent(c.address || "")} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-400 hover:text-blue-300">Lookup from satellite →</a>
                   </div>}
                 {c.gateCode && <div><div className="text-[10px] text-white/40">Gate Code</div><div className="font-mono font-bold text-yellow-300">🔒 {c.gateCode}</div></div>}
+                {(c as any).birthday && <div><div className="text-[10px] text-white/40">Birthday</div><div className="font-semibold">🎂 {(() => { const m = String((c as any).birthday).match(/(\d{2})-(\d{2})$/); return m ? new Date(2000, Number(m[1]) - 1, Number(m[2])).toLocaleDateString("en-US", { month: "long", day: "numeric" }) : (c as any).birthday; })()}</div></div>}
                 {c.hasDog && <div><div className="text-[10px] text-white/40">Dog on Property</div><div className="font-semibold">🐕 {c.dogName || "Yes"}</div></div>}
                 {c.sensitivePlants && <div className="col-span-2"><div className="text-[10px] text-white/40">Sensitive Plants</div><div className="text-white/80">🌿 {c.sensitivePlants}</div></div>}
                 {c.propertyNotes && <div className="col-span-2"><div className="text-[10px] text-white/40">Notes</div><div className="text-white/70">{c.propertyNotes}</div></div>}
