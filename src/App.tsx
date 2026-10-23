@@ -2159,6 +2159,23 @@ export function App() {
     }
     invoiceActivityRef.current = snapshot;
     if (!invoiceActivitySeededRef.current) { invoiceActivitySeededRef.current = true; return; }
+    // BUG FIX — "a bunch of invoice-paid notices at once, super delayed."
+    // When this tab catches up on data it hadn't seen (opened after a few
+    // days, or a full refresh after the 1,000-row fix) every past payment
+    // looked "new". Only events that actually happened in the last two
+    // hours are announced; older ones just update silently.
+    const byId = new Map((estimates as any[]).map(e => [e.id, e]));
+    const eventTime = (ev: { id: string }): string | null => {
+      const [id, kind] = ev.id.split(":"); const e: any = byId.get(id); if (!e) return null;
+      if (kind === "paid") { const log = Array.isArray(e.paymentLog) ? e.paymentLog.filter((x: any) => x?.type === "paid" && x?.at) : []; return log.length ? log[log.length - 1].at : e.paidAt || null; }
+      return ({ viewed: e.clientViewedAt, disputed: e.disputedAt, refunded: e.refundedAt, failed: e.paymentFailedAt, rejected: e.declinedAt, approved: e.signedAt } as any)[kind] || null;
+    };
+    const isFresh = (ev: { id: string }) => {
+      const t = eventTime(ev); if (!t) return true;
+      if (/^d{4}-d{2}-d{2}$/.test(t)) return t === today();
+      const ms = Date.parse(t); return Number.isNaN(ms) || Date.now() - ms < 2 * 3600 * 1000;
+    };
+    for (let i = newEvents.length - 1; i >= 0; i--) if (!isFresh(newEvents[i])) newEvents.splice(i, 1);
     if (newEvents.length) {
       newEvents.forEach(ev => toast(ev.text, (ev.text.startsWith("⚠️") || ev.text.startsWith("❌")) ? "red" : "green"));
       setNotifications((prev: AppNotification[]) => [...newEvents.map(ev => ({ ...ev, read: false, category: "invoice" as const, page: ev.invoiced ? "invoices" : "estimates", openType: ev.invoiced ? "invoice" : "estimate", openId: ev.openId })), ...prev].slice(0, NOTIFICATIONS_CAP));
@@ -2193,30 +2210,10 @@ export function App() {
           const html = emailShell(settings as any, "Quote Update", `<p>${ev.text}</p>` + emailButton("View Estimate", linkTo("estimates", estId)));
           sendEmail(settings as any, { to: ownerEmail, subject: "Quote update — " + ((settings as any)?.companyName || "Crew Boss"), body: html }).catch(() => {});
         });
-        // ISSUE 11 (round 11) — getting paid was the one invoice event that
-        // DIDN'T email the owner (only approved/rejected quotes did) despite
-        // being the most important one to not miss if their CRM tab isn't
-        // open. Branded (emailShell) + routed through the owner's own
-        // connected Gmail, matching every other in-app automated send.
-        newEvents.filter(ev => ev.id.endsWith(":paid")).forEach(ev => {
-          const estId = ev.id.split(":")[0];
-          const html = emailShell(settings as any, "Invoice Paid", `<p>${ev.text.replace("💰 ", "")}</p>` + emailButton("View Invoice", linkTo("invoices", estId)));
-          sendOwnerGmailOnly(settings as any, ownerEmail, "💰 Invoice paid — " + ((settings as any)?.companyName || "Crew Boss"), html).catch(() => {});
-        });
-        // AUDIT (round 12) — refunds and disputes are the two highest-stakes
-        // payment events (real money leaving the account, or a chargeback
-        // clock running) and previously had no owner email at all — a bell/
-        // toast only reaches someone with the CRM tab open.
-        newEvents.filter(ev => ev.id.endsWith(":refunded")).forEach(ev => {
-          const estId = ev.id.split(":")[0];
-          const html = emailShell(settings as any, "Invoice Refunded", `<p>${ev.text.replace("↩️ ", "")}</p>` + emailButton("View Invoice", linkTo("invoices", estId)));
-          sendOwnerGmailOnly(settings as any, ownerEmail, "↩️ Invoice refunded — " + ((settings as any)?.companyName || "Crew Boss"), html).catch(() => {});
-        });
-        newEvents.filter(ev => ev.id.endsWith(":disputed")).forEach(ev => {
-          const estId = ev.id.split(":")[0];
-          const html = emailShell(settings as any, "Payment Dispute", `<p>${ev.text.replace("🚨 ", "")}</p><p>Disputes have a short response window — check your Stripe dashboard for evidence submission.</p>` + emailButton("View Invoice", linkTo("invoices", estId)));
-          sendOwnerGmailOnly(settings as any, ownerEmail, "🚨 Payment dispute opened — " + ((settings as any)?.companyName || "Crew Boss"), html).catch(() => {});
-        });
+        // Paid / refunded / disputed emails (and a phone push) are sent by
+        // the server the moment the payment is recorded — functions/api/
+        // _lib/ownerNotify.ts — not from here, where they only went out
+        // whenever this tab happened to notice, once per open device.
       }
     }
   }, [estimates, hasCrmSession, page]); // eslint-disable-line react-hooks/exhaustive-deps

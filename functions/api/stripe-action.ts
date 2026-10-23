@@ -1,3 +1,4 @@
+import { notifyOwnerInvoiceEvent } from "./_lib/ownerNotify";
 // SECURITY AUDIT (round 12) — CRITICAL FIX. lib/stripe.ts used to call
 // api.stripe.com DIRECTLY FROM THE BROWSER using the Stripe SECRET key,
 // which lived in `settings.stripeSecretKeyEnc` — a value loaded into
@@ -822,6 +823,9 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         if (!patchRes.ok || !Array.isArray(updated) || updated.length === 0) {
           return new Response(JSON.stringify({ error: "Payment succeeded with Stripe, but the invoice record couldn't be updated (0 rows matched) — contact the business directly to confirm your invoice shows paid." }), { status: 500, headers: { "Content-Type": "application/json" } });
         }
+        // First time this payment is recorded → tell the owner now (the
+        // webhook skips its own notice for an already-logged payment).
+        if (!alreadyLogged) await notifyOwnerInvoiceEvent(context.env, new URL(context.request.url).origin, body.invoiceId, "paid", ((Number(intent.amount) || 0) - (Number(intent?.metadata?.tipCents) || 0)) / 100).catch(() => {});
         return json({ success: true });
       }
       case "create_checkout_session": {

@@ -1,3 +1,4 @@
+import { notifyOwnerInvoiceEvent } from "./_lib/ownerNotify";
 import { computeAmountDue, paidPatch } from "./_lib/amountDue";
 // FEATURE — Square as an alternative payment provider to Stripe (owner
 // request: "Is there a way we can give another option for users to connect
@@ -465,6 +466,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       if (!patchRes.ok || !Array.isArray(updated) || updated.length === 0) {
         return json({ error: "Payment succeeded with Square, but the invoice record couldn't be updated (0 rows matched) — contact the business directly to confirm your invoice shows paid." }, 500);
       }
+      if (!alreadyLogged) await notifyOwnerInvoiceEvent(context.env, new URL(context.request.url).origin, invoiceId, "paid", Math.min(paidAmountCents, expectedAmountCents) / 100).catch(() => {});
       return json({ success: true });
     }
 
