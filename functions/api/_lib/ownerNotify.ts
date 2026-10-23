@@ -49,11 +49,13 @@ export async function notifyOwnerInvoiceEvent(env: Record<string, string>, origi
     }
 
     // Email through the owner's connected Gmail (never a third-party sender).
-    const to = s.myEmail || s.companyEmail;
-    if (!to || !s.googleProviderToken) return;
-    let token = s.googleProviderToken;
+    // A saved Google sign-in (refresh token) is enough on its own — the
+    // short-lived access token in settings is often expired or missing.
+    const to = s.myEmail || s.companyEmail || s.googleEmail;
     const secrets = await getOwnerSecrets(est.owner_id, key).catch(() => null);
-    if (secrets?.googleRefreshToken && (!s.googleTokenExpiresAt || Date.now() > Number(s.googleTokenExpiresAt) - 60000)) {
+    if (!to || (!s.googleProviderToken && !secrets?.googleRefreshToken)) return;
+    let token = s.googleProviderToken;
+    if (secrets?.googleRefreshToken && (!token || !s.googleTokenExpiresAt || Date.now() > Number(s.googleTokenExpiresAt) - 60000)) {
       const rr = await fetch(`${origin}/api/google-refresh`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ refresh_token: secrets.googleRefreshToken }) }).catch(() => null);
       const rd: any = rr ? await rr.json().catch(() => null) : null;
       if (rr?.ok && rd?.access_token) token = rd.access_token;

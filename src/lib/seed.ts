@@ -369,9 +369,9 @@ export const seedGoals: Goal[] = [
 // ─── Seed accountability entries ───────────────────────────────────────────────
 
 export const seedAccountabilityEntries: AccountabilityEntry[] = [
-  { id: "acc1", date: daysFromNow(-1), sleep: 7.5, water: 64, steps: 8420, gymMinutes: 45, meditationMinutes: 10, mood: 4, notes: "Good day overall." },
-  { id: "acc2", date: daysFromNow(-2), sleep: 6,   water: 48, steps: 5100, gymMinutes: 0,  meditationMinutes: 0,  mood: 3, notes: "Tired. Skipped gym." },
-  { id: "acc3", date: daysFromNow(-3), sleep: 8,   water: 80, steps: 9800, gymMinutes: 60, meditationMinutes: 15, mood: 5, notes: "Great day." },
+  { id: "acc1", date: daysFromNow(-1), sleep: 7.5, water: 64, steps: 8420, gymMinutes: 45, mood: 4, notes: "Good day overall." },
+  { id: "acc2", date: daysFromNow(-2), sleep: 6,   water: 48, steps: 5100, gymMinutes: 0,   mood: 3, notes: "Tired. Skipped gym." },
+  { id: "acc3", date: daysFromNow(-3), sleep: 8,   water: 80, steps: 9800, gymMinutes: 60, mood: 5, notes: "Great day." },
 ];
 
 // ─── Seed mileage ─────────────────────────────────────────────────────────────

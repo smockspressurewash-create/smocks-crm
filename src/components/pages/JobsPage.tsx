@@ -26,6 +26,8 @@ import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Exp
 import { twilioSend, sendEmail, emailShell, emailButton, getFreshOwnerGoogleToken, logOutboundSmsToInbox } from "../../lib/messaging";
 import { supabase } from "../../lib/supabase";
 import { deleteByIds } from "../../lib/dbBulk";
+import { OwnerShiftBar } from "../ui/OwnerShiftBar";
+import { crewIncludesEmployee } from "./EmployeePortal";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -539,6 +541,17 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
     }
   };
   const clockIn = jid => { updateJob(jid, { clockInAt: Date.now() }); toast("Clocked in"); };
+  // "Is the owner working this job right now?" — on its crew, not finished,
+  // and either started / arrived, or it's today's job while they're on the
+  // clock. Only then does a card show work details (full checklist, photos,
+  // OTW); otherwise it stays a short summary — tap it to open everything.
+  const ownerEmp = employees.find((e: any) => e.role === "owner") || null;
+  const ownerOnClock = !!(ownerEmp?.dayClockInAt ?? ownerEmp?.dayclockinat);
+  const isOwnerWorkingOn = (j: any) => {
+    if (!ownerEmp || !crewIncludesEmployee(j.crew, ownerEmp.id, ownerEmp.user_id)) return false;
+    if (j.status === "completed" || j.status === "cancelled") return false;
+    return j.status === "in_progress" || !!j.arrivedAt || !!j.clockInAt || (j.scheduledDate === today() && ownerOnClock);
+  };
   const clockOut = j => {
     if (!j.clockInAt) return;
     const hrs = Math.round(((Date.now() - j.clockInAt) / 3600000) * 100) / 100;
@@ -1500,6 +1513,9 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
         </button>
       </div>
 
+      {/* The owner clocks in for the DAY, not per job (see OwnerShiftBar). */}
+      <OwnerShiftBar ownerEmp={ownerEmp} toast={toast} />
+
       {tab !== "unscheduled" && <div className="grid md:grid-cols-2 gap-4">
         {filtered.map(j => {
           const c = customers.find(x => x.id === j.customerId);
@@ -1508,8 +1524,11 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
           const jobCost = (Number(j.laborCost) || 0) + (Number(j.materialCost) || 0) + ((j.chemicalsUsed || []).reduce((s, ch) => s + Number(ch.cost), 0));
           const jobMargin = j.amount > 0 && jobCost > 0 ? Math.round(((j.amount - jobCost) / j.amount) * 100) : null;
           const isBulkSel = bulkSelected.includes(j.id);
+          const working = isOwnerWorkingOn(j);
+          const onCrew = !!ownerEmp && crewIncludesEmployee(j.crew, ownerEmp.id, ownerEmp.user_id);
+          const ckTotal = (j.checklist || []).length;
           return (
-            <Glass key={j.id} data-job-id={j.id} className={"p-5 transition-all relative overflow-hidden " + (isBulkSel ? "!border-purple-500/60 !bg-purple-950/10" : j.noShow ? "border-red-500/60 bg-red-950/20" : "hover:border-red-600/50") + (highlightId === j.id ? " ring-2 ring-red-500 shadow-[0_0_25px_rgba(239,68,68,0.65)]" : "")} onTouchStart={e => handleTouchStart(j.id, e)} onTouchEnd={e => handleTouchEnd(j.id, e, j)}>
+            <Glass key={j.id} data-job-id={j.id} onClick={(e: any) => { if (!(e.target as HTMLElement).closest("button,a,input,select,textarea,label")) setDetailId(j.id); }} className={"p-5 transition-all relative overflow-hidden cursor-pointer " + (working ? "!border-green-600/50 " : "") + (isBulkSel ? "!border-purple-500/60 !bg-purple-950/10" : j.noShow ? "border-red-500/60 bg-red-950/20" : "hover:border-red-600/50") + (highlightId === j.id ? " ring-2 ring-red-500 shadow-[0_0_25px_rgba(239,68,68,0.65)]" : "")} onTouchStart={e => handleTouchStart(j.id, e)} onTouchEnd={e => handleTouchEnd(j.id, e, j)}>
               {/* Priority stripe */}
               {j.priority && j.priority !== "normal" && <div className={"absolute top-0 left-0 w-1 h-full " + (priorityLevels.find(p => p.key === j.priority)?.color || "bg-gray-600")} />}
               <div className="flex items-start justify-between mb-3">
@@ -1518,6 +1537,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                   <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <div className="font-semibold">{c?.firstName} {c?.lastName}</div>
+                    {working && <Badge tone="green">You're on this job</Badge>}
                     {j.priority && j.priority !== "normal" && <Badge tone={priorityLevels.find(p => p.key === j.priority)?.tone}>{j.priority}</Badge>}
                     {j.noShow && <Badge tone="red">No-show</Badge>}
                     {j.isRecurring && <span className="inline-flex items-center gap-0.5 text-[9px] text-blue-400 bg-blue-900/20 border border-blue-800/30 px-2 py-0.5 rounded-full"><Repeat size={8} />{describeRecurringSchedule(j)}</span>}
@@ -1537,7 +1557,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                     }} className="text-red-400 ml-1" title="Get directions"><MapPin size={10} /></button>
                   </div>
                   {j.duration && <div className="text-xs text-white/50 mt-0.5 flex items-center gap-1"><Clock size={10} />{j.duration}h est.{j.loggedHours > 0 ? " · " + j.loggedHours + "h logged" : ""}{j.clockInAt ? " · ⏱ running" : ""}</div>}
-                  {(j.attachments || []).length > 0 && <div className="text-xs text-white/50 mt-0.5 flex items-center gap-1"><FileText size={10} />{j.attachments.length} attachment{j.attachments.length > 1 ? "s" : ""}</div>}
+                  {working && (j.attachments || []).length > 0 && <div className="text-xs text-white/50 mt-0.5 flex items-center gap-1"><FileText size={10} />{j.attachments.length} attachment{j.attachments.length > 1 ? "s" : ""}</div>}
                   {/* FIX 7 (mobile round 6) — employee-uploaded photos/videos
                       had no visibility from this list at all; owner only
                       ever saw them by opening the job's detail modal. */}
@@ -1550,7 +1570,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                     // "Take after photos"). totalJobPhotoCount aggregates both.
                     const photoCount = totalJobPhotoCount(j);
                     const videoCount = (j.videos || []).length;
-                    if (photoCount === 0 && videoCount === 0) return null;
+                    if (!working || (photoCount === 0 && videoCount === 0)) return null;
                     return (
                       <div className="text-xs text-white/50 mt-0.5 flex items-center gap-1">
                         <ImageIcon size={10} />
@@ -1636,14 +1656,19 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 </div>
               )}
 
-              <div className="mb-3"><div className="flex items-center justify-between text-xs text-white/60 mb-1.5"><span>Checklist</span><span>{dn}/{(j.checklist || []).length}</span></div><div className="space-y-1.5 max-h-32 overflow-y-auto">{(j.checklist || []).map((ck, idx) => <label key={idx} className="flex items-center gap-2 text-sm cursor-pointer"><input type="checkbox" checked={ck.done} onChange={() => toggleCk(j.id, idx)} className="w-4 h-4 rounded accent-red-600" /><span className={ck.done ? "line-through text-white/40" : "text-white/80"}>{ck.label}</span></label>)}</div></div>
+              {/* Full checklist only while the owner is actually working this
+                  job; otherwise one progress line (open the job for details). */}
+              {working ? (
+                <div className="mb-3"><div className="flex items-center justify-between text-xs text-white/60 mb-1.5"><span>Checklist</span><span>{dn}/{ckTotal}</span></div><div className="space-y-1.5 max-h-32 overflow-y-auto">{(j.checklist || []).map((ck, idx) => <label key={idx} className="flex items-center gap-2 text-sm cursor-pointer"><input type="checkbox" checked={ck.done} onChange={() => toggleCk(j.id, idx)} className="w-4 h-4 rounded accent-red-600" /><span className={ck.done ? "line-through text-white/40" : "text-white/80"}>{ck.label}</span></label>)}</div></div>
+              ) : ckTotal > 0 ? (
+                <div className="mb-3 flex items-center gap-2 text-[11px] text-white/45"><span>Checklist {dn}/{ckTotal}</span><div className="flex-1 h-1 rounded-full bg-white/10 overflow-hidden"><div className="h-full bg-red-600/70" style={{ width: `${Math.round((dn / ckTotal) * 100)}%` }} /></div></div>
+              ) : null}
 
               <div className="md:hidden text-[10px] text-white/30 text-center mb-2 border border-dashed border-red-900/20 rounded py-1">← swipe left to advance</div>
 
               <div className="flex gap-2 pt-2 border-t border-red-900/30 flex-wrap">
-                <button onClick={() => setDetailId(j.id)} className="px-2.5 py-1.5 rounded-lg border bg-white/5 border-white/10 text-white/60 hover:text-white text-xs transition"><Edit size={12} /></button>
-                {/* On My Way button — shows for scheduled/in_progress */}
-                {(tab === "scheduled" || tab === "in_progress") && (() => {
+                {/* On My Way — only when the owner is the one heading there. */}
+                {(tab === "scheduled" || tab === "in_progress") && (working || (onCrew && j.scheduledDate === today())) && (() => {
                   const c = customers.find(x => x.id === j.customerId);
                   if (!c?.phone && !c?.email) return null;
                   return <button onClick={() => {
@@ -1689,11 +1714,10 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                     <Navigation size={10} />OTW
                   </button>;
                 })()}
-                {(tab === "scheduled" || tab === "in_progress") && (j.clockInAt
-                  ? <button onClick={() => clockOut(j)} className="px-2.5 py-1.5 rounded-lg border bg-green-900/30 border-green-600/40 text-green-300 hover:bg-green-900/50 text-xs transition flex items-center gap-1 animate-pulse"><Clock size={12} />{((Date.now() - j.clockInAt) / 3600000).toFixed(2)}h</button>
-                  : <button onClick={() => clockIn(j.id)} className="px-2.5 py-1.5 rounded-lg border bg-white/5 border-white/10 text-white/60 hover:text-green-400 text-xs transition" title="Clock in"><Play size={12} /></button>
-                )}
-                {tab === "scheduled" && <><GBtn onClick={() => move(j.id, "in_progress")} className="flex-1 text-xs !py-1.5">Start</GBtn>
+                {/* Per-job timers are gone (clock in for the day above); one
+                    that's still running from before can be stopped here. */}
+                {j.clockInAt && <button onClick={() => clockOut(j)} title="Stop this job's old timer" className="px-2.5 py-1.5 rounded-lg border bg-green-900/30 border-green-600/40 text-green-300 hover:bg-green-900/50 text-xs transition flex items-center gap-1"><Clock size={12} />Stop {((Date.now() - j.clockInAt) / 3600000).toFixed(2)}h</button>}
+                {tab === "scheduled" && <>{onCrew ? <GBtn onClick={() => move(j.id, "in_progress")} className="flex-1 text-xs !py-1.5">Start</GBtn> : <div className="flex-1" />}
                   <button onClick={() => {
                     setJobs(jobs.map(x => x.id === j.id ? { ...x, status: "cancelled", noShow: true, cancelReason: "Customer no-show", cancelledAt: new Date().toISOString() } : x));
                     toast("Marked as no-show");

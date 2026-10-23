@@ -1026,6 +1026,11 @@ const TOOLS = [
     },
   },
   {
+    name: "get_accountability_summary",
+    description: "The owner's personal check-ins from the Accountability page (sleep, water, steps, workouts, mood, notes), streak and recent wins. For check-ins, briefings, reflections, or when they ask how they're doing — not during business tasks.",
+    input_schema: { type: "object", properties: { days: { type: "number" } } },
+  },
+  {
     name: "list_goals",
     description: "The owner's goals and progress.",
     input_schema: { type: "object", properties: {} },
@@ -2379,6 +2384,18 @@ const executeToolCore = async (ctx: Ctx, name: string, input: Record<string, any
         if (!r.ok) return { error: OWNER_RECORDS_MISSING + " (" + r.error + ")" };
         return { success: true, goalId: goal.id, label: goal.label, target: goal.target, metric };
       }
+      case "get_accountability_summary": {
+        if (!ctx.ownerId) return { error: "Can't tell which business this is." };
+        const days = Math.max(1, Math.min(60, Number(input.days) || 7));
+        const since = new Date(Date.now() - (days - 1) * 86400000).toISOString().slice(0, 10);
+        const [ent, wn] = await Promise.all([recList(ctx.authHeaders, ctx.ownerId, "accountability", { limit: 400 }), recList(ctx.authHeaders, ctx.ownerId, "wins", { limit: 200 })]);
+        if (!ent.ok) return { error: OWNER_RECORDS_MISSING + " (" + ent.error + ")" };
+        const recent = ent.rows.filter((e: any) => (e.date || "") >= since);
+        const avg = (k: string) => recent.length ? Math.round((recent.reduce((s2: number, e: any) => s2 + (Number(e[k]) || 0), 0) / recent.length) * 10) / 10 : null;
+        const dates = new Set(ent.rows.map((e: any) => e.date));
+        let streak = 0; for (let i = 0; i < 365; i++) { const d = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10); if (dates.has(d)) streak++; else if (i > 0) break; }
+        return { success: true, days, checkInsLogged: recent.length, streakDays: streak, checkedInToday: dates.has(today()), averages: { sleepHours: avg("sleep"), waterOz: avg("water"), steps: avg("steps"), workoutMinutes: avg("gymMinutes"), mood: avg("mood") }, workoutDays: recent.filter((e: any) => (Number(e.gymMinutes) || 0) > 0 || e.gym).length, notes: recent.filter((e: any) => e.notes).slice(0, 5).map((e: any) => `${e.date}: ${e.notes}`), wins: wn.ok ? wn.rows.filter((w: any) => (w.date || "") >= since).map((w: any) => w.text) : [] };
+      }
       case "list_goals": {
         if (!ctx.ownerId) return { error: "Can't tell which business this is." };
         const { ok, rows, error } = await recList(ctx.authHeaders, ctx.ownerId, "goals", { limit: 50 });
@@ -3412,6 +3429,8 @@ WATCHING FOR REPLIES: when a bulk text asks customers something (their birthday,
 MANY THINGS IN ONE MESSAGE: when the owner sends a long list (e.g. 50 customers, each with their own date/instructions), use the bulk tools — schedule_jobs_bulk (one entry per job, with each one's own date, time, crew, notes, checklist, tags, recurring), create_customers_bulk, update_customers_bulk — in as few calls as possible, carrying every detail they gave for each one. Don't drop or merge per-customer instructions, don't ask them to send it in pieces, and don't stop halfway: keep calling tools until every item is done, then report the totals plus any that failed by name.
 
 CAMPAIGNS AND GOALS: create_campaign puts a draft/scheduled campaign in the CRM's Campaigns page; create_goal puts a goal in the Goals page (business metrics like revenue/jobs/clients track themselves). Never say you created one unless the tool returned success — if it says the records table isn't set up, tell the owner exactly that.
+
+PERSONAL VS. BUSINESS: while the owner is working through business (jobs, customers, quotes, scheduling), stay on it — don't drift into sleep, workouts, mood or personal reminders. get_accountability_summary is for check-ins, the morning briefing, reflections, or when they ask. Personal reminders ("remind me to call Mom Sunday at 6") use set_reminder like any reminder.
 
 MONEY DOCUMENTS: when the owner sends a photo, screenshot or PDF of a receipt, bill, bank/card statement, revenue report or tax paperwork, call import_financial_document with its url — expenses land in Expenses, income in Budget, tax figures are remembered. Report what was imported (counts and totals). Spoken/typed expenses → log_expenses.
 

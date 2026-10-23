@@ -2175,7 +2175,7 @@ export function App() {
     };
     const isFresh = (ev: { id: string }) => {
       const t = eventTime(ev); if (!t) return true;
-      if (/^d{4}-d{2}-d{2}$/.test(t)) return t === today();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t === today();
       const ms = Date.parse(t); return Number.isNaN(ms) || Date.now() - ms < 2 * 3600 * 1000;
     };
     for (let i = newEvents.length - 1; i >= 0; i--) if (!isFresh(newEvents[i])) newEvents.splice(i, 1);
@@ -3540,9 +3540,16 @@ export function App() {
       // (each already using the real .select("id") + 0-row-check pattern,
       // see CLAUDE.md) is what should update it, never this generic bulk
       // resync blindly overwriting fields it has no way to know are stale.
-      const safeCustomers = !customerSafeIds ? [] : customers.filter((c: any) => !syncedCustomerIdsRef.current.has(c.id) && !customerSafeIds!.has(c.id));
+      // A row this tab never saw on the server only counts as "new" while
+      // it's recent — the same 30-minute rule refetchData uses to keep it.
+      // An older one is a cached copy of something deleted elsewhere (e.g.
+      // a phone still holding a deleted import), and pushing it would bring
+      // it back.
+      const RECENT_PUSH_MS = 30 * 60 * 1000;
+      const recentLocal = (row: any) => { const t = Date.parse(row?.createdAt || ""); return !Number.isNaN(t) && Date.now() - t < RECENT_PUSH_MS; };
+      const safeCustomers = !customerSafeIds ? [] : customers.filter((c: any) => !syncedCustomerIdsRef.current.has(c.id) && !customerSafeIds!.has(c.id) && recentLocal(c));
       await upsertCustomersSafely(safeCustomers, "Customer auto-save");
-      const safeEstimates = !estimateSafeIds ? [] : estimates.filter((e: any) => !syncedEstimateIdsRef.current.has(e.id) && !estimateSafeIds!.has(e.id));
+      const safeEstimates = !estimateSafeIds ? [] : estimates.filter((e: any) => !syncedEstimateIdsRef.current.has(e.id) && !estimateSafeIds!.has(e.id) && recentLocal(e));
       if (safeEstimates.length > 0) {
         try {
           const { error } = await (supabase as any).from("estimates").upsert(safeEstimates.map((e: any) => ({ ...e, owner_id: crmUserId })), { onConflict: "id" });
@@ -5928,7 +5935,7 @@ export function App() {
                 {page === "jobs"           && <JobsPage jobs={jobs} setJobs={setJobs} customers={customers} setCustomers={setCustomers} employees={employees} estimates={estimates} setEstimates={setEstimates} settings={settings} setSettings={setSettings} toast={toast} posts={socialPosts} setPosts={setSocialPosts} setTimeline={setTimeline} initialDetailId={openJobId} onInitialDetailIdConsumed={() => setOpenJobId(null)} onPortal={id => setPortalEstId(id)} ownerId={crmUserId} autoOpenNew={fabAutoOpenNew === "jobs"} onAutoOpenNewConsumed={() => setFabAutoOpenNew(null)} autoOpenNewWorkOrder={fabAutoOpenNew === "jobs-workorder"} onAutoOpenNewWorkOrderConsumed={() => setFabAutoOpenNew(null)} highlightId={alfredHighlight?.type === "job" ? alfredHighlight.id : null} pushUndo={pushUndo} markRecentlyDeleted={markRecentlyDeleted} unmarkRecentlyDeleted={unmarkRecentlyDeleted} services={services} />}
                 {page === "pipeline"       && <PipelinePage jobs={jobs} setJobs={setJobs} customers={customers} toast={toast} />}
                 {page === "calendar"       && <CalendarPage jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} settings={settings} setSettings={setSettings} ownerId={crmUserId} posts={socialPosts} setPosts={setSocialPosts} />}
-                {page === "inbox"          && (managerBlocked("inbox") ? <RestrictedNotice label="the Inbox" /> : <InboxPage threads={inboxThreads} setThreads={setInboxThreads} customers={customers} setCustomers={setCustomers} setJobs={setJobs} settings={settings} toast={toast} ownerId={crmUserId} onNav={setPage} onViewCustomerInCrm={(id: string) => { setAlfredHighlight({ type: "customer", id }); setPage("customers"); }} />)}
+                {page === "inbox"          && (managerBlocked("inbox") ? <RestrictedNotice label="the Inbox" /> : <InboxPage threads={inboxThreads} setThreads={setInboxThreads} customers={customers} setCustomers={setCustomers} setJobs={setJobs} jobs={jobs} estimates={estimates} employees={employees} settings={settings} toast={toast} ownerId={crmUserId} onNav={setPage} onViewCustomerInCrm={(id: string) => { setAlfredHighlight({ type: "customer", id }); setPage("customers"); }} />)}
                 {page === "campaigns"      && (planBlocked("campaigns") ? <PlanRestrictedNotice label="Campaign Blasts" feature="campaigns" /> : <CampaignsPage campaigns={campaigns} setCampaigns={setCampaigns} customers={customers} estimates={estimates} jobs={jobs} settings={settings} setSettings={setSettings} inboxThreads={inboxThreads} setInboxThreads={setInboxThreads} automations={automations} setAutomations={setAutomations} toast={toast} />)}
                 {page === "reviews"        && <ReviewsPage reviews={reviews} setReviews={setReviews} jobs={jobs} customers={customers} toast={toast} negativeAlerts={negativeAlerts} setNegativeAlerts={setNegativeAlerts} settings={settings} setSettings={setSettings} />}
                 {page === "automations"    && <AutomationsPage automations={automations} setAutomations={setAutomations} jobs={jobs} customers={customers} estimates={estimates} settings={settings} setSettings={setSettings} toast={toast} />}
@@ -5957,7 +5964,7 @@ export function App() {
                 {page === "google"         && (managerBlocked("google") ? <RestrictedNotice label="Google Workspace" /> : <GoogleWorkspacePage settings={settings} setSettings={setSettings} googleData={googleData as any} setGoogleData={setGoogleData} customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} onNav={setPage} />)}
                 {page === "employees"      && <EmployeesPage employees={employees} setEmployees={setEmployees} jobs={jobs} setJobs={setJobs} customers={customers} settings={settings} toast={toast} autoOpenManagerInvite={autoOpenManagerInvite} onAutoOpenManagerInviteConsumed={() => setAutoOpenManagerInvite(false)} initialView={employeesInitialView} onInitialViewConsumed={() => setEmployeesInitialView(undefined)} ownerId={crmUserId} planLimits={planLimits} onUpgrade={openBillingUpgrade} highlightId={alfredHighlight?.type === "employee" ? alfredHighlight.id : null} onHighlightConsumed={() => setAlfredHighlight(null)} />}
                 {page === "hiring"         && <HiringPage settings={settings} setSettings={setSettings} toast={toast} ownerId={crmUserId} onNav={setPage} />}
-                {page === "fleet"          && <FleetPage vehicles={vehicles} setVehicles={setVehicles} maintenance={maintenance} setMaintenance={setMaintenance} toast={toast} />}
+                {page === "fleet"          && <FleetPage vehicles={vehicles} setVehicles={setVehicles} maintenance={maintenance} setMaintenance={setMaintenance} toast={toast} employees={employees} />}
                 {page === "expenses"       && <ExpensesPage expenses={expenses} setExpenses={setExpenses} toast={toast} />}
                 {page === "chemicals"      && <ChemicalsPage chemicals={chemicals} setChemicals={setChemicals} toast={toast} settings={settings} ownerId={crmUserId} markRecentlyDeleted={markRecentlyDeleted} />}
                 {page === "training"       && <TrainingPage modules={trainingModules} setModules={setTrainingModules} employees={employees} toast={toast} ownerId={crmUserId} />}
@@ -5971,7 +5978,7 @@ export function App() {
                 {page === "referrals"      && <ReferralsPage customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} settings={settings} setSettings={setSettings} />}
                 {page === "promotions"     && <PromotionsPage promotions={promotions} setPromotions={setPromotions} customers={customers} services={services} settings={settings} toast={toast} />}
                 {page === "trashcans"      && (planBlocked("trashcans") ? <PlanRestrictedNotice label="Trash-Can Route Management" feature="trashcans" /> : <TrashCanPage jobs={jobs} setJobs={setJobs} customers={customers} setCustomers={setCustomers} employees={employees} settings={settings} setSettings={setSettings} toast={toast} ownerId={crmUserId} markRecentlyDeleted={markRecentlyDeleted} />)}
-                {page === "workorders"     && <WorkOrdersPage jobs={jobs} setJobs={setJobs} customers={customers} setCustomers={setCustomers} employees={employees} settings={settings} toast={toast} ownerId={crmUserId} onOpenJob={id => queueAlfredSpotlight({ page: "jobs", type: "job", id })} onNewWorkOrder={() => { setFabAutoOpenNew("jobs-workorder"); setPage("jobs"); }} />}
+                {page === "workorders"     && <WorkOrdersPage jobs={jobs} setJobs={setJobs} customers={customers} setCustomers={setCustomers} employees={employees} settings={settings} toast={toast} ownerId={crmUserId} onOpenJob={id => queueAlfredSpotlight({ page: "jobs", type: "job", id })} onNewWorkOrder={() => { setFabAutoOpenNew("jobs-workorder"); setPage("jobs"); }} markRecentlyDeleted={markRecentlyDeleted} />}
                 {page === "crew"           && <CrewView jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} settings={settings} setSettings={setSettings} estimates={estimates} setEstimates={setEstimates} refetchEmployees={refetchEmployees} ownerId={crmUserId} />}
               </SafePage>
             </PageFade>
@@ -5990,7 +5997,7 @@ export function App() {
             only when page==="alfred") so it still gets that exact layout
             treatment; Voice Mode's own overlay/bubble portals straight to
             document.body, so those keep working on every other page too. */}
-        {!managerBlocked("alfred") && <AlfredPage conversations={alfredConversations} setConversations={setAlfredConversations} activeConvId={activeConvId} setActiveConvId={setActiveConvId} memory={alfredMemory} setMemory={setAlfredMemory} personality={personality} setPersonality={setPersonality} apiKey={settings.anthropicKey ?? settings.geminiKey ?? ""} openSettings={() => setSettingsOpen(true)} toast={toast} jobs={jobs} setJobs={setJobs} estimates={estimates} setEstimates={setEstimates} customers={customers} setCustomers={setCustomers} employees={employees} automations={automations} setAutomations={setAutomations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} setWins={setWins} goals={goalsList} setGoals={setGoalsList} setSettings={setSettings} settings={settings} modelStatus={modelStatus} setModelStatus={setModelStatus} onNav={setPage} onSpotlight={queueAlfredSpotlight} expenses={expenses} setExpenses={setExpenses} chemicals={chemicals} ownerId={crmUserId} reviews={reviews} setReviews={setReviews} vehicles={vehicles} setVehicles={setVehicles} maintenance={maintenance} setMaintenance={setMaintenance} trainingModules={trainingModules} services={services} isActivePage={page === "alfred"} currentPageName={page} cursorContext={cursorContext} onResolveScreenHighlight={resolveScreenHighlight} />}
+        {!managerBlocked("alfred") && <AlfredPage conversations={alfredConversations} setConversations={setAlfredConversations} activeConvId={activeConvId} setActiveConvId={setActiveConvId} memory={alfredMemory} setMemory={setAlfredMemory} personality={personality} setPersonality={setPersonality} apiKey={settings.anthropicKey ?? settings.geminiKey ?? ""} openSettings={() => setSettingsOpen(true)} toast={toast} jobs={jobs} setJobs={setJobs} estimates={estimates} setEstimates={setEstimates} customers={customers} setCustomers={setCustomers} employees={employees} automations={automations} setAutomations={setAutomations} stats={{ totalRev, activeJobs, pendingEst, closeRate, doneMonth }} setWins={setWins} goals={goalsList} setGoals={setGoalsList} setSettings={setSettings} settings={settings} modelStatus={modelStatus} setModelStatus={setModelStatus} onNav={setPage} onSpotlight={queueAlfredSpotlight} expenses={expenses} setExpenses={setExpenses} entries={accountability} wins={wins} chemicals={chemicals} ownerId={crmUserId} reviews={reviews} setReviews={setReviews} vehicles={vehicles} setVehicles={setVehicles} maintenance={maintenance} setMaintenance={setMaintenance} trainingModules={trainingModules} services={services} isActivePage={page === "alfred"} currentPageName={page} cursorContext={cursorContext} onResolveScreenHighlight={resolveScreenHighlight} />}
 
         {/* FEATURE — "highlight it in a glowing red... you mean this?"
             Rendered here (not inside AlfredPage) since it's App.tsx that
