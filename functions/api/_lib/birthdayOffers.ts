@@ -45,7 +45,9 @@ export async function runBirthdayOffers(authHeaders: Record<string, string>, get
       const code = "BDAY" + Math.random().toString(36).slice(2, 7).toUpperCase();
       const promo = await fetch(`${SUPABASE_URL}/rest/v1/promotions`, {
         method: "POST", headers: { ...authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
-        body: JSON.stringify([{ id: crypto.randomUUID(), owner_id: ownerId, name: `Birthday — ${`${c.firstName || ""} ${c.lastName || ""}`.trim()}`, code, discount_type: "percent", discount_value: Number(cfg.discountPercent) || 10, valid_from: day, valid_until: expires, usage_count: 0, audience: "all", created_at: new Date().toISOString() }]),
+        // One use, only this customer, expires after validDays — and one per
+        // customer per year (cfg.sent). Column names match the promotions table.
+        body: JSON.stringify([{ id: crypto.randomUUID(), owner_id: ownerId, name: `Birthday — ${`${c.firstName || ""} ${c.lastName || ""}`.trim()}`, description: "Birthday coupon", code, discountType: "percent", discountValue: Number(cfg.discountPercent) || 10, validFrom: day, validTo: expires, usageLimit: 1, redeemedCount: 0, audience: "individual", audienceCustomerIds: [c.id], channel: "sms", status: "active", createdAt: day }]),
       }).catch(() => null);
       if (!promo?.ok) { errors.push(`${c.id}: couldn't create coupon`); continue; }
       const body = stripMarkdownForSms((cfg.message || DEFAULT_BIRTHDAY_MESSAGE)

@@ -1,4 +1,5 @@
 import { notifyOwnerInvoiceEvent } from "./_lib/ownerNotify";
+import { redeemPromoForInvoice } from "./_lib/promoRedeem";
 // FIX 1 (mobile round 8) — server-side, signature-verified source of truth
 // for "was this invoice actually paid." Previously the ONLY place an invoice
 // got marked paid was client-side code trusting its own read of the Stripe
@@ -312,6 +313,8 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       const intent = event.data?.object || {};
       const invoiceId = intent.metadata?.invoiceId;
       if (invoiceId) ok = await markInvoicePaid(invoiceId, intent.id, serviceRoleKey, (intent.amount || 0) / 100, intent.metadata?.payType, Number(intent.metadata?.tipCents) || 0, notify);
+      // A coupon on this payment is used up now (once per invoice).
+      if (invoiceId && intent.metadata?.promoId) await redeemPromoForInvoice(serviceRoleKey, intent.metadata.promoId, invoiceId);
     } else if (event.type === "payment_intent.payment_failed") {
       // AUDIT (round 12) — previously unhandled entirely: a declined card
       // meant Stripe knew, but this app never did — no log, no owner

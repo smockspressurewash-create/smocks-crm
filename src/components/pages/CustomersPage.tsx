@@ -35,6 +35,8 @@ import { ImportDataModal } from "../ui/ImportDataModal";
 import { deleteByIds } from "../../lib/dbBulk";
 import { CUSTOMER_FIELD_MAP, CUSTOMER_FIELD_LABELS, CUSTOMER_FIELD_EXCLUDE, rowToCustomer, mergeImportedCustomers, saveCustomersTolerant } from "../../lib/customerImport";
 import { ImportStripeCustomersModal } from "../ui/ImportStripeCustomersModal";
+import { PortalInvitesModal } from "../ui/PortalInvitesModal";
+import { getPortalInvites, sendPortalInvites } from "../../lib/portalInvites";
 import { GBtn } from "../ui/GBtn";
 import { useConfirm } from "../ui/ConfirmModal";
 import { UpgradePrompt } from "../ui/UpgradePrompt";
@@ -375,8 +377,17 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
     // saveCustomersTolerant drops just that column and saves the rest.
     saveCustomersTolerant([record])
       .then(r => {
-        if (r.failed) { console.error("[CustomersPage] save failed:", r.error); toast("Saved locally, but failed to sync — " + r.error, "red"); }
-        else toast("Customer saved ✓", "green");
+        if (r.failed) { console.error("[CustomersPage] save failed:", r.error); toast("Saved locally, but failed to sync — " + r.error, "red"); return; }
+        toast("Customer saved ✓", "green");
+        // New customer → send their customer-portal link (Customers →
+        // Portal invites turns this off). Only for customers added one at a
+        // time here, never imports or leads.
+        if (isNew && (settings as any)?.autoPortalInvite !== false && record.pipelineStage !== "lead" && (record.phone || record.email)) {
+          getPortalInvites([record.id])
+            .then(inv => sendPortalInvites(settings, inv))
+            .then(res => { if (res.sent) toast(`Portal invite sent to ${record.firstName || "the customer"} ✓`, "green"); else if (res.failed) toast("Couldn't send the portal invite — " + (res.errors[0] || "unknown error"), "red"); })
+            .catch((e: any) => toast("Couldn't create the portal invite — " + (e?.message || "unknown error"), "red"));
+        }
       })
       .catch((e: any) => { console.error("[CustomersPage] save threw:", e?.message); toast("Saved locally, but failed to sync — " + (e?.message || "unknown error"), "red"); });
   };
@@ -480,6 +491,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
   // customer limit.
   const [importOpen, setImportOpen] = useState<false | "file" | "sheets">(false);
   const [stripeImportOpen, setStripeImportOpen] = useState(false);
+  const [portalInvitesOpen, setPortalInvitesOpen] = useState(false);
   // Imports land as customers unless the owner picks otherwise on the review
   // screen — see rowToCustomer's comment for the bug this prevents.
   const [importAs, setImportAs] = useState<"customers" | "leads" | "status">("customers");
@@ -573,6 +585,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
             <GBtn variant="ghost" onClick={() => atCustomerLimit ? setUpgradePromptOpen(true) : setImportOpen("sheets")}><Download size={14} className="inline mr-1.5 rotate-180" />Sheets / Paste</GBtn>
             <GBtn variant="ghost" onClick={() => atCustomerLimit ? setUpgradePromptOpen(true) : setStripeImportOpen(true)}><CreditCard size={14} className="inline mr-1.5" />Import from Stripe</GBtn>
             <GBtn variant="ghost" onClick={exportCSV}><Download size={14} className="inline mr-1.5" />Export</GBtn>
+            <GBtn variant="ghost" onClick={() => setPortalInvitesOpen(true)}><Send size={14} className="inline mr-1.5" />Portal invites</GBtn>
             <GBtn variant={mergeMode ? "danger" : "ghost"} onClick={() => { setMergeMode(!mergeMode); setMergePair([]); }}><UserCheck size={14} className="inline mr-1.5" />{mergeMode ? "Cancel Merge" : "Merge"}</GBtn>
             <GBtn variant={bulkMode ? "danger" : "ghost"} onClick={() => { setBulkMode(!bulkMode); setBulkSelected([]); }}><CheckSquare size={14} className="inline mr-1.5" />{bulkMode ? "Cancel Select" : "Select"}</GBtn>
             <GBtn onClick={openAddCustomer} data-tour="new-customer-btn"><Plus size={14} className="inline mr-1.5" />Add</GBtn>
@@ -910,6 +923,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
           );
         }}
         note={"Matching customers (same email, phone, or name) get their missing details filled in instead of being duplicated." + (planLimits?.customers != null ? ` Limit: ${planLimits.customers.toLocaleString()} customers (you have ${customers.length.toLocaleString()}).` : "")} />
+      <PortalInvitesModal open={portalInvitesOpen} onClose={() => setPortalInvitesOpen(false)} customers={customers} settings={settings} setSettings={setSettings} toast={toast} />
       <ImportStripeCustomersModal open={stripeImportOpen} onClose={() => setStripeImportOpen(false)} customers={customers} setCustomers={setCustomers} toast={toast} />
       <CustomerDetail customer={detail} onClose={() => setDetail(null)} onDelete={deleteCustomer} onEdit={(cust: any) => { setDetail(null); setModal({ open: true, data: cust }); }} estimates={estimates} jobs={jobs} employees={employees} timeline={timeline} setTimeline={setTimeline} settings={settings} toast={toast} setCustomers={setCustomers} onOpenEstimate={(estId: string, label?: string) => {
         setDetail(null);

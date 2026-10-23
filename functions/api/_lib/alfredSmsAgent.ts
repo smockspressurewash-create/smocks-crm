@@ -1948,11 +1948,14 @@ const executeToolCore = async (ctx: Ctx, name: string, input: Record<string, any
         const code = (input.name as string).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 10) || "SAVE" + Math.floor(Math.random() * 1000);
         const validFrom = today();
         const validUntil = new Date(Date.now() + (Number(input.expiresInDays) || 30) * 86400000).toISOString().slice(0, 10);
+        // BUG FIX — written with snake_case names (discount_type,
+        // valid_until…) the promotions table doesn't have, so every coupon
+        // Alfred "created" was rejected. Same fields PromotionsPage saves.
         const row = {
           id: crypto.randomUUID(), owner_id: ctx.ownerId, name: input.name, code,
-          discount_type: input.discountType, discount_value: input.discountValue,
-          valid_from: validFrom, valid_until: validUntil, usage_count: 0, audience: "all",
-          created_at: new Date().toISOString(),
+          discountType: input.discountType === "fixed" ? "fixed" : "percent", discountValue: Number(input.discountValue) || 0,
+          validFrom, validTo: validUntil, redeemedCount: 0, audience: "all", status: "active", channel: "sms",
+          createdAt: today(),
         };
         const res = await sbWrite(ctx, "promotions", "POST", row);
         if (!res.ok) return { error: res.error };

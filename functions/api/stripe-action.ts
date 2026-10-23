@@ -1,4 +1,5 @@
 import { notifyOwnerInvoiceEvent } from "./_lib/ownerNotify";
+import { redeemPromoForInvoice } from "./_lib/promoRedeem";
 // SECURITY AUDIT (round 12) — CRITICAL FIX. lib/stripe.ts used to call
 // api.stripe.com DIRECTLY FROM THE BROWSER using the Stripe SECRET key,
 // which lived in `settings.stripeSecretKeyEnc` — a value loaded into
@@ -730,6 +731,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         };
         if (body.invoiceId) params["metadata[invoiceId]"] = body.invoiceId;
         if (due) { params["metadata[payType]"] = due.payType; params["metadata[baseCents]"] = String(due.baseCents); params["metadata[tipCents]"] = String(Math.max(0, amountCents - due.baseCents)); }
+        if (due?.promoId) params["metadata[promoId]"] = due.promoId;
         // FEATURE — "save this card" checkbox during a real invoice payment
         // (StripePaymentModal). Stripe requires `customer` +
         // setup_future_usage to be set at PaymentIntent CREATION time, not
@@ -826,6 +828,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         // First time this payment is recorded → tell the owner now (the
         // webhook skips its own notice for an already-logged payment).
         if (!alreadyLogged) await notifyOwnerInvoiceEvent(context.env, new URL(context.request.url).origin, body.invoiceId, "paid", ((Number(intent.amount) || 0) - (Number(intent?.metadata?.tipCents) || 0)) / 100).catch(() => {});
+        if (intent?.metadata?.promoId) await redeemPromoForInvoice(serviceRoleKey, intent.metadata.promoId, body.invoiceId);
         return json({ success: true });
       }
       case "create_checkout_session": {
@@ -1011,6 +1014,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         };
         if (body.invoiceId) params["metadata[invoiceId]"] = body.invoiceId;
         if (due) { params["metadata[payType]"] = due.payType; params["metadata[baseCents]"] = String(due.baseCents); params["metadata[tipCents]"] = String(Math.max(0, amountCents - due.baseCents)); }
+        if (due?.promoId) params["metadata[promoId]"] = due.promoId;
         // Idempotency key derived from the invoice when one is given (the
         // charge is then fully determined by it — safe to reuse on retry).
         // SECURITY/SYNC FIX (audit finding) — ad-hoc charges (field-portal

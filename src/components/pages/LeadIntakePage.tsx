@@ -31,6 +31,7 @@ import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDri
 import { usePersistent } from "../../hooks/usePersistent";
 import { deleteByIds } from "../../lib/dbBulk";
 import { saveCustomersTolerant } from "../../lib/customerImport";
+import { getPortalInvites, sendPortalInvites } from "../../lib/portalInvites";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
@@ -209,6 +210,13 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
 
   const convertToCustomer = (lead: any) => {
     updateLeadCustomer({ ...lead, pipelineStage: "contacted" }, `${lead.firstName} ${lead.lastName} converted to customer ✓`);
+    // A lead that becomes a customer gets their portal link too (unless
+    // turned off under Customers → Portal invites).
+    if ((settings as any)?.autoPortalInvite !== false && (lead.phone || lead.email)) {
+      getPortalInvites([lead.id]).then(inv => sendPortalInvites(settings, inv))
+        .then(r => { if (r.sent) toast(`Portal invite sent to ${lead.firstName || "them"} ✓`, "green"); })
+        .catch(() => {});
+    }
   };
 
   const convertToEstimateAction = (lead: any) => {
