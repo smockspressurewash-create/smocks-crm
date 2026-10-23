@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, normalizePhoneDigits } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, normalizePhoneDigits, rememberOAuthReturnPage } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, pollTwilioIncoming, getFreshOwnerGoogleToken } from "../../lib/messaging";
 import { supabase, getStoredGoogleConnection, setStoredGoogleToken } from "../../lib/supabase";
@@ -1144,6 +1144,7 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
               <span>⚠ Gmail needs to be reconnected to restore email in the inbox.</span>
               <button
                 onClick={() => {
+                  rememberOAuthReturnPage("inbox");
                   supabase.auth.signInWithOAuth({
                     provider: "google",
                     options: {

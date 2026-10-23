@@ -1447,6 +1447,26 @@ export function consumeOAuthIntent(): "employee" | null {
   return null;
 }
 
+// ─── Where to land after a Google sign-in / connect ────────────────────────────
+// BUG FIX — connecting (or reconnecting) Google always dropped the owner on
+// the Google Workspace page, and so did Supabase quietly re-confirming an
+// existing session (it reports that as a fresh "SIGNED_IN"), which looked
+// like the app randomly jumping to the Google connection screen. Each
+// "Connect Google" button records the page it was pressed on; after the
+// OAuth round trip the app returns there (the dashboard for a plain sign-in).
+const OAUTH_RETURN_KEY = "smocks.oauthReturnPage";
+export function rememberOAuthReturnPage(page?: string): void {
+  const p = page || (window.location.hash.replace(/^#\/?/, "").split(/[?&]/)[0]) || "dashboard";
+  try { sessionStorage.setItem(OAUTH_RETURN_KEY, p); } catch { /* ignore */ }
+}
+export function consumeOAuthReturnPage(): string | null {
+  try {
+    const v = sessionStorage.getItem(OAUTH_RETURN_KEY);
+    if (v) { sessionStorage.removeItem(OAUTH_RETURN_KEY); return v; }
+  } catch { /* ignore */ }
+  return null;
+}
+
 // ─── Last-owner-session flag ──────────────────────────────────────────────────
 // Lets App.tsx seed hasCrmSession's initial state optimistically so a
 // returning owner with a still-valid Supabase session renders straight into

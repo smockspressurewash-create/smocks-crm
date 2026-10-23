@@ -98,7 +98,7 @@ import {
 } from "./lib/seed";
 import { seedWeather } from "./lib/weather";
 import { fetchRealWeather, deriveWeatherLocation } from "./lib/weather";
-import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, getLastOwnerId, setLastOwnerId, buildChecklistFromServices, withTimeout, normalizeJobRow, totalJobPhotoCount, notifyDesktop, stripLegacyJobFields, getPollIntervalMs, purgeOldJobMedia, computeGoalProgress, localDateKey, US_STATE_BASE_TAX_RATES } from "./lib/utils";
+import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, getLastOwnerId, setLastOwnerId, buildChecklistFromServices, withTimeout, normalizeJobRow, totalJobPhotoCount, notifyDesktop, stripLegacyJobFields, getPollIntervalMs, purgeOldJobMedia, computeGoalProgress, localDateKey, US_STATE_BASE_TAX_RATES, consumeOAuthReturnPage } from "./lib/utils";
 import { sendPushNotification } from "./lib/push";
 import { sendEmail, sendOwnerGmailOnly, emailShell, emailButton, buildTomorrowJobsEmailHtml, buildWeeklyScheduleEmailHtml, buildDailyBriefingEmailHtml, buildWeeklyOwnerDigestEmailHtml, setOptedOutPhones, setTestModeContacts, setCurrentOwnerIdForSms, twilioSend, logOutboundSmsToInbox } from "./lib/messaging";
 import { exchangeSocialOAuthCode, type SocialPlatform } from "./lib/socialOAuth";
@@ -601,6 +601,16 @@ export function App() {
       })
       .catch((e: any) => setPendingCheckoutSession({ status: "error", message: e?.message || "Couldn't verify payment — try refreshing." }));
   }, []);
+
+  // The user id of the session this tab already knows is signed in — seeded
+  // from the stored Supabase session so a re-confirmed session is never
+  // mistaken for a new sign-in (see the SIGNED_IN handler).
+  const signedInUserIdRef = useRef<string>((() => {
+    try {
+      const k = Object.keys(localStorage).find(x => /^sb-.*-auth-token$/.test(x));
+      return k ? (JSON.parse(localStorage.getItem(k) || "null")?.user?.id || "") : "";
+    } catch { return ""; }
+  })());
 
   // ── Navigation ────────────────────────────────────────────────────────────
   const [page, setPage] = useState(() => {
@@ -4089,17 +4099,20 @@ export function App() {
             if (session?.user?.id) { setCrmUserId(resolvedOwnerId || session.user.id); setLastOwnerId(resolvedOwnerId || session.user.id); }
             applyGoogleIdentity(session, resolvedOwnerId || session?.user?.id);
 
+            // BUG FIX — "it randomly takes me to the Google connection
+            // screen." Supabase also reports SIGNED_IN when it re-confirms a
+            // session that was already signed in (tab back in focus, token
+            // refresh), and every Google-linked owner was sent to the Google
+            // page each time. Only a sign-in by a different (or no) user
+            // moves the owner, and a Google connect returns to the page the
+            // Connect button was pressed on (see rememberOAuthReturnPage).
             if (event === "SIGNED_IN" || (event as string) === "IDENTITY_LINKED") {
-              const isGoogle = (session?.user?.identities || []).some((i: any) => i.provider === "google");
-              if (isGoogle) {
-                setPage("google");
-              } else {
-                // Email/password owner sign-in → go to CRM dashboard. Layout
-                // (mobile bottom-nav vs. desktop sidebar) is decided by actual
-                // screen width, not forced here — a phone should still get
-                // the mobile layout after signing in.
-                setPage("dashboard");
-              }
+              const uidNow = session?.user?.id || "";
+              const freshSignIn = !!uidNow && signedInUserIdRef.current !== uidNow;
+              signedInUserIdRef.current = uidNow;
+              const returnTo = consumeOAuthReturnPage();
+              if (returnTo) setPage(returnTo as any);
+              else if (freshSignIn) setPage("dashboard");
               setOauthProcessing(false);
             }
           } catch (err) {
@@ -4165,8 +4178,12 @@ export function App() {
           if (initial?.user?.email) setCrmUserEmail(initial.user.email);
           if (initial?.user?.id) { setCrmUserId(initOwnerId || initial.user.id); setLastOwnerId(initOwnerId || initial.user.id); }
           applyGoogleIdentity(initial, initOwnerId || initial?.user?.id);
+          if (initial?.user?.id) signedInUserIdRef.current = initial.user.id;
           if (isOAuthCallback && initIsGoogle) {
-            setPage("google");
+            // Back from Google: return to where Connect was pressed, or the
+            // dashboard after a plain Google sign-in (see the SIGNED_IN
+            // handler above — never the Google page by default).
+            setPage((consumeOAuthReturnPage() || "dashboard") as any);
             setOauthProcessing(false);
           }
           // Existing email/password owner session — ensure not stuck on portal

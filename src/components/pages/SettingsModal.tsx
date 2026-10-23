@@ -21,7 +21,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, POLL_INTERVAL_OPTIONS, DEFAULT_POLL_INTERVAL_MS, backfillJobMediaToStorage, withTimeout, guessStateCodeFromAddress, US_STATE_BASE_TAX_RATES } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, POLL_INTERVAL_OPTIONS, DEFAULT_POLL_INTERVAL_MS, backfillJobMediaToStorage, withTimeout, guessStateCodeFromAddress, US_STATE_BASE_TAX_RATES, rememberOAuthReturnPage } from "../../lib/utils";
 import { getPlanLimits, PLAN_TIER_LABEL } from "../../lib/planLimits";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField, LegalTemplate } from "../../types";
 import { twilioSend, sendEmail, fetchBufferOrganizationId, fetchBufferChannels, checkA2pCampaignStatus, checkTwilioAccountStatus, type BufferChannel } from "../../lib/messaging";
@@ -1910,6 +1910,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                       };
                       console.log("[GoogleConnect] OAuth start — redirectTo:", opts.redirectTo, "· scopes:", GOOGLE_SCOPES);
                       try {
+                        rememberOAuthReturnPage();
                         const { error } = await supabase.auth.signInWithOAuth({ provider: "google", options: opts });
                         if (error) { console.error("[GoogleConnect] signInWithOAuth failed:", error.message); toast("Google connect failed: " + error.message, "red"); }
                       } catch (e: any) {

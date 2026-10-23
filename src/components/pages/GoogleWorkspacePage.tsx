@@ -9,7 +9,7 @@ import type { AppSettings } from "../../types";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
 import { supabase, getStoredGoogleConnection, setStoredGoogleToken, clearStoredGoogleConnection } from "../../lib/supabase";
-import { uid, withTimeout } from "../../lib/utils";
+import { uid, withTimeout, rememberOAuthReturnPage } from "../../lib/utils";
 import { rowToCustomer, mergeImportedCustomers, saveCustomersTolerant } from "../../lib/customerImport";
 import { CUSTOMER_LIMIT } from "../../lib/planLimits";
 import {
@@ -1003,6 +1003,7 @@ export function GoogleWorkspacePage({
       redirectTo: window.location.origin + window.location.pathname,
     };
     try {
+      rememberOAuthReturnPage("google");
       const { error } = await supabase.auth.signInWithOAuth({ provider: "google", options: opts });
       if (error) toast?.("Google connect failed: " + error.message, "red");
     } catch (e: any) {
