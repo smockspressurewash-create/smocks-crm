@@ -25,6 +25,7 @@ const weatherRisk = (_dateStr: string): {icon: string; level: string; reason: st
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, emailShell, emailButton, getFreshOwnerGoogleToken, logOutboundSmsToInbox } from "../../lib/messaging";
 import { supabase } from "../../lib/supabase";
+import { deleteByIds } from "../../lib/dbBulk";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -1311,12 +1312,10 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
             // BUG FIX (audit finding) — no .select("id")/count check meant an
             // RLS-scoped partial (or total) 0-row match still showed "N
             // job(s) deleted" for the full requested count.
-            (supabase as any).from("jobs").delete().in("id", ids).select("id")
-              .then((r: any) => {
-                if (r?.error) { toast("Deleted locally, but failed to delete from server — " + r.error.message, "red"); return; }
-                const deletedCount = Array.isArray(r?.data) ? r.data.length : 0;
-                if (deletedCount === 0) toast("Deleted locally, but the server rejected the change", "red");
-                else if (deletedCount < ids.length) toast(`Only ${deletedCount} of ${ids.length} jobs actually deleted on the server`, "red");
+            deleteByIds("jobs", ids)
+              .then(r => {
+                if (r.deleted.length === 0) toast("Deleted locally, but the server rejected the change" + (r.error ? " — " + r.error : ""), "red");
+                else if (r.failed) toast(`Only ${r.deleted.length} of ${ids.length} jobs actually deleted on the server`, "red");
                 else toast(ids.length + " job(s) deleted");
               })
               .catch((e: any) => toast("Deleted locally, but failed to delete from server — " + (e?.message || ""), "red"));

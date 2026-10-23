@@ -32,6 +32,7 @@ import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
 import { Glass } from "../ui/Glass";
 import { ImportDataModal } from "../ui/ImportDataModal";
+import { deleteByIds } from "../../lib/dbBulk";
 import { CUSTOMER_FIELD_MAP, CUSTOMER_FIELD_LABELS, CUSTOMER_FIELD_EXCLUDE, rowToCustomer, mergeImportedCustomers, saveCustomersTolerant } from "../../lib/customerImport";
 import { ImportStripeCustomersModal } from "../ui/ImportStripeCustomersModal";
 import { GBtn } from "../ui/GBtn";
@@ -337,11 +338,12 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
     setCustomers(customers.filter(c => !ids.includes(c.id)));
     markRecentlyDeleted("customers", ids);
     setBulkSelected([]);
-    (supabase as any).from("customers").delete().in("id", ids).select("id")
-      .then((r: any) => {
-        if (r?.error) { toast("Deleted locally, but failed to delete from server — " + r.error.message, "red"); return; }
-        const deletedCount = Array.isArray(r?.data) ? r.data.length : 0;
-        if (deletedCount < ids.length) { toast(`Deleted locally, but only ${deletedCount}/${ids.length} confirmed on the server — some may reappear. Try again or refresh to check.`, "red"); return; }
+    // In batches of 100 — one request with every id (a thousand customers)
+    // was too long for the server, failed, and they all came back.
+    if (ids.length > 200) toast(`Deleting ${ids.length} customers…`);
+    deleteByIds("customers", ids)
+      .then(r => {
+        if (r.failed) { toast(`Deleted ${r.deleted.length} of ${ids.length} on the server${r.error ? " — " + r.error : ""}. The rest may reappear — try deleting them again.`, "red"); return; }
         toast(ids.length + " customer(s) deleted");
       })
       .catch((e: any) => toast("Deleted locally, but failed to delete from server — " + (e?.message || ""), "red"));

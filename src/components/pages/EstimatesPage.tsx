@@ -24,6 +24,7 @@ import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES,
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, emailShell, emailButton, logOutboundSmsToInbox } from "../../lib/messaging";
 import { supabase } from "../../lib/supabase";
+import { deleteByIds } from "../../lib/dbBulk";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
 import { callModel, MODELS } from "../../lib/api";
@@ -373,17 +374,16 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
       // reappears on the next cross-device sync. This bulk-delete path
       // (EstimatesPage.tsx, shared with invoices since an invoice is just
       // an estimate row with invoiced:true) never got this fix applied.
-      (supabase as any).from("estimates").delete().in("id", ids).select("id").then((r: any) => {
-        if (r?.error) toast("Removed locally, but failed to remove on server — " + r.error.message, "red");
-        else if (!Array.isArray(r?.data) || r.data.length === 0) toast("Removed locally, but the server didn't confirm — it may reappear", "red");
+      deleteByIds("estimates", ids).then(r => {
+        if (r.failed) toast(`Removed ${r.deleted.length} of ${ids.length} on the server — the rest may reappear${r.error ? " (" + r.error + ")" : ""}`, "red");
       }).catch(() => {});
     });
     // Must also delete server-side — otherwise the next cross-device sync poll
     // just re-fetches these rows from Supabase and they reappear locally.
     try {
-      const { error, data } = await (supabase as any).from("estimates").delete().in("id", ids).select("id");
-      if (error) { toast(`Deleted locally, but failed to delete from server — ${error.message}`, "red"); return; }
-      if (!Array.isArray(data) || data.length === 0) { toast("Deleted locally, but the server didn't confirm the delete — it may reappear. Try again or refresh to check.", "red"); return; }
+      // Batches of 100 — a huge id list in one request fails outright.
+      const r = await deleteByIds("estimates", ids);
+      if (r.failed) { toast(`Deleted ${r.deleted.length} of ${ids.length} on the server${r.error ? " — " + r.error : ""}. The rest may reappear — try again.`, "red"); return; }
     } catch (err: any) {
       toast(`Deleted locally, but failed to delete from server — ${err?.message || "unknown error"}`, "red");
       return;

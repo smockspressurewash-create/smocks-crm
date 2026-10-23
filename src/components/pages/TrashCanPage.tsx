@@ -10,6 +10,7 @@ import { Trash2, Copy, DollarSign, Clock, Route as RouteIcon, Users, Calendar, G
 import { fmt, uid, today, daysFromNow, buildOptimizedRoute, computeNextRecurringDate } from "../../lib/utils";
 import type { Job, Customer, AppSettings } from "../../types";
 import { supabase } from "../../lib/supabase";
+import { deleteByIds } from "../../lib/dbBulk";
 import { twilioSend, logOutboundSmsToInbox } from "../../lib/messaging";
 import { chargeSavedPaymentMethod } from "../../lib/stripe";
 import { Glass } from "../ui/Glass";
@@ -475,8 +476,8 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
     setJobs?.((prev: any[]) => prev.filter(x => !jobIds.includes(x.id)));
     markRecentlyDeleted?.("jobs", jobIds);
     if (jobIds.length) {
-      const r = await (supabase as any).from("jobs").delete().in("id", jobIds).select("id");
-      if (r?.error || !Array.isArray(r?.data) || r.data.length === 0) { toast?.(`Delete failed — ${r?.error?.message || "the server didn't confirm it"}`, "red"); return; }
+      const r = await deleteByIds("jobs", jobIds);
+      if (r.deleted.length === 0) { toast?.(`Delete failed — ${r.error || "the server didn't confirm it"}`, "red"); return; }
     }
     if (alsoCustomer) {
       setCustomers?.((prev: any[]) => prev.filter(x => x.id !== customerId));

@@ -893,8 +893,9 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
     setMenuOpenId(null);
     if (t.channel === "sms") {
       try {
-        const r: any = await (supabase as any).from("inbox_threads").delete().eq("id", t.id);
+        const r: any = await (supabase as any).from("inbox_threads").delete().eq("id", t.id).select("id");
         if (r?.error) { toast("Delete failed: " + r.error.message, "error"); return; }
+        if (!Array.isArray(r?.data) || r.data.length === 0) { toast("Delete failed: the server didn't remove this conversation", "error"); return; }
       } catch (e: any) {
         toast("Delete failed: " + (e?.message || "unknown error"), "error");
         return;

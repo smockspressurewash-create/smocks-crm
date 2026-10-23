@@ -18,6 +18,7 @@ import { useIsMobile } from "./hooks/useIsMobile";
 import { supabase, clearLocalAuthSession, isPublicCustomerHash } from "./lib/supabase";
 import { IS_PREVIEW, LIVE_COCKPIT_URL } from "./lib/preview";
 import { saveCustomersTolerant } from "./lib/customerImport";
+import { fetchAllRows } from "./lib/dbBulk";
 import { getPlanLimits, hasPlanFeature, FEATURE_MIN_TIER_LABEL, PLAN_TIER_LABEL, type PlatformSubscription } from "./lib/planLimits";
 import { GBtn } from "./components/ui/GBtn";
 import { SafePage } from "./components/ui/ErrorBoundary";
@@ -1169,8 +1170,9 @@ export function App() {
   // Fix: persist deleted ids to localStorage too (a small tombstone list),
   // so a stale snapshot from days/weeks ago still gets filtered before that
   // very first push, not just within the current tab's session.
-  const TOMBSTONE_MAX = 500;
-  const persistTombstones = useCallback((table: "estimates" | "customers", ids: string[]) => {
+  // Big enough for a bulk delete of every customer an account can hold.
+  const TOMBSTONE_MAX = 20000;
+  const persistTombstones = useCallback((table: "estimates" | "customers" | "jobs", ids: string[]) => {
     if (ids.length === 0) return;
     try {
       const key = `smocks.deleted.${table}`;
@@ -1179,7 +1181,7 @@ export function App() {
       localStorage.setItem(key, JSON.stringify(merged));
     } catch { /* localStorage unavailable — in-memory guards still apply */ }
   }, []);
-  const readTombstones = (table: "estimates" | "customers"): Set<string> => {
+  const readTombstones = (table: "estimates" | "customers" | "jobs"): Set<string> => {
     try { return new Set(JSON.parse(localStorage.getItem(`smocks.deleted.${table}`) || "[]")); }
     catch { return new Set(); }
   };
@@ -1188,7 +1190,7 @@ export function App() {
     const now = Date.now();
     for (const [id, ts] of m) { if (now - ts > RECENTLY_DELETED_TTL_MS) m.delete(id); }
     ids.forEach(id => m.set(id, now));
-    if (table === "estimates" || table === "customers") persistTombstones(table, ids);
+    if (table === "estimates" || table === "customers" || table === "jobs") persistTombstones(table, ids);
   }, [persistTombstones]);
   // Undoing a delete restores the row — it must stop being treated as
   // "recently deleted" or the next refetch would just filter the restore
@@ -3137,9 +3139,10 @@ export function App() {
       const RECENT_MS = 30 * 60 * 1000;
       const isRecentRow = (row: any) => { const t = Date.parse(row?.createdAt || ""); return !Number.isNaN(t) && Date.now() - t < RECENT_MS; };
       const [{ data: sbJobs, error: jobsErr }, { data: sbCustomers, error: customersErr }, { data: sbEstimates, error: estimatesErr }, { data: sbPromotions }, { data: sbReviews, error: reviewsErr }, { data: sbChemicals }] = await Promise.all([
-        (supabase as any).from("jobs").select("*").eq("owner_id", crmUserId),
-        (supabase as any).from("customers").select("*").eq("owner_id", crmUserId),
-        (supabase as any).from("estimates").select("*").eq("owner_id", crmUserId),
+        // All rows, 1,000 per request (the server's page cap) — see lib/dbBulk.ts.
+        fetchAllRows("jobs", "*", crmUserId),
+        fetchAllRows("customers", "*", crmUserId),
+        fetchAllRows("estimates", "*", crmUserId),
         (supabase as any).from("promotions").select("*").eq("owner_id", crmUserId).then((r: any) => r).catch(() => ({ data: null })),
         (supabase as any).from("reviews").select("*").eq("owner_id", crmUserId).then((r: any) => r).catch((e: any) => ({ data: null, error: e })),
         // FEATURE — Chemicals & Equipment used to be localStorage-only, so
@@ -3361,7 +3364,24 @@ export function App() {
           // to strip like crew/crewAssignedAt above rather than normalize.
           "crewGoogleEventIds",
         ] as const;
-        const safeJobs = jobs.map(j => {
+        // BUG FIX — "deleted work orders come back." This pushed EVERY job
+        // in this tab's memory every 30s, so a tab (or phone) that still had
+        // a job deleted elsewhere re-created it. Only push jobs the server
+        // still has (edits) or brand-new local ones never seen there — never
+        // one this tab knows was deleted, or one that vanished from the
+        // server after this tab had confirmed it.
+        const live = await fetchAllRows("jobs", "id", crmUserId);
+        if (!live.data) return; // can't tell new from deleted — skip this cycle
+        const liveJobIds = new Set(live.data.map((r: any) => r.id));
+        const deletedJobIds = readTombstones("jobs");
+        const recentlyDeletedJobs = recentlyDeletedRef.current.jobs;
+        // A job never seen on the server only counts as new if it was
+        // created in the last half hour — an old cached copy of a job deleted
+        // on another device is not.
+        const isNewLocal = (j: any) => { const t = Date.parse(j?.createdAt || ""); return !syncedJobIdsRef.current.has(j.id) && !Number.isNaN(t) && Date.now() - t < 30 * 60 * 1000; };
+        const pushable = jobs.filter(j => !deletedJobIds.has(j.id) && !recentlyDeletedJobs.has(j.id) && (liveJobIds.has(j.id) || isNewLocal(j)));
+        if (pushable.length === 0) return;
+        const safeJobs = pushable.map(j => {
           const copy: any = stripLegacyJobFields(j);
           EMPLOYEE_OWNED_FIELDS.forEach(f => delete copy[f]);
           copy.owner_id = crmUserId;
@@ -3476,8 +3496,8 @@ export function App() {
       let chemicalSafeIds: Set<string> | null = null;
       try {
         const [{ data: liveEstIds }, { data: liveCustIds }, { data: liveChemIds }] = await Promise.all([
-          (supabase as any).from("estimates").select("id").eq("owner_id", crmUserId),
-          (supabase as any).from("customers").select("id").eq("owner_id", crmUserId),
+          fetchAllRows("estimates", "id", crmUserId),
+          fetchAllRows("customers", "id", crmUserId),
           (supabase as any).from("chemicals").select("id").eq("owner_id", crmUserId),
         ]);
         if (Array.isArray(liveEstIds)) estimateSafeIds = new Set(liveEstIds.map((r: any) => r.id));
@@ -3688,8 +3708,8 @@ export function App() {
       let liveChemIds: Set<string> | null = null;
       try {
         const [{ data: estRows }, { data: custRows }, { data: chemRows }] = await Promise.all([
-          (supabase as any).from("estimates").select("id").eq("owner_id", crmUserId),
-          (supabase as any).from("customers").select("id").eq("owner_id", crmUserId),
+          fetchAllRows("estimates", "id", crmUserId),
+          fetchAllRows("customers", "id", crmUserId),
           (supabase as any).from("chemicals").select("id").eq("owner_id", crmUserId),
         ]);
         if (Array.isArray(estRows)) liveEstIds = new Set(estRows.map((r: any) => r.id));

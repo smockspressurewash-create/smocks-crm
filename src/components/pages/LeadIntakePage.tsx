@@ -227,11 +227,11 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
     if (!window.confirm(`Permanently delete lead "${lead.firstName} ${lead.lastName}"? This can't be undone.`)) return;
     setCustomers((prev: any[]) => prev.filter(c => c.id !== lead.id));
     markRecentlyDeleted("customers", [lead.id]);
-    (supabase as any).from("customers").delete().eq("id", lead.id)
+    (supabase as any).from("customers").delete().eq("id", lead.id).select("id")
       .then((result: any) => {
-        if (result?.error) {
-          console.error("[LeadIntake] delete failed:", result.error.message);
-          toast("Deleted locally, but failed to delete from server — " + result.error.message, "red");
+        if (result?.error || !Array.isArray(result?.data) || result.data.length === 0) {
+          console.error("[LeadIntake] delete failed:", result?.error?.message || "0 rows");
+          toast("Deleted locally, but the server didn't delete it — " + (result?.error?.message || "it may come back"), "red");
           return;
         }
         toast(`${lead.firstName} ${lead.lastName} deleted ✓`, "green");
