@@ -47,7 +47,7 @@ const CSV = "﻿First Name,Last Name,Email Address,Company,Source,Street Address
   await page.goto(BASE + "/#/customers"); await page.waitForTimeout(6000);
   for (const t of ["Not now", "Skip", "Maybe later", "Skip setup"]) { const b = page.locator(`button:has-text("${t}")`).first(); if (await b.isVisible().catch(() => false)) await b.click().catch(() => {}); }
   await page.getByRole("button", { name: /Import CSV/ }).first().click(); await page.waitForTimeout(600);
-  const [chooser] = await Promise.all([page.waitForEvent("filechooser"), page.getByText("Click to choose a .csv file").click()]);
+  const [chooser] = await Promise.all([page.waitForEvent("filechooser"), page.getByText(/Click to choose a/).click()]);
   await chooser.setFiles({ name: "clients.csv", mimeType: "text/csv", buffer: Buffer.from(CSV, "utf8") });
   await page.waitForTimeout(1200);
   const mapping = await page.evaluate(() => Array.from(document.querySelectorAll("select")).map(s => { const card = s.closest("div.flex"); return (card?.querySelector(".text-xs.font-medium")?.textContent || "") + " → " + s.options[s.selectedIndex].text; }));

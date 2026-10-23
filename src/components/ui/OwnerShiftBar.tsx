@@ -13,7 +13,9 @@ import { shiftDayStr, withTimeout } from "../../lib/utils";
 
 const fmtDur = (ms: number) => { const m = Math.max(0, Math.floor(ms / 60000)); return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`; };
 
-export function OwnerShiftBar({ ownerEmp, toast, compact = false }: { ownerEmp: any; toast?: (m: string, tone?: any) => void; compact?: boolean }) {
+// onChange reports the clock-in time right away (null when clocked out), so a
+// page can react before the employees sync catches up.
+export function OwnerShiftBar({ ownerEmp, toast, compact = false, onChange }: { ownerEmp: any; toast?: (m: string, tone?: any) => void; compact?: boolean; onChange?: (clockInAt: number | null) => void }) {
   // Optimistic value until the 3s employees poll catches up: undefined = use the row.
   const [optimistic, setOptimistic] = useState<number | null | undefined>(undefined);
   const [busy, setBusy] = useState(false);
@@ -45,13 +47,15 @@ export function OwnerShiftBar({ ownerEmp, toast, compact = false }: { ownerEmp: 
   const clockIn = async () => {
     const next = Date.now() - Math.round(earlierToday * 3600000);
     setOptimistic(next);
-    await write({ dayClockInAt: next, dayLunchStartAt: null, dayPausedMinutes: 0 }, earlierToday ? "Shift resumed ✓" : "Clocked in for the day ✓");
+    onChange?.(next);
+    if (!(await write({ dayClockInAt: next, dayLunchStartAt: null, dayPausedMinutes: 0 }, earlierToday ? "Shift resumed ✓" : "Clocked in for the day ✓"))) onChange?.(null);
   };
   const clockOut = async () => {
     if (!clockInAt) return;
     const hours = Math.round((workedMs / 3600000) * 100) / 100;
     setOptimistic(null);
-    await write({ dayClockInAt: null, dayLunchStartAt: null, dayPausedMinutes: 0, lastShiftHours: hours, lastShiftDate: shiftDayStr() }, `Clocked out — ${fmtDur(workedMs)} today ✓`);
+    onChange?.(null);
+    if (!(await write({ dayClockInAt: null, dayLunchStartAt: null, dayPausedMinutes: 0, lastShiftHours: hours, lastShiftDate: shiftDayStr() }, `Clocked out — ${fmtDur(workedMs)} today ✓`))) onChange?.(clockInAt);
   };
 
   return (

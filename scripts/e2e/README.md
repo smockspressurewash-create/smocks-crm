@@ -20,5 +20,8 @@ Needs Google Chrome installed (`channel: "chrome"`); GitHub's ubuntu runners hav
 | `cockpit-preview.cjs` | A Cockpit preview link signs in from its one-time token, opens the right screen, no pop-ups, Preview bar (run vite on 5182; uses cockpit-*.localhost) |
 | `cockpit-ui.cjs` | Alfred Cockpit visible after reload for the owner email, card states (question, approval, progress, preview, live) |
 | `lead-embed.cjs` | Lead form embedded in an iframe on another origin submits with the business id |
+| `customer-import.cjs` | Customer CSV import: column matching, merge into an existing customer, imports stay customers (not leads) by default |
+| `bulk-delete.cjs` | Deleting 1,000+ customers goes out in batches and nothing comes back after a reload |
+| `owner-screens.cjs` | Desktop + phone: Jobs day clock bar / tap card to open / work details only on the owner's own job; Inbox customer-file pop-up + Edit; vehicle fields + problem log; Accountability (no meditation); Lead Intake select all → Move to Customers |
 
 Pattern for a new check: copy the closest script. The mocked owner session is seeded into `localStorage` (`sb-boaqaihymgmrhnjtiqrs-auth-token`) or created through the login form; `ctx.route(/boaqaihymgmrhnjtiqrs\.supabase\.co/ …)` answers REST calls (return the owner `employees` row so `resolveUserRole` says owner).

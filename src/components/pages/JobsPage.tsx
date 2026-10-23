@@ -546,7 +546,12 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
   // clock. Only then does a card show work details (full checklist, photos,
   // OTW); otherwise it stays a short summary — tap it to open everything.
   const ownerEmp = employees.find((e: any) => e.role === "owner") || null;
-  const ownerOnClock = !!(ownerEmp?.dayClockInAt ?? ownerEmp?.dayclockinat);
+  // undefined = trust the employees row; set by OwnerShiftBar the moment the
+  // owner taps clock in/out, until the next sync shows the same thing.
+  const [ownerClockOverride, setOwnerClockOverride] = useState<number | null | undefined>(undefined);
+  const rowOnClock = !!(ownerEmp?.dayClockInAt ?? ownerEmp?.dayclockinat);
+  useEffect(() => { if (ownerClockOverride !== undefined && rowOnClock === !!ownerClockOverride) setOwnerClockOverride(undefined); }, [rowOnClock]); // eslint-disable-line react-hooks/exhaustive-deps
+  const ownerOnClock = ownerClockOverride !== undefined ? !!ownerClockOverride : rowOnClock;
   const isOwnerWorkingOn = (j: any) => {
     if (!ownerEmp || !crewIncludesEmployee(j.crew, ownerEmp.id, ownerEmp.user_id)) return false;
     if (j.status === "completed" || j.status === "cancelled") return false;
@@ -1514,7 +1519,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
       </div>
 
       {/* The owner clocks in for the DAY, not per job (see OwnerShiftBar). */}
-      <OwnerShiftBar ownerEmp={ownerEmp} toast={toast} />
+      <OwnerShiftBar ownerEmp={ownerEmp} toast={toast} onChange={setOwnerClockOverride} />
 
       {tab !== "unscheduled" && <div className="grid md:grid-cols-2 gap-4">
         {filtered.map(j => {
