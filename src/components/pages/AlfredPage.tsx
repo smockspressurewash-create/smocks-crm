@@ -30,6 +30,7 @@ import { sendPushNotification } from "../../lib/push";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES, automationFromTemplate } from "../../lib/seed";
 import { callModel, MODELS, parseRateLimitError } from "../../lib/api";
 import { supabase, getStoredGoogleConnection } from "../../lib/supabase";
+import { runAlfredHealthCheck } from "../ui/AlfredHealthPanel";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
@@ -1834,7 +1835,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     create_estimate: "create_quotes", create_invoice: "create_quotes", mark_invoice_paid: "create_quotes",
     send_estimate: "send_quotes",
     send_reminder: "message_customers", text_phone_number: "message_customers",
-    notify_all_customers: "mass_messaging",
+    notify_all_customers: "mass_messaging", send_bulk_text: "mass_messaging", set_birthday_offer: "mass_messaging", create_campaign: "automations",
     text_supplier: "message_suppliers", email_supplier: "message_suppliers", contact_general_supplier: "message_suppliers",
     send_email_via_gmail: "send_email",
     text_me_document: "send_files", send_me_files: "send_files",
@@ -2153,6 +2154,13 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     },
   };
 
+  // Bulk texts are drafted first and only sent after the owner answers (see
+  // notify_all_customers / send_bulk_text) — same rule as text-Alfred.
+  // turnStartRef marks when the owner's current message started being
+  // handled, so a draft made during it can't be sent until they reply.
+  const bulkDraftsRef = useRef<Map<string, { id: string; message: string; recipients: any[]; createdAt: number; watchReplies?: any; campaignName?: string }>>(new Map());
+  const turnStartRef = useRef(0);
+  const directSendsRef = useRef(0);
   const executeTool = async (name, inputs) => {
     const __t0 = Date.now();
     console.log("[AlfredTool] → call:", name, "input:", inputs);
@@ -3726,6 +3734,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           return { success: true, level: inputs.level };
         }
         case "send_reminder": {
+          if ((directSendsRef.current += 1) > 3) return { error: "Refused: more than 3 separate texts in one go. Use notify_all_customers so the owner can approve the list first." };
           // CRITICAL (Alfred functionality audit) — this used to look up
           // ONLY by customerId (no name fallback, unlike every other tool
           // here), and its schema didn't even declare `message`/`customerName`
@@ -4114,6 +4123,47 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         // everything from chat." Kept read + one basic write per domain,
         // querying Supabase directly (owner-scoped) rather than needing
         // every one of these arrays threaded through as new props.
+        // Campaigns / birthday offer / income — stored in owner_records
+        // (migration 0103), which the CRM syncs every few seconds, so these
+        // show up on every device and text-Alfred sees them too.
+        case "check_connections": {
+          try {
+            const r = await runAlfredHealthCheck();
+            return { success: true, summary: r.summary, problems: r.checks.filter(c => !c.ok).map(c => `${c.area} — ${c.name}: ${c.detail}${c.fix ? " Fix: " + c.fix : ""}`), working: r.checks.filter(c => c.ok).map(c => `${c.name}: ${c.detail}`) };
+          } catch (e: any) { return { error: e?.message || "Health check failed" }; }
+        }
+        case "create_campaign": {
+          if (!ownerId) return { error: "Not signed in as the owner." };
+          if (!inputs.name || !inputs.message) return { error: "name and message required" };
+          const sendAt = inputs.sendAt ? new Date(inputs.sendAt) : null;
+          if (sendAt && isNaN(sendAt.getTime())) return { error: "sendAt isn't a valid date/time." };
+          const camp = { id: uid(), name: inputs.name, ch: inputs.channel === "email" ? "email" : "sms", subject: inputs.subject || "", body: inputs.message, status: sendAt ? "scheduled" : "draft", sendAt: sendAt ? sendAt.toISOString() : undefined, createdAt: new Date().toISOString(), segment: Array.isArray(inputs.tags) && inputs.tags.length ? { tags: inputs.tags } : undefined, createdBy: "alfred" };
+          const r = await (supabase as any).from("owner_records").upsert({ owner_id: ownerId, kind: "campaigns", id: camp.id, data: camp, deleted_at: null }, { onConflict: "owner_id,kind,id" }).select("id");
+          if (r?.error || !r?.data?.length) return { error: "Couldn't save the campaign — " + (r?.error?.message || "the server didn't save it") + ". If it says owner_records doesn't exist, run supabase/migrations/0103_owner_records.sql." };
+          toast("Alfred created campaign: " + camp.name);
+          return { success: true, campaignId: camp.id, status: camp.status, note: "It's in Campaigns (shows up within a few seconds)." };
+        }
+        case "set_birthday_offer": {
+          if (!ownerId) return { error: "Not signed in as the owner." };
+          const cur = await (supabase as any).from("owner_records").select("data").eq("owner_id", ownerId).eq("kind", "birthday_offer").eq("id", "default").maybeSingle();
+          if (cur?.error) return { error: "Couldn't read the setting — " + cur.error.message + ". Run supabase/migrations/0103_owner_records.sql if owner_records doesn't exist." };
+          const prev = cur?.data?.data || {};
+          const cfg = { ...prev, id: "default", active: !!inputs.active, discountPercent: Number(inputs.discountPercent ?? prev.discountPercent ?? 10), validDays: Number(inputs.validDays ?? prev.validDays ?? 30), message: inputs.message ?? prev.message };
+          const r = await (supabase as any).from("owner_records").upsert({ owner_id: ownerId, kind: "birthday_offer", id: "default", data: cfg, deleted_at: null }, { onConflict: "owner_id,kind,id" }).select("id");
+          if (r?.error || !r?.data?.length) return { error: "Couldn't save — " + (r?.error?.message || "the server didn't save it") };
+          const withBday = customers.filter((c: any) => c.birthday).length;
+          return { success: true, ...cfg, customersWithBirthdayOnFile: withBday, note: "Runs every morning from the reminders scheduler." };
+        }
+        case "log_income": {
+          if (!ownerId) return { error: "Not signed in as the owner." };
+          const list: any[] = Array.isArray(inputs.entries) ? inputs.entries : [];
+          if (!list.length) return { error: "entries required" };
+          const rows = list.filter(e => Number(e.amount)).map(e => ({ id: uid(), owner_id: ownerId, kind: "income", category: e.category || "revenue", label: e.description || "Income", amount: Math.abs(Number(e.amount)), date: e.date || today() }));
+          const r = await (supabase as any).from("manual_budget_entries").insert(rows).select("id");
+          if (r?.error) return { error: "Couldn't save — " + r.error.message };
+          toast(`Logged ${rows.length} income entr${rows.length === 1 ? "y" : "ies"}`);
+          return { success: true, saved: r?.data?.length || 0, total: rows.reduce((s2, e) => s2 + e.amount, 0) };
+        }
         case "log_expense": {
           if (!inputs.amount || !inputs.description) return { error: "amount and description are required." };
           const exp = { id: uid(), date: inputs.date || today(), description: inputs.description, amount: Number(inputs.amount), category: inputs.category || "Other", vendor: inputs.vendor || "", isBusiness: true };
@@ -4162,6 +4212,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           } catch (e: any) { return { error: "Social posts aren't cloud-synced on this deployment yet, or the table doesn't exist — check the Social page directly." }; }
         }
         case "text_phone_number": {
+          if ((directSendsRef.current += 1) > 3) return { error: "Refused: more than 3 separate texts in one go. Use notify_all_customers so the owner can approve the list first." };
           if (!inputs.phone?.trim()) return { error: "phone required" };
           if (!inputs.message?.trim()) return { error: "message required" };
           if (!settings?.twilioSid) return { error: "Twilio isn't configured — add credentials in Settings → API Keys to send real SMS." };
@@ -4180,25 +4231,63 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           toast("Alfred texted " + (inputs.label || inputs.phone) + " ✓");
           return { success: true, sentTo: inputs.label || inputs.phone, phone: inputs.phone, message: inputs.message };
         }
+        // FEATURE — "have it check with me which customers to send to … it
+        // should only send after I give the okay." Drafts the list; nothing
+        // is sent until send_bulk_text in a later message.
         case "notify_all_customers": {
           if (!inputs.message?.trim()) return { error: "message required" };
+          let eligible = customers.filter((c: any) => c.phone && !c.smsOptOut && !((settings as any)?.testModeEnabled && c.isTestClient));
+          if (inputs.tag) { const t = String(inputs.tag).toLowerCase(); eligible = eligible.filter((c: any) => Array.isArray(c.tags) && c.tags.some((x: string) => String(x).toLowerCase() === t)); }
+          if (Array.isArray(inputs.customerNames) && inputs.customerNames.length) {
+            const names = inputs.customerNames.map((n: string) => String(n).toLowerCase().trim());
+            eligible = eligible.filter((c: any) => names.some((n: string) => `${c.firstName || ""} ${c.lastName || ""}`.toLowerCase().includes(n)));
+          }
+          if (inputs.onlyMissing) eligible = eligible.filter((c: any) => !String(c[inputs.onlyMissing] || "").trim());
+          if (eligible.length === 0) return { error: "No eligible customers matched (check they have a phone on file, haven't opted out, and fit the filter)." };
+          const recipients = eligible.map((c: any, i: number) => ({ n: i + 1, customerId: c.id, name: `${c.firstName || ""} ${c.lastName || ""}`.trim() || c.phone, firstName: c.firstName || "", phone: c.phone }));
+          const draftId = uid();
+          bulkDraftsRef.current.set(draftId, { id: draftId, message: inputs.message, recipients, createdAt: Date.now(), watchReplies: inputs.watchReplies, campaignName: inputs.campaignName });
+          return {
+            success: true, draftId, notSentYet: true, recipientCount: recipients.length,
+            list: recipients.slice(0, 60).map((r: any) => `${r.n}. ${r.name}`), more: Math.max(0, recipients.length - 60),
+            sample: String(inputs.message).replace(/\{\{first_name\}\}/g, recipients[0].firstName || "there"),
+            next: "Nothing has been sent. Show the owner this numbered list and the sample, ask which to send to ('all', 'not 3 and 7', 'only 1, 2, 5'), and stop. Call send_bulk_text only after they answer.",
+          };
+        }
+        case "send_bulk_text": {
+          const draft = bulkDraftsRef.current.get(String(inputs.draftId || ""));
+          if (!draft) return { error: "That draft wasn't found (drafts last until the page is reloaded) — draft it again with notify_all_customers." };
+          if (draft.createdAt >= turnStartRef.current) return { error: "Refused: the owner hasn't seen this list yet. Show them the numbered list and wait for their reply before sending." };
           if (!settings?.twilioSid) return { error: "Twilio isn't configured — add credentials in Settings → API Keys to send real SMS." };
-          let eligible = customers.filter((c: any) => c.phone && !c.smsOptOut);
-          if (inputs.tag) eligible = eligible.filter((c: any) => Array.isArray(c.tags) && c.tags.includes(inputs.tag));
-          if (eligible.length === 0) return { error: "No eligible customers matched (check they have a phone on file and haven't opted out)." };
-          const capped = eligible.slice(0, 500);
+          const only = new Set<number>((Array.isArray(inputs.only) ? inputs.only : []).map(Number));
+          const exclude = new Set<number>((Array.isArray(inputs.exclude) ? inputs.exclude : []).map(Number));
+          const chosen = draft.recipients.filter((r: any) => only.size ? only.has(r.n) : !exclude.has(r.n));
+          if (!chosen.length) return { error: "With those choices nobody is left to send to." };
+          bulkDraftsRef.current.delete(draft.id);
+          let watchId: string | null = null;
+          if (draft.watchReplies?.question && ownerId) {
+            watchId = uid();
+            const days = Math.max(1, Math.min(120, Number(draft.watchReplies.days) || 30));
+            const watch = { id: watchId, question: draft.watchReplies.question, saveField: draft.watchReplies.saveField || undefined, thankYouMessage: draft.watchReplies.thankYouMessage || undefined, customers: Object.fromEntries(chosen.map((r: any) => [r.customerId, { name: r.name, status: "waiting" }])), createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + days * 86400000).toISOString() };
+            const w = await (supabase as any).from("owner_records").upsert({ owner_id: ownerId, kind: "reply_watch", id: watchId, data: watch, deleted_at: null }, { onConflict: "owner_id,kind,id" }).select("id");
+            if (w?.error || !w?.data?.length) { console.warn("[Alfred] reply watch not saved:", w?.error?.message); watchId = null; }
+          }
           let sent = 0, failed = 0;
-          for (const c of capped) {
-            const personalized = String(inputs.message).replace(/\{\{first_name\}\}/g, c.firstName || "there");
+          for (const r of chosen) {
+            const personalized = String(draft.message).replace(/\{\{first_name\}\}/g, r.firstName || "there");
             try {
-              await twilioSend(settings, c.phone, personalized);
-              logOutboundSmsToInbox({ contactName: `${c.firstName || ""} ${c.lastName || ""}`.trim(), contactPhone: c.phone, customerId: c.id, body: personalized }).catch(() => {});
+              await twilioSend(settings, r.phone, personalized);
+              logOutboundSmsToInbox({ contactName: r.name, contactPhone: r.phone, customerId: r.customerId, body: personalized }).catch(() => {});
               sent++;
             } catch { failed++; }
-            await new Promise(r => setTimeout(r, 100));
+            await new Promise(res => setTimeout(res, 100));
+          }
+          if (ownerId) {
+            const campId = uid();
+            (supabase as any).from("owner_records").upsert({ owner_id: ownerId, kind: "campaigns", id: campId, data: { id: campId, name: draft.campaignName || String(draft.message).slice(0, 40), ch: "sms", body: draft.message, status: "sent", createdAt: new Date(draft.createdAt).toISOString(), sentAt: new Date().toISOString(), recipientCount: chosen.length, sentCount: sent, failedCount: failed, deliveryRate: chosen.length ? Math.round((sent / chosen.length) * 100) : 0, matches: chosen.map((r: any) => r.customerId), createdBy: "alfred" }, deleted_at: null }, { onConflict: "owner_id,kind,id" }).then(() => {}, () => {});
           }
           toast(`Alfred texted ${sent} customer${sent !== 1 ? "s" : ""}` + (failed ? ` (${failed} failed)` : "") + " ✓");
-          return { success: true, sent, failed, ...(eligible.length > capped.length ? { note: `Capped at 500 — ${eligible.length - capped.length} more eligible customers were not messaged this round.` } : {}) };
+          return { success: true, sent, failed, skipped: draft.recipients.length - chosen.length, watchingReplies: !!watchId };
         }
         case "switch_ai_model": {
           const wanted = String(inputs.provider || "").toLowerCase().trim();
@@ -4822,8 +4911,40 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     },
     {
       name: "notify_all_customers",
-      description: "Text a message to many customers at once — everyone, or narrowed by tag. Automatically skips anyone who's opted out of texts. Use for broadcast announcements ('let everyone know I'm running late', a schedule change, a weather closure) and for blasting a promo/campaign message to the whole list. Supports {{first_name}} to personalize. This sends for real — get the exact wording confirmed first if the owner was vague about what it should say.",
-      input_schema: { type: "object", properties: { message: { type: "string", description: "Use {{first_name}} to personalize" }, tag: { type: "string", description: "Only customers with this exact tag — omit to mean everyone" } }, required: ["message"] }
+      description: "Step 1 of texting more than 2 customers (an announcement, a promo, a question to your list): DRAFTS it and returns the numbered recipient list — nothing is sent. Show the owner the list and ask which to send to, then wait for their reply and call send_bulk_text. Skips opted-out customers. Supports {{first_name}}. If the text asks customers something (birthday, email, address), pass watchReplies so their answers are saved to their files as they come in.",
+      input_schema: { type: "object", properties: {
+        message: { type: "string", description: "Use {{first_name}} to personalize" },
+        tag: { type: "string", description: "Only customers with this tag — omit to mean everyone" },
+        customerNames: { type: "array", items: { type: "string" }, description: "Only these customers" },
+        onlyMissing: { type: "string", enum: ["birthday", "email", "address"], description: "Only customers whose file doesn't have this yet" },
+        campaignName: { type: "string" },
+        watchReplies: { type: "object", properties: { question: { type: "string" }, saveField: { type: "string", enum: ["birthday", "email", "address", "notes", "company"] }, thankYouMessage: { type: "string" }, days: { type: "number" } } },
+      }, required: ["message"] }
+    },
+    {
+      name: "check_connections",
+      description: "Health check of everything Alfred depends on — every AI model key, Twilio and its incoming-text webhook, Google, database tables, the reminders scheduler. Use for 'is everything connected', 'why aren't my texts working', 'check your API connections'. Report problems with their fixes.",
+      input_schema: { type: "object", properties: {} }
+    },
+    {
+      name: "create_campaign",
+      description: "Create a campaign in the Campaigns page (draft, or scheduled with sendAt) without texting anyone now. To actually text people, use notify_all_customers (draft → owner approves → send_bulk_text).",
+      input_schema: { type: "object", properties: { name: { type: "string" }, channel: { type: "string", enum: ["sms", "email"] }, message: { type: "string" }, subject: { type: "string" }, tags: { type: "array", items: { type: "string" } }, sendAt: { type: "string", description: "ISO date/time" } }, required: ["name", "message"] }
+    },
+    {
+      name: "set_birthday_offer",
+      description: "Turn on/change/turn off the automatic birthday text: on each customer's birthday (from their file) they get their own coupon code for X% off, good for N days. Runs every morning on its own.",
+      input_schema: { type: "object", properties: { active: { type: "boolean" }, discountPercent: { type: "number" }, validDays: { type: "number" }, message: { type: "string", description: "Optional. {{first_name}}, {{code}}, {{percent}}, {{expires}} are filled in." } }, required: ["active"] }
+    },
+    {
+      name: "log_income",
+      description: "Add income (sales, deposits, payouts, cash jobs not in the CRM) to the Budget page — one or many entries, e.g. from a revenue report or bank statement the owner sent.",
+      input_schema: { type: "object", properties: { entries: { type: "array", items: { type: "object", properties: { date: { type: "string" }, description: { type: "string" }, amount: { type: "number" }, category: { type: "string" } }, required: ["amount"] } } }, required: ["entries"] }
+    },
+    {
+      name: "send_bulk_text",
+      description: "Step 2: send a notify_all_customers draft AFTER the owner replied to approve it — exclude = list numbers they said no to, only = the ones they said yes to. Refused if called in the same reply as the draft.",
+      input_schema: { type: "object", properties: { draftId: { type: "string" }, exclude: { type: "array", items: { type: "number" } }, only: { type: "array", items: { type: "number" } } }, required: ["draftId"] }
     },
     {
       name: "switch_ai_model",
@@ -4928,6 +5049,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   const send = async (overrideText?: string, opts?: { skipVisibleMessage?: boolean }) => {
     const text = (overrideText ?? input).trim();
     if (!text) return;
+    if (!loading) { turnStartRef.current = Date.now(); directSendsRef.current = 0; }
     // BUG FIX (user report — "Alfred just sat there spinning and never
     // responded, no error") — this used to silently no-op while `loading`
     // was already true (e.g. a screenshot attachment's own vision-analysis
@@ -5151,7 +5273,9 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         : `\n\nGoogle Workspace: NOT CONNECTED. If the user asks to send email, create calendar events, or manage tasks, tell them to go to Settings → Integrations → Google and connect.`;
       const toolHint = `\n\nFORMATTING: never use markdown — no asterisks for bold/italic (**text** or *text*), no # headers, no markdown bullet/numbered lists. This chat renders plain text only, so markdown symbols show up as literal stray characters like stray asterisks. Write in plain sentences; if you need to list things, use plain lines like "1) ..." or a line break between items, never *, **, -, or #.\n\nCASUAL CONVERSATION: the user can talk to you like a person, not just issue commands — small talk, a joke, venting, a random off-topic question. Actually engage with it in your own personality's voice; never refuse or deflect with something like "I'm not programmed for that" — you're not limited to business tasks, tools are just what you reach for when a request actually needs one. The RESPONSE STYLE/TASK RESULT REPORTING rules below govern how you report a TOOL ACTION's outcome specifically — they don't apply to ordinary conversation, and nothing about them means refusing to chat.\n\nYou have tools available to READ and MODIFY the CRM. USE THEM AGGRESSIVELY — don't just describe what you would do, actually do it.\n\nASK WHEN INFO IS MISSING: using tools aggressively does NOT mean guessing or silently defaulting a value the user never gave you. If a request is missing something a tool actually needs to act correctly — which customer, which date, which employee to assign — ask one short, direct clarifying question instead of calling the tool with a made-up or silently-defaulted value (e.g. schedule_job will default an unspecified date to a few days out — do not let that fire silently; ask "what date?" first if the user didn't give one). Only skip asking when the missing piece has an obviously safe default (e.g. a walkthrough with no stated time) or a tool's own fuzzy-match/suggestions can resolve it on its own (e.g. a slightly misspelled customer name).\n\nRESPONSE STYLE: Do not narrate your reasoning, your plan, or which tool you're about to call ("Let me check...", "I'll create that now...", "First I need to..."). Just call the tool(s) silently and then give the user the final result in 1-3 short sentences. No step-by-step thinking out loud.\n\nVERIFY BEFORE CONFIRMING: every action tool returns either {"success": true, ...} or {"error": "..."}. NEVER say "Done" or "All set" without checking which one came back. If you see an "error" field, tell the user exactly what went wrong and what they could try instead — do not pretend it worked, and do not retry silently. Only confirm success when the tool result actually contains "success": true. NEVER quote a raw database/technical error verbatim (e.g. "could not find the table 'public.x' in the schema cache", a stack trace, a SQL error code) — that means nothing to a business owner. Translate it into one plain sentence about what's actually affected, or if it's from a side check unrelated to what they actually asked (e.g. a background history lookup during a scheduling request), just skip mentioning it and proceed with the real task — don't let it derail or clutter an otherwise-unrelated answer.\n\nTASK RESULT REPORTING — NO PERSONALITY FLAIR: your personality (drill sergeant / butler / quiet pro / savage) shapes how you TALK, not whether a task result is reported straight. The moment you report the outcome of an action tool (schedule_job, create_customer, create_estimate, send_estimate, assign/request crew, etc.), drop the persona voice entirely and state the plain fact: "Job scheduled successfully" / "Failed — [exact error text]" / "Estimate sent to [name] successfully" / "Failed — [exact error text]". No jokes, no military barking, no "sir", no sarcasm on the result line itself — save the personality for ordinary conversation, small talk, and check-ins, never for whether something actually saved.\n\nKEY TOOL RULES:\n- Customer queries → USE search_customers or get_customer_details FIRST\n- Stats requests → USE get_business_stats\n- "What's on the calendar" → USE get_calendar_summary\n- "Who's clocked in / who's working" → USE get_employee_status\n- "Remember/note/don't forget" → USE remember_fact\n- Create estimates, customers, jobs → USE create_estimate/create_customer/schedule_job
 - MULTI-STEP CHAINS (e.g. "create a customer, schedule them a job, and assign Mike"): call tools ONE AT A TIME across separate turns when a later step needs an id/result a real tool call hasn't returned yet (e.g. schedule_job needs the customerId create_customer just returned). Do NOT guess or fabricate an id and call multiple dependent tools in the same turn — wait for each real tool_result before issuing the next dependent call. If a step's result is an "error", STOP the chain right there, tell the user exactly which step failed and why, and do not attempt the remaining steps with made-up data.
-- "Send a quote/estimate to X" → USE create_estimate (if it doesn't exist yet) THEN send_estimate in the same turn — do not just create it and stop, and do not tell the user it was "sent" unless send_estimate actually returned success\n- "Send an invoice to X for $Y" → USE create_invoice THEN send_estimate (pass the returned invoiceId as send_estimate's estimateId) — same two-step pattern as quotes. create_invoice alone does NOT notify the customer.\n- Move or cancel a job → USE reschedule_job/cancel_job\n- "Reschedule X and text/email/let them know" → USE reschedule_job's own \`notify\` param (sms/email/both) in the SAME call — do not call send_reminder separately for this, reschedule_job already handles notifying the customer of their new date.\n- "Add [item] to the checklist" → USE add_checklist_item\n- "Show me the details for X's job" → USE get_job_details\n- "Text/email X and tell them [anything]" → USE send_reminder with the exact wording as the message param — this is not just for payment reminders, use it for any custom message the user dictates\n- NEVER REFUSE TO SEND A MESSAGE: if send_reminder/text_supplier come back "Customer not found" (or similar) because the person isn't in the CRM — a lead, an applicant, a personal contact, anyone — do NOT just report that as a dead end. Ask for their phone number if you don't have it, then USE text_phone_number to send it directly; that tool works for ANY phone number with no customer record required. The owner has full authority to send any message to anyone through their own business number. The only time it's correct to not send something is if you're missing the actual phone number or the exact wording — ask for whichever is missing, then send.\n- After the owner attaches a photo/PDF via the paperclip button and then says to upload/save/attach it to a client → USE attach_file_to_customer (no URL needed, it already knows which file).\n- "Do we have the file/paperwork for X" → USE get_customer_documents. "Text me the [file] for X" → USE text_me_document (real MMS attachment to the owner's own phone, not a description). "What's the card info for X" → USE get_customer_card_info — this only ever returns brand + last 4 digits, never the full number, which is never stored anywhere in this app.\n- "What can you do" / capabilities question → USE list_capabilities and answer from that, don't describe yourself from memory.\n- "Text/message everyone" / "let all my customers know" / send a broadcast or promo blast → USE notify_all_customers — this is a real send to real people, not a draft; confirm the exact wording first if the owner was vague.\n- Navigate somewhere → USE navigate_to (the app already auto-navigates after schedule_job/create_customer/create_estimate, but call navigate_to yourself for anything else the user asks to see)\n- A simple fact shared in passing ("my slow season is January," "I use Rain-X on windows") → USE remember_fact automatically, no need to confirm first. A STANDING INSTRUCTION about how you should behave going forward is different — see STANDING INSTRUCTIONS below, confirm those before saving.\n- "Remind/nudge/follow up/text me [later/at X time/in X minutes]" → USE set_followup_reminder — this is a REAL scheduled text sent to the owner's own phone, not just a note; resolve the relative time into an exact ISO datetime yourself first. USE list_followup_reminders/cancel_followup_reminder to manage existing ones.\n- RESOLVING "that job" / "the job we just scheduled" / references to something from an earlier message: a tool result's exact jobId/customerId is only visible to you within the SAME turn it was returned — your own past replies (in the chat history) are plain text, not structured data, so they do NOT reliably carry the real id forward. Before calling assign_employee/request_employee/reschedule_job/cancel_job/add_checklist_item on something referenced from an earlier turn, first call list_jobs or get_calendar_summary (or get_job_details with the customer's name) to look up the real current jobId — never guess, reuse an id from your own prior wording, or fabricate one.\n\nAUTOMATION TOOLS (VERY IMPORTANT):\n- When user describes ANY workflow, drip sequence, reminder, or "when X do Y" scenario → USE create_automation IMMEDIATELY. Build a proper n8n-style multi-step workflow with real step types: trigger (first), then delays, conditions, actions. NEVER just describe what you'd build — actually build it with create_automation.\n- "Send review request after job complete" → trigger: Job complete, delay: 2h, action: SMS review request\n- "Follow up on unpaid invoices" → trigger: Invoice unpaid 7 days, action: polite reminder email, delay: 4 days, condition: still unpaid, action: firm SMS\n- To check existing workflows → USE list_automations\n- To enable/disable a workflow → USE toggle_automation\n\nCurrent automations: ${automations.length} total, ${automations.filter(a => a.active).length} active\n\nBULK JOB IMPORT (screenshots or a big pasted block of job/customer data): the owner may hand you several jobs at once — a block of pasted text, or screenshots (these reach you already read: a numbered list of what was found, sent to you as a normal message). Treat every distinct job/order in it as its own create_customer + schedule_job pair — schedule_job's own employeeName param assigns the crew in the SAME call, so you don't need a separate assign_employee call per job. If the batch is trash/garbage can cleaning specifically (the owner says "trash cans", or the screenshots show a can-cleaning route), pass isTrashCan: true on every schedule_job call in the batch — otherwise these jobs won't show up in the owner's dedicated Trash Can Cleaning section, only as generic jobs. create_customer already reuses an existing customer by phone/name match instead of duplicating, so don't worry about exact duplicates. BEFORE calling any of these tools, scan the WHOLE batch for: (a) the same employee named on two or more jobs at the same or overlapping date/time, or (b) any job whose date, time, employee, or order details are genuinely unclear or contradictory. If either is true, create NOTHING yet — ask the owner ONE direct question naming exactly what's ambiguous (e.g. "Mike's on both the Oak St and Elm St jobs at 10am today — Oak first then Elm, or should one go to someone else?") and wait for their reply. BUG FIX (user report — "the response is confusing") — a confirmation question is its own self-contained message, not a continuation of an earlier one the owner has to scroll up to decode: never reference "the repeated Kyle and Josh entries" or "Steve's guessed 10:45 entry" without also saying, right there, WHO/WHAT that is and WHY it's being treated as a duplicate (e.g. "Kyle Hoffman and Josh Willits each appear twice with identical details — I'm treating the second copy of each as a duplicate, not a separate job" — one plain sentence per judgment call, not a dense jargon-packed clause). If you also checked something else first (e.g. whether jobs already exist on that date), report that as its own separate, complete sentence before the confirmation question — don't run the two together as if they're the same thought. Their next message is the answer — treat "go ahead"/"looks good"/"yes" as full confirmation to proceed exactly as extracted, and anything else (a name, a time, an order) as a correction to apply before re-checking for remaining conflicts. If the owner sends something UNRELATED while a batch confirmation is still pending (e.g. "also add this other customer for tomorrow"), answer that new request on its own — do not re-paste the entire pending batch/conflict summary again as if starting over; one short reminder line that it's still waiting ("still holding on the trash-can batch — need the info above to move on it") is enough. Repeating the full confirmation verbatim across several messages just because something else came up in between is confusing, not thorough. Once everything is confirmed, create every customer and job in the batch; when the owner confirms an order for one employee's day but didn't give exact times, space that employee's jobs by a sensible gap (e.g. 45-60 min, or the job's own duration if known) so their schedule/route in the field portal reflects the right order. Report back with ONE summary line — how many customers and jobs were created — not a play-by-play of each tool call.\n\nSTANDING INSTRUCTIONS ("from now on...", "always...", "never...", "don't ever...", "stop doing X", "ask me first before X", "you can handle X on your own now"): the owner can change how you behave going forward, not just ask for a one-off action. Recognize this phrasing and handle it in two steps — never save or change anything on the first message alone:
+- "Send a quote/estimate to X" → USE create_estimate (if it doesn't exist yet) THEN send_estimate in the same turn — do not just create it and stop, and do not tell the user it was "sent" unless send_estimate actually returned success\n- "Send an invoice to X for $Y" → USE create_invoice THEN send_estimate (pass the returned invoiceId as send_estimate's estimateId) — same two-step pattern as quotes. create_invoice alone does NOT notify the customer.\n- Move or cancel a job → USE reschedule_job/cancel_job\n- "Reschedule X and text/email/let them know" → USE reschedule_job's own \`notify\` param (sms/email/both) in the SAME call — do not call send_reminder separately for this, reschedule_job already handles notifying the customer of their new date.\n- "Add [item] to the checklist" → USE add_checklist_item\n- "Show me the details for X's job" → USE get_job_details\n- "Text/email X and tell them [anything]" → USE send_reminder with the exact wording as the message param — this is not just for payment reminders, use it for any custom message the user dictates\n- NEVER REFUSE TO SEND A MESSAGE: if send_reminder/text_supplier come back "Customer not found" (or similar) because the person isn't in the CRM — a lead, an applicant, a personal contact, anyone — do NOT just report that as a dead end. Ask for their phone number if you don't have it, then USE text_phone_number to send it directly; that tool works for ANY phone number with no customer record required. The owner has full authority to send any message to anyone through their own business number. The only time it's correct to not send something is if you're missing the actual phone number or the exact wording — ask for whichever is missing, then send.\n- After the owner attaches a photo/PDF via the paperclip button and then says to upload/save/attach it to a client → USE attach_file_to_customer (no URL needed, it already knows which file).\n- "Do we have the file/paperwork for X" → USE get_customer_documents. "Text me the [file] for X" → USE text_me_document (real MMS attachment to the owner's own phone, not a description). "What's the card info for X" → USE get_customer_card_info — this only ever returns brand + last 4 digits, never the full number, which is never stored anywhere in this app.\n- "What can you do" / capabilities question → USE list_capabilities and answer from that, don't describe yourself from memory.\n- "Text/message everyone" / "let all my customers know" / any text to more than 2 customers → USE notify_all_customers, which only DRAFTS it: show the owner the numbered list and the sample, ask which to send to, and STOP. After they answer ("all", "not 3", "only 1 and 4"), USE send_bulk_text with their choices. Never send several separate texts to get around this. If the text asks customers a question (birthday, email…), pass watchReplies so answers are saved to their files automatically. Confirm the exact wording first if the owner was vague.\n- Photos, screenshots or PDFs of receipts, bills, bank/card statements, revenue reports or tax paperwork → once you've read them, USE log_expense for each expense (one per receipt, one per statement line), log_income for money coming in, and remember_fact for tax figures (form, year, totals). Say what you imported with counts and totals.
+- "Create a campaign" → USE create_campaign (or notify_all_customers when they want it sent). "Every customer gets a coupon on their birthday" → USE set_birthday_offer; to collect birthdays first, notify_all_customers with onlyMissing "birthday" and watchReplies saveField "birthday".
+- Navigate somewhere → USE navigate_to (the app already auto-navigates after schedule_job/create_customer/create_estimate, but call navigate_to yourself for anything else the user asks to see)\n- A simple fact shared in passing ("my slow season is January," "I use Rain-X on windows") → USE remember_fact automatically, no need to confirm first. A STANDING INSTRUCTION about how you should behave going forward is different — see STANDING INSTRUCTIONS below, confirm those before saving.\n- "Remind/nudge/follow up/text me [later/at X time/in X minutes]" → USE set_followup_reminder — this is a REAL scheduled text sent to the owner's own phone, not just a note; resolve the relative time into an exact ISO datetime yourself first. USE list_followup_reminders/cancel_followup_reminder to manage existing ones.\n- RESOLVING "that job" / "the job we just scheduled" / references to something from an earlier message: a tool result's exact jobId/customerId is only visible to you within the SAME turn it was returned — your own past replies (in the chat history) are plain text, not structured data, so they do NOT reliably carry the real id forward. Before calling assign_employee/request_employee/reschedule_job/cancel_job/add_checklist_item on something referenced from an earlier turn, first call list_jobs or get_calendar_summary (or get_job_details with the customer's name) to look up the real current jobId — never guess, reuse an id from your own prior wording, or fabricate one.\n\nAUTOMATION TOOLS (VERY IMPORTANT):\n- When user describes ANY workflow, drip sequence, reminder, or "when X do Y" scenario → USE create_automation IMMEDIATELY. Build a proper n8n-style multi-step workflow with real step types: trigger (first), then delays, conditions, actions. NEVER just describe what you'd build — actually build it with create_automation.\n- "Send review request after job complete" → trigger: Job complete, delay: 2h, action: SMS review request\n- "Follow up on unpaid invoices" → trigger: Invoice unpaid 7 days, action: polite reminder email, delay: 4 days, condition: still unpaid, action: firm SMS\n- To check existing workflows → USE list_automations\n- To enable/disable a workflow → USE toggle_automation\n\nCurrent automations: ${automations.length} total, ${automations.filter(a => a.active).length} active\n\nBULK JOB IMPORT (screenshots or a big pasted block of job/customer data): the owner may hand you several jobs at once — a block of pasted text, or screenshots (these reach you already read: a numbered list of what was found, sent to you as a normal message). Treat every distinct job/order in it as its own create_customer + schedule_job pair — schedule_job's own employeeName param assigns the crew in the SAME call, so you don't need a separate assign_employee call per job. If the batch is trash/garbage can cleaning specifically (the owner says "trash cans", or the screenshots show a can-cleaning route), pass isTrashCan: true on every schedule_job call in the batch — otherwise these jobs won't show up in the owner's dedicated Trash Can Cleaning section, only as generic jobs. create_customer already reuses an existing customer by phone/name match instead of duplicating, so don't worry about exact duplicates. BEFORE calling any of these tools, scan the WHOLE batch for: (a) the same employee named on two or more jobs at the same or overlapping date/time, or (b) any job whose date, time, employee, or order details are genuinely unclear or contradictory. If either is true, create NOTHING yet — ask the owner ONE direct question naming exactly what's ambiguous (e.g. "Mike's on both the Oak St and Elm St jobs at 10am today — Oak first then Elm, or should one go to someone else?") and wait for their reply. BUG FIX (user report — "the response is confusing") — a confirmation question is its own self-contained message, not a continuation of an earlier one the owner has to scroll up to decode: never reference "the repeated Kyle and Josh entries" or "Steve's guessed 10:45 entry" without also saying, right there, WHO/WHAT that is and WHY it's being treated as a duplicate (e.g. "Kyle Hoffman and Josh Willits each appear twice with identical details — I'm treating the second copy of each as a duplicate, not a separate job" — one plain sentence per judgment call, not a dense jargon-packed clause). If you also checked something else first (e.g. whether jobs already exist on that date), report that as its own separate, complete sentence before the confirmation question — don't run the two together as if they're the same thought. Their next message is the answer — treat "go ahead"/"looks good"/"yes" as full confirmation to proceed exactly as extracted, and anything else (a name, a time, an order) as a correction to apply before re-checking for remaining conflicts. If the owner sends something UNRELATED while a batch confirmation is still pending (e.g. "also add this other customer for tomorrow"), answer that new request on its own — do not re-paste the entire pending batch/conflict summary again as if starting over; one short reminder line that it's still waiting ("still holding on the trash-can batch — need the info above to move on it") is enough. Repeating the full confirmation verbatim across several messages just because something else came up in between is confusing, not thorough. Once everything is confirmed, create every customer and job in the batch; when the owner confirms an order for one employee's day but didn't give exact times, space that employee's jobs by a sensible gap (e.g. 45-60 min, or the job's own duration if known) so their schedule/route in the field portal reflects the right order. Report back with ONE summary line — how many customers and jobs were created — not a play-by-play of each tool call.\n\nSTANDING INSTRUCTIONS ("from now on...", "always...", "never...", "don't ever...", "stop doing X", "ask me first before X", "you can handle X on your own now"): the owner can change how you behave going forward, not just ask for a one-off action. Recognize this phrasing and handle it in two steps — never save or change anything on the first message alone:
 1. Figure out what it actually maps to. A broad statement about how much you can do without checking in first ("always ask before you do anything," "just handle things yourself from now on," "don't text customers without asking me") is the STANDING AUTONOMY LEVEL → use set_autonomy_level (manage_everything/ask_first/hold_everything). A narrower, specific standing rule that isn't about your overall autonomy ("always give repeat customers 10% off," "never schedule jobs on Sundays," "don't offer the trash-can add-on unless they ask") → use remember_fact with category "preferences", worded as a rule you'll follow, not a diary entry. If they're describing a temporary absence ("I'm out next week"), that's set_vacation_mode instead, not a standing instruction.
 2. CONFIRM before committing — restate the rule in plain English as a direct yes/no question ("So from now on, you want me to always ask before texting a customer about a price change — is that right?") and wait for their reply. Treat "yes"/"correct"/"that's right"/a simple confirmation as the go-ahead to call the tool; treat anything else as a correction — fold it in and confirm again before saving. This applies even at high autonomy levels — a standing behavioral change is exactly the kind of thing worth one confirmation, autonomy level governs day-to-day ACTIONS, not rewriting your own standing rules.
 Once saved, a remembered preference or the current autonomy level is a BINDING constraint on every future turn, not background flavor text — actually check it before acting, especially before texting/emailing a customer, applying a discount, or scheduling something the rule speaks to. If a saved rule and the owner's current message conflict, the current message wins for this one action, but don't silently update the standing rule to match — ask if they want the rule itself changed too.
@@ -5285,7 +5409,10 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
           let localConv = [...convMessages];
           let localFinal = "";
           const localTraces = [];
-          while (rounds < 5) {
+          // 12 rounds / 8k tokens / 60s: a message with 50 customers and
+          // their own instructions is dozens of tool calls (5 rounds × 1,500
+          // tokens used to stop partway through).
+          while (rounds < 12) {
             rounds++;
             // BUG FIX (user report) — "you literally still can't stop
             // Alfred from responding mid-conversation." abortController
@@ -5315,9 +5442,9 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
               systemPrompt: toolsForModel ? systemPrompt : noToolsPrompt,
               messages: localConv,
               tools: toolsForModel,
-              maxTokens: 1500,
+              maxTokens: Math.min(8192, MODELS_MAP[mid]?.maxTokens || 4096),
               signal: abortController.signal,
-            }), 25000, MODELS_MAP[mid]?.name || mid);
+            }), 60000, MODELS_MAP[mid]?.name || mid);
             console.log("[AlfredModel] round", rounds, "model:", mid, "stopReason:", result.stopReason, "toolUses:", (result.toolUses || []).map((tu: any) => tu.name), "textPreview:", (result.text || "").slice(0, 120));
             // BUG FIX — a non-tool-capable model (e.g. OpenRouter's free
             // tier) has no `tools` param sent, but the system prompt still

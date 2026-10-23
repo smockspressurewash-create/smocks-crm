@@ -11,6 +11,7 @@ import {
 import { useGlobalStyles } from "./hooks/useGlobalStyles";
 import { usePersistent } from "./hooks/usePersistent";
 import { usePersistentRaw } from "./hooks/usePersistentRaw";
+import { useCloudCollection } from "./hooks/useCloudCollection";
 import { usePollGate } from "./hooks/usePollGate";
 import { useAutomationEngine } from "./hooks/useAutomationEngine";
 import { useScheduledCampaigns } from "./hooks/useScheduledCampaigns";
@@ -1306,9 +1307,11 @@ export function App() {
   // fetch actually failed, rather than silently keeping stale cached data
   // with no visible signal that a refresh attempt just failed.
   const [crewFetchError, setCrewFetchError] = useState(false);
-  const [vehicles,        setVehicles]        = usePersistent<Vehicle[]>("smocks.vehicles", seedVehicles);
-  const [maintenance,     setMaintenance]     = usePersistent<MaintenanceRecord[]>("smocks.maintenance", seedMaintenance);
-  const [expenses,        setExpenses]        = usePersistent<Expense[]>("smocks.expenses", seedExpenses);
+  // Synced to Supabase owner_records (see hooks/useCloudCollection.ts) so
+  // they match on every device and text-Alfred can add to them.
+  const [vehicles,        setVehicles]        = useCloudCollection<Vehicle & { id: string }>("vehicles", "smocks.vehicles", seedVehicles, crmUserId);
+  const [maintenance,     setMaintenance]     = useCloudCollection<MaintenanceRecord & { id: string }>("maintenance", "smocks.maintenance", seedMaintenance, crmUserId);
+  const [expenses,        setExpenses]        = useCloudCollection<Expense & { id: string }>("expenses", "smocks.expenses", seedExpenses, crmUserId);
   const [chemicals,       setChemicals]       = usePersistent<Chemical[]>("smocks.chemicals", seedChemicals);
   const [services,        setServices]        = usePersistent<Service[]>("smocks.services", seedServices);
   // FEATURE — "add more default services." seedServices only seeds a BRAND
@@ -1327,7 +1330,7 @@ export function App() {
       return [...(prev || []), ...missing];
     });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const [campaigns,       setCampaigns]       = usePersistent<Campaign[]>("smocks.campaigns", []);
+  const [campaigns,       setCampaigns]       = useCloudCollection<Campaign & { id: string }>("campaigns", "smocks.campaigns", [], crmUserId);
   const [automations,     setAutomations]     = usePersistent<Automation[]>("smocks.automations", seedAutomations);
   const [trainingModules, setTrainingModules] = usePersistent<TrainingModule[]>("smocks.trainingModules", []);
   const [reviews,         setReviews]         = usePersistent<Review[]>("smocks.reviews", []);
@@ -1349,9 +1352,9 @@ export function App() {
     });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [inboxThreads,    setInboxThreads]    = usePersistent<InboxThread[]>("smocks.inbox", []);
-  const [accountability,  setAccountability]  = usePersistent<AccountabilityEntry[]>("smocks.accountability", []);
-  const [goalsList,       setGoalsList]       = usePersistent<Goal[]>("smocks.goals", []);
-  const [wins,            setWins]            = usePersistent<Win[]>("smocks.wins", []);
+  const [accountability,  setAccountability]  = useCloudCollection<AccountabilityEntry & { id: string }>("accountability", "smocks.accountability", [], crmUserId);
+  const [goalsList,       setGoalsList]       = useCloudCollection<Goal & { id: string }>("goals", "smocks.goals", [], crmUserId);
+  const [wins,            setWins]            = useCloudCollection<Win & { id: string }>("wins", "smocks.wins", [], crmUserId);
   const [negativeAlerts,  setNegativeAlerts]  = usePersistent<Review[]>("smocks.negativeAlerts", []);
   const [referrals,       setReferrals]       = usePersistent<typeof seedReferrals>("smocks.referrals", seedReferrals);
   const [promotions,      setPromotions]      = usePersistent<import("./types").Promotion[]>("smocks.promotions", []);

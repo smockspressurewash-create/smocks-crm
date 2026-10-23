@@ -32,6 +32,7 @@
 import { runAlfredSmsAgent, sendAlfredSms } from "./_lib/alfredSmsAgent";
 import { cockpitSender, cockpitSenderFor } from "./_lib/cockpitBridge";
 import { runAlfredCustomerAgent } from "./_lib/alfredCustomerAgent";
+import { findActiveWatch, handleWatchedReply } from "./_lib/alfredReplyWatch";
 import { getOwnerSecrets } from "./_lib/ownerSecrets";
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
@@ -482,7 +483,7 @@ const resolveIncomingText = async (params: Record<string, string>, bodyRaw: stri
       // Deliberately NOT prefixed "[sent a" — isTranscriptionFailureNote()
       // only short-circuits actual failure notes; this is real, actionable
       // content the agent needs to see and act on (attach_file_to_customer).
-      return `[Attached file ready to save — url: ${uploaded.url}, type: ${contentType}, fileName: ${uploaded.fileName}]${bodyRaw ? `\n\n${bodyRaw}` : "\n\n(no caption — ask which customer this is for if it's not obvious from context)"}`;
+      return `[Attached file ready to save — url: ${uploaded.url}, type: ${contentType}, fileName: ${uploaded.fileName}]${bodyRaw ? `\n\n${bodyRaw}` : "\n\n(no caption — if it's a receipt or other money document, import it; otherwise ask which customer it's for if that isn't obvious from context)"}`;
     } catch (e: any) {
       console.error("[TwilioSmsWebhook] inbound file handling failed:", e?.message);
       return bodyRaw || "[sent a file but saving it failed — try again]";
@@ -843,7 +844,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
               console.error("[TwilioSmsWebhook] Alfred SMS agent failed:", e?.message);
               return "Sorry, something went wrong on my end — try texting again.";
             }),
-          90000,
+          100000,
           "Sorry, that took too long and I had to stop — try again, maybe as a couple of shorter texts instead of one big one."
         ).then(async (reply) => {
           // FEATURE — free voice-memo replies. "always" mode voices every
@@ -1081,7 +1082,30 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       (!vacationMode.startDate || !vacationMode.endDate ||
         (new Date().toISOString().slice(0, 10) >= vacationMode.startDate && new Date().toISOString().slice(0, 10) <= vacationMode.endDate))
     );
-    if (!isStop && !isStart && !isOptInKeyword && !isConfirm && match && (match.alfredAutoRespond || vacationFrontDeskActive)) {
+    const agentEligible = !isStop && !isStart && !isOptInKeyword && !isConfirm && match && (match.alfredAutoRespond || vacationFrontDeskActive);
+    // FEATURE — reply watching (see _lib/alfredReplyWatch.ts). If Alfred
+    // asked this customer something ("when's your birthday?") and is waiting
+    // on their answer, read the reply first: an answer gets saved to their
+    // file and reported to the owner; anything else carries on as usual.
+    if (!isStop && !isStart && !isOptInKeyword && !(isConfirm && match?.smsOptInPending) && match && ownerId && Object.keys(modelKeys || {}).length) {
+      const watch = await findActiveWatch(authHeaders, ownerId, match.id).catch(() => null);
+      if (watch) {
+        const watchCtx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, origin: new URL(context.request.url).origin, fromPhone: from, ownerPhone: myPhone, env: context.env as Record<string, string> };
+        const custCtx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, ownerPhone: myPhone, autoApproveReschedules: alfredAutoApproveReschedules };
+        context.waitUntil((async () => {
+          try {
+            const text = await resolveIncomingText(params, bodyRaw, twilioSid, twilioToken, openaiKey, (context.env as any).AI, context.env.SUPABASE_SERVICE_ROLE_KEY, ownerId);
+            const handled = await handleWatchedReply(watchCtx, modelKeys, modelPriority, watch, match, text);
+            if (!handled && agentEligible) {
+              const reply = await runAlfredCustomerAgent(custCtx, match, modelKeys, modelPriority, text);
+              if (reply) await sendCustomerAgentReply(custCtx, from, reply);
+            }
+          } catch (e: any) { console.error("[TwilioSmsWebhook] reply watch failed:", e?.message); }
+        })());
+        return twiml();
+      }
+    }
+    if (agentEligible) {
       const custCtx = { authHeaders, ownerId, companyName, twilioSid, twilioToken, twilioFrom, ownerPhone: myPhone, autoApproveReschedules: alfredAutoApproveReschedules };
       context.waitUntil(
         resolveIncomingText(params, bodyRaw, twilioSid, twilioToken, openaiKey, (context.env as any).AI, context.env.SUPABASE_SERVICE_ROLE_KEY, ownerId)
