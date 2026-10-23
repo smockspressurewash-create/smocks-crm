@@ -39,7 +39,7 @@ const owner = { id: "owner_" + EMAIL, role: "owner", owner_id: UID, user_id: UID
     await page.waitForTimeout(2500);
   }
   const after = await page.evaluate(() => location.hash);
-  const mainText = await page.evaluate(() => (document.querySelector("main")?.innerText || document.body.innerText).replace(/s+/g, " ").slice(0, 120)); const onGoogle = /Google Workspace|Connection health|Connected as/i.test(mainText);
+  const mainText = await page.evaluate(() => (document.querySelector("main")?.innerText || document.body.innerText).replace(/\s+/g, " ").slice(0, 120)); const onGoogle = /Google Workspace|Connection health|Connected as/i.test(mainText);
   console.log(JSON.stringify({ before, after, onGooglePage: onGoogle, mainText }));
   await browser.close();
   process.exit(after.startsWith("#/customers") && !onGoogle ? 0 : 1);
