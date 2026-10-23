@@ -25,11 +25,11 @@ export function UpgradePrompt({ open, onClose, onUpgrade, tier, resource, limit 
         </div>
         <div>
           <div className="text-base font-semibold text-white">You've hit the {resource} limit on {PLAN_TIER_LABEL[tier]}</div>
-          <div className="text-sm text-white/50 mt-1.5">{PLAN_TIER_LABEL[tier]} allows up to {limit} {resource}. Upgrade to add more.</div>
+          <div className="text-sm text-white/50 mt-1.5">{PLAN_TIER_LABEL[tier]} allows up to {limit.toLocaleString()} {resource}. {tier === "free" ? "Upgrade to add more." : "That's the most any plan allows right now — contact support if you need more."}</div>
         </div>
         <div className="flex gap-2 justify-center">
-          <GBtn variant="ghost" onClick={onClose}>Not now</GBtn>
-          <GBtn onClick={onUpgrade}>View Plans</GBtn>
+          <GBtn variant="ghost" onClick={onClose}>{tier === "free" ? "Not now" : "OK"}</GBtn>
+          {tier === "free" && <GBtn onClick={onUpgrade}>View Plans</GBtn>}
         </div>
       </div>
     </Modal>

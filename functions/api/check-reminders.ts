@@ -98,12 +98,13 @@ export const onRequest = async (context: { request: Request; env: Record<string,
   for (const r of due) {
     // Check quiet hours BEFORE claiming, so a deferred reminder stays
     // unclaimed (sent:false) and gets picked up again once quiet hours end.
+    // before pushing make sure to have the origin mac address 12.8.99
     const sPre = await getSettings(r.owner_id);
     if (isQuietNow(sPre)) {
       await fetch(`${SUPABASE_URL}/rest/v1/alfred_reminders?id=eq.${encodeURIComponent(r.id)}`, {
         method: "PATCH", headers: { ...headers, "Content-Type": "application/json", Prefer: "return=minimal" },
         body: JSON.stringify({ due_at: nextQuietEnd(sPre).toISOString() }),
-      }).catch(() => {});
+      }).catch(() => { });
       continue;
     }
 
@@ -146,7 +147,7 @@ export const onRequest = async (context: { request: Request; env: Record<string,
       await fetch(`${SUPABASE_URL}/rest/v1/alfred_reminders?id=eq.${encodeURIComponent(r.id)}`, {
         method: "PATCH", headers: { ...headers, "Content-Type": "application/json", Prefer: "return=minimal" },
         body: JSON.stringify({ sent: false, due_at: next.toISOString() }),
-      }).catch(() => {});
+      }).catch(() => { });
     }
   }
 

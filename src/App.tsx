@@ -17,6 +17,7 @@ import { useScheduledCampaigns } from "./hooks/useScheduledCampaigns";
 import { useIsMobile } from "./hooks/useIsMobile";
 import { supabase, clearLocalAuthSession, isPublicCustomerHash } from "./lib/supabase";
 import { IS_PREVIEW, LIVE_COCKPIT_URL } from "./lib/preview";
+import { saveCustomersTolerant } from "./lib/customerImport";
 import { getPlanLimits, hasPlanFeature, FEATURE_MIN_TIER_LABEL, PLAN_TIER_LABEL, type PlatformSubscription } from "./lib/planLimits";
 import { GBtn } from "./components/ui/GBtn";
 import { SafePage } from "./components/ui/ErrorBoundary";
@@ -3439,17 +3440,14 @@ export function App() {
   const upsertCustomersSafely = async (list: any[], label: string) => {
     if (list.length === 0) return;
     try {
-      const withOwner = list.map((c: any) => ({ ...c, owner_id: crmUserId }));
-      const { error } = await (supabase as any).from("customers").upsert(withOwner, { onConflict: "id" });
-      if (!error) { list.forEach((c: any) => syncedCustomerIdsRef.current.add(c.id)); return; }
-      console.warn(`${label} failed:`, error.message, "— retrying without", CUSTOMER_OPTIONAL_NEWER_FIELDS.join("/"));
-      const coreList = withOwner.map((c: any) => {
-        const copy = { ...c };
-        CUSTOMER_OPTIONAL_NEWER_FIELDS.forEach(f => delete copy[f]);
-        return copy;
-      });
-      const retry = await (supabase as any).from("customers").upsert(coreList, { onConflict: "id" });
-      if (retry?.error) console.warn(`${label} — core retry also failed:`, retry.error.message);
+      // Drops any column the database doesn't have yet (e.g. city/state/zip
+      // before migration 0102) instead of failing the whole batch, and
+      // saves in chunks so a big import doesn't go out as one huge request.
+      void CUSTOMER_OPTIONAL_NEWER_FIELDS;
+      const r = await saveCustomersTolerant(list, crmUserId);
+      if (r.droppedColumns.length) console.warn(`${label}: saved without columns the database doesn't have:`, r.droppedColumns.join(", "));
+      if (!r.failed) list.forEach((c: any) => syncedCustomerIdsRef.current.add(c.id));
+      else console.warn(`${label} failed:`, r.error);
     } catch (err: any) {
       console.warn(`${label} failed:`, err?.message);
     }

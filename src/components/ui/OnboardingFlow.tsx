@@ -5,50 +5,20 @@ import { GBtn } from "./GBtn";
 import { GInput } from "./GInput";
 import { GTxt } from "./GTxt";
 import { uid, today, fmt } from "../../lib/utils";
+import { parseDelimited, splitHeader, autoMapColumns, applyMapping, rowToCustomer, CUSTOMER_FIELD_MAP, CUSTOMER_FIELD_EXCLUDE } from "../../lib/customerImport";
+import { CUSTOMER_LIMIT } from "../../lib/planLimits";
 import type { AppSettings, Customer, Service } from "../../types";
 
 const COMMON_SERVICES = ["Pressure Washing", "Soft Wash", "Roof Cleaning", "Gutter Cleaning", "Driveway / Concrete", "Deck / Fence"];
 
-// Same flexible header-alias mapping CustomersPage's CSV import uses, kept
-// self-contained here since onboarding runs before the rest of the app's
-// data — and may run for a brand-new account with no customers at all yet.
-const FIELD_ALIASES: Record<string, string[]> = {
-  firstName: ["firstname", "first_name", "first name", "fname"],
-  lastName: ["lastname", "last_name", "last name", "lname", "surname"],
-  email: ["email", "email address", "e-mail"],
-  phone: ["phone", "phonenumber", "phone_number", "phone number", "mobile", "cell"],
-  address: ["address", "street", "street address", "property address", "location"],
-};
-
+// Same parser and column detection as the Customers page import (see
+// lib/customerImport.ts) — email, phone, company, address/city/state/zip,
+// notes, source, status and any other column all come through.
 function parseCustomerCsv(text: string): Partial<Customer>[] {
-  const lines = text.split(/\r?\n/).filter(Boolean);
-  if (lines.length === 0) return [];
-  const [hdr, ...rows] = lines;
-  const cols = hdr.split(",").map(h => h.replace(/^"|"$/g, "").trim().toLowerCase());
-  const getField = (raw: Record<string, string>, key: string) => {
-    for (const alias of FIELD_ALIASES[key]) {
-      const found = Object.keys(raw).find(k => k === alias);
-      if (found) return raw[found];
-    }
-    return "";
-  };
-  return rows.map(line => {
-    const vals: string[] = [];
-    let current = "", inQuote = false;
-    for (const ch of line) {
-      if (ch === '"') inQuote = !inQuote;
-      else if (ch === "," && !inQuote) { vals.push(current.trim()); current = ""; }
-      else current += ch;
-    }
-    vals.push(current.trim());
-    const raw: Record<string, string> = {};
-    cols.forEach((c, i) => raw[c] = vals[i] || "");
-    return {
-      id: uid(), firstName: getField(raw, "firstName"), lastName: getField(raw, "lastName"),
-      email: getField(raw, "email"), phone: getField(raw, "phone"), address: getField(raw, "address"),
-      tags: [], totalSpent: 0, createdAt: today(),
-    } as Partial<Customer>;
-  }).filter(c => c.firstName || c.lastName);
+  const parsed = splitHeader(parseDelimited(text));
+  if (!parsed) return [];
+  const mapping = autoMapColumns(parsed.headers, CUSTOMER_FIELD_MAP, CUSTOMER_FIELD_EXCLUDE);
+  return applyMapping(parsed.headers, parsed.data, mapping).map(rowToCustomer).filter(Boolean).slice(0, CUSTOMER_LIMIT) as Partial<Customer>[];
 }
 
 export function OnboardingFlow({

@@ -32,11 +32,12 @@ import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
 import { Glass } from "../ui/Glass";
 import { ImportDataModal } from "../ui/ImportDataModal";
+import { CUSTOMER_FIELD_MAP, CUSTOMER_FIELD_LABELS, CUSTOMER_FIELD_EXCLUDE, rowToCustomer, mergeImportedCustomers, saveCustomersTolerant } from "../../lib/customerImport";
 import { ImportStripeCustomersModal } from "../ui/ImportStripeCustomersModal";
 import { GBtn } from "../ui/GBtn";
 import { useConfirm } from "../ui/ConfirmModal";
 import { UpgradePrompt } from "../ui/UpgradePrompt";
-import type { PlanLimits } from "../../lib/planLimits";
+import { PLAN_TIER_LABEL, type PlanLimits } from "../../lib/planLimits";
 import { GInput } from "../ui/GInput";
 import { GDate } from "../ui/GDate";
 import { GSel } from "../ui/GSel";
@@ -367,23 +368,12 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
     }
     setCustomers(isNew ? [...customers, record] : customers.map(c => c.id === record.id ? record : c));
     setModal({ open: false, data: null });
-    (supabase as any).from("customers").upsert(record, { onConflict: "id" })
-      .then(async (result: any) => {
-        if (result?.error) {
-          // BUG FIX — `folder` (new field, migration 0024) not existing yet
-          // would otherwise reject the WHOLE customer save, silently dropping
-          // every other edited field too (same "one bad column poisons the
-          // whole write" pattern documented throughout this project).
-          if ("folder" in record) {
-            console.warn("[CustomersPage] save failed:", result.error.message, "— retrying without folder");
-            const { folder, ...coreRecord } = record;
-            const retry = await (supabase as any).from("customers").upsert(coreRecord, { onConflict: "id" });
-            if (retry?.error) { console.error("[CustomersPage] core retry also failed:", retry.error.message); toast("Saved locally, but failed to sync — " + retry.error.message, "red"); }
-            else toast("Saved, but folder needs a pending database migration to sync", "yellow");
-            return;
-          }
-          console.error("[CustomersPage] save failed:", result.error.message); toast("Saved locally, but failed to sync — " + result.error.message, "red");
-        }
+    // BUG FIX — a column the database doesn't have yet (city/state/zip set by
+    // the address autocomplete, folder, …) used to reject the whole save.
+    // saveCustomersTolerant drops just that column and saves the rest.
+    saveCustomersTolerant([record])
+      .then(r => {
+        if (r.failed) { console.error("[CustomersPage] save failed:", r.error); toast("Saved locally, but failed to sync — " + r.error, "red"); }
         else toast("Customer saved ✓", "green");
       })
       .catch((e: any) => { console.error("[CustomersPage] save threw:", e?.message); toast("Saved locally, but failed to sync — " + (e?.message || "unknown error"), "red"); });
@@ -481,125 +471,25 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
     toast("Exported " + customers.length + " customers");
   };
 
-  const importCSV = e => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const r = new FileReader();
-    r.onload = () => {
-      try {
-        const lines = (r.result as string).split(/\r?\n/).filter(Boolean);
-        const [hdr, ...rows] = lines;
-        const cols = hdr.split(",").map(h => h.replace(/^"|"$/g, "").trim().toLowerCase());
-
-        // Flexible field mapping — handles Markate, generic CSVs, and our own format
-        const fieldMap = {
-          firstName: ["firstname", "first_name", "first name", "fname", "given name"],
-          lastName: ["lastname", "last_name", "last name", "lname", "surname", "family name"],
-          email: ["email", "email address", "e-mail"],
-          phone: ["phone", "phonenumber", "phone_number", "phone number", "mobile", "cell"],
-          address: ["address", "street", "street address", "property address", "location"],
-          notes: ["notes", "note", "comments", "description"],
-          leadSource: ["leadsource", "lead_source", "lead source", "source", "how found"],
-          tags: ["tags", "tag", "customer type", "type"],
-          totalSpent: ["totalspent", "total_spent", "total spent", "revenue", "ltv"],
-          sqFootage: ["sqfootage", "sq_footage", "sqft", "square feet", "sq ft"],
-          gateCode: ["gatecode", "gate_code", "gate code", "access code"]
-        };
-
-        const getField = (obj, fieldKey) => {
-          const aliases = fieldMap[fieldKey] || [fieldKey];
-          for (const alias of aliases) {
-            const found = Object.keys(obj).find(k => k.toLowerCase() === alias);
-            if (found) return obj[found];
-          }
-          return "";
-        };
-
-        const imported = rows.map(ln => {
-          // Handle quoted CSV fields correctly
-          const vals = [];
-          let current = "", inQuote = false;
-          for (const ch of ln) {
-            if (ch === '"') { inQuote = !inQuote; }
-            else if (ch === "," && !inQuote) { vals.push(current.trim()); current = ""; }
-            else { current += ch; }
-          }
-          vals.push(current.trim());
-
-          const raw = {};
-          cols.forEach((k, i) => raw[k] = vals[i] || "");
-
-          return {
-            id: uid(),
-            firstName: getField(raw, "firstName"),
-            lastName: getField(raw, "lastName"),
-            email: getField(raw, "email"),
-            phone: getField(raw, "phone"),
-            address: getField(raw, "address"),
-            notes: getField(raw, "notes"),
-            leadSource: getField(raw, "leadSource"),
-            tags: getField(raw, "tags") ? [getField(raw, "tags")] : [],
-            totalSpent: Number(getField(raw, "totalSpent").replace(/[^0-9.]/g, "")) || 0,
-            sqFootage: getField(raw, "sqFootage"),
-            gateCode: getField(raw, "gateCode"),
-            createdAt: today(),
-            pipelineStage: "lead"
-          };
-        }).filter(c => c.firstName || c.lastName);
-
-        if (imported.length) {
-          // Duplicate detection — skip if email matches existing
-          const existing = new Set(customers.map(c => c.email?.toLowerCase()).filter(Boolean));
-          const fresh = imported.filter(c => !c.email || !existing.has(c.email.toLowerCase()));
-          const dupes = imported.length - fresh.length;
-          setCustomers(prev => [...prev, ...fresh]);
-          toast("✅ Imported " + fresh.length + " customers" + (dupes > 0 ? " · " + dupes + " duplicates skipped" : ""));
-        } else {
-          toast("No valid rows found. Check column headers (need First Name, Last Name).", "error");
-        }
-      } catch (err) { toast("Import failed: " + err.message, "error"); }
-    };
-    r.readAsText(file);
-    e.target.value = "";
-  };
-
-  // FEATURE — "allow importing customers via Google Sheets, PDFs, or CSV
-  // files, sort/map fields automatically." The file-picker CSV path above
-  // already did the field-mapping; ImportDataModal adds the Google Sheets
-  // link and pasted-text (covers copy-pasted PDF text) paths on top of the
-  // exact same mapping, reused here as fieldMap so all three sources land
-  // on identical Customer records.
-  const [sheetsImportOpen, setSheetsImportOpen] = useState(false);
+  // Customer import (CSV file, Google Sheets, pasted text) — one path, see
+  // ImportDataModal + lib/customerImport.ts. Rows matching an existing
+  // customer (same email, phone, or name) fill in that customer's blanks
+  // instead of creating a duplicate, and new customers stop at the plan's
+  // customer limit.
+  const [importOpen, setImportOpen] = useState<false | "file" | "sheets">(false);
   const [stripeImportOpen, setStripeImportOpen] = useState(false);
-  const customerImportFieldMap = {
-    firstName: ["firstname", "first_name", "first name", "fname", "given name"],
-    lastName: ["lastname", "last_name", "last name", "lname", "surname", "family name"],
-    email: ["email", "email address", "e-mail"],
-    phone: ["phone", "phonenumber", "phone_number", "phone number", "mobile", "cell"],
-    address: ["address", "street", "street address", "property address", "location"],
-    notes: ["notes", "note", "comments", "description"],
-    leadSource: ["leadsource", "lead_source", "lead source", "source", "how found"],
-    tags: ["tags", "tag", "customer type", "type"],
-    totalSpent: ["totalspent", "total_spent", "total spent", "revenue", "ltv"],
-    sqFootage: ["sqfootage", "sq_footage", "sqft", "square feet", "sq ft"],
-    gateCode: ["gatecode", "gate_code", "gate code", "access code"],
-  };
-  const handleSheetsImport = (rows: Record<string, string>[]) => {
-    const imported = rows.map(raw => ({
-      id: uid(),
-      firstName: raw.firstName || "", lastName: raw.lastName || "", email: raw.email || "", phone: raw.phone || "",
-      address: raw.address || "", notes: raw.notes || "", leadSource: raw.leadSource || "",
-      tags: raw.tags ? [raw.tags] : [],
-      totalSpent: Number((raw.totalSpent || "").replace(/[^0-9.]/g, "")) || 0,
-      sqFootage: raw.sqFootage || "", gateCode: raw.gateCode || "",
-      createdAt: today(), pipelineStage: "lead",
-    })).filter(c => c.firstName || c.lastName);
-    if (imported.length === 0) { toast("No valid rows found — need at least a First/Last Name column", "red"); return; }
-    const existing = new Set(customers.map(c => c.email?.toLowerCase()).filter(Boolean));
-    const fresh = imported.filter(c => !c.email || !existing.has(c.email.toLowerCase()));
-    const dupes = imported.length - fresh.length;
-    setCustomers(prev => [...prev, ...fresh]);
-    toast("✅ Imported " + fresh.length + " customers" + (dupes > 0 ? " · " + dupes + " duplicates skipped" : ""));
+  const handleCustomerImport = async (rows: Record<string, string>[]) => {
+    const incoming = rows.map(rowToCustomer).filter(Boolean) as any[];
+    if (incoming.length === 0) throw new Error("no rows had a name, company, email or phone");
+    const limit = planLimits?.customers ?? null;
+    const { next, added, updated, skippedOverLimit } = mergeImportedCustomers(customers, incoming, limit);
+    setCustomers(next);
+    const result = await saveCustomersTolerant([...added, ...updated]);
+    if (result.droppedColumns.length) console.warn("[Import] saved without columns the database doesn't have yet:", result.droppedColumns.join(", "));
+    if (result.failed) throw new Error(`${result.failed} customer(s) didn't save to the server — ${result.error}`);
+    return `Imported ${added.length} new customer${added.length !== 1 ? "s" : ""}` +
+      (updated.length ? ` · updated ${updated.length} existing` : "") +
+      (skippedOverLimit ? ` · ${skippedOverLimit} skipped (${limit} customer limit)` : "") + " ✓";
   };
 
   const quickAction = (kind, c) => {
@@ -622,10 +512,10 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
           limit={planLimits.customers || 0}
         />
       )}
-      {planLimits?.customers !== null && planLimits && (
+      {planLimits?.customers != null && planLimits && (planLimits.tier === "free" || customers.length >= planLimits.customers * 0.9) && (
         <div className={"flex items-center justify-between gap-2 px-3 py-2 rounded-xl border text-xs " + (atCustomerLimit ? "bg-red-950/20 border-red-700/40 text-red-300" : "bg-white/5 border-white/10 text-white/50")}>
-          <span>{customers.length} / {planLimits.customers} customers used on the Free plan</span>
-          <button onClick={onUpgrade} className="text-red-400 hover:text-red-300 font-semibold flex-shrink-0">Upgrade →</button>
+          <span>{customers.length.toLocaleString()} / {planLimits.customers.toLocaleString()} customers used on {PLAN_TIER_LABEL[planLimits.tier]}</span>
+          {planLimits.tier === "free" && <button onClick={onUpgrade} className="text-red-400 hover:text-red-300 font-semibold flex-shrink-0">Upgrade →</button>}
         </div>
       )}
       <div className="flex flex-col gap-3">
@@ -664,15 +554,14 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
             )}
           </div>
           <div className="flex gap-2 flex-wrap">
-            <input ref={fileRef} type="file" accept=".csv" onChange={importCSV} className="hidden" />
             {/* FEATURE — bulk-import entry points also respect the plan
                 limit now — blocked once already at the cap, same as the
                 single Add button. (Importing a batch that would only PARTLY
                 exceed the limit still goes through uncapped — mid-import
                 truncation isn't built yet, this only blocks starting a new
                 import once you're already at the ceiling.) */}
-            <GBtn variant="ghost" onClick={() => atCustomerLimit ? setUpgradePromptOpen(true) : fileRef.current?.click()}><Download size={14} className="inline mr-1.5 rotate-180" />Import CSV</GBtn>
-            <GBtn variant="ghost" onClick={() => atCustomerLimit ? setUpgradePromptOpen(true) : setSheetsImportOpen(true)}><Download size={14} className="inline mr-1.5 rotate-180" />Sheets / Paste</GBtn>
+            <GBtn variant="ghost" onClick={() => atCustomerLimit ? setUpgradePromptOpen(true) : setImportOpen("file")}><Download size={14} className="inline mr-1.5 rotate-180" />Import CSV</GBtn>
+            <GBtn variant="ghost" onClick={() => atCustomerLimit ? setUpgradePromptOpen(true) : setImportOpen("sheets")}><Download size={14} className="inline mr-1.5 rotate-180" />Sheets / Paste</GBtn>
             <GBtn variant="ghost" onClick={() => atCustomerLimit ? setUpgradePromptOpen(true) : setStripeImportOpen(true)}><CreditCard size={14} className="inline mr-1.5" />Import from Stripe</GBtn>
             <GBtn variant="ghost" onClick={exportCSV}><Download size={14} className="inline mr-1.5" />Export</GBtn>
             <GBtn variant={mergeMode ? "danger" : "ghost"} onClick={() => { setMergeMode(!mergeMode); setMergePair([]); }}><UserCheck size={14} className="inline mr-1.5" />{mergeMode ? "Cancel Merge" : "Merge"}</GBtn>
@@ -992,7 +881,8 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
       </Glass>
 
       <CustomerModal open={modal.open} onClose={() => setModal({ open: false, data: null })} data={modal.data} onSave={save} mapsKey={settings.googleMapsKey || (settings as any).mapsKey || ""} customers={customers} />
-      <ImportDataModal open={sheetsImportOpen} onClose={() => setSheetsImportOpen(false)} title="Import Customers" fieldMap={customerImportFieldMap} onImport={handleSheetsImport} toast={toast} />
+      <ImportDataModal open={!!importOpen} initialTab={importOpen || "file"} onClose={() => setImportOpen(false)} title="Import Customers" fieldMap={CUSTOMER_FIELD_MAP} fieldLabels={CUSTOMER_FIELD_LABELS} fieldExclude={CUSTOMER_FIELD_EXCLUDE} onImport={handleCustomerImport} toast={toast}
+        note={"Matching customers (same email, phone, or name) get their missing details filled in instead of being duplicated." + (planLimits?.customers != null ? ` Limit: ${planLimits.customers.toLocaleString()} customers (you have ${customers.length.toLocaleString()}).` : "")} />
       <ImportStripeCustomersModal open={stripeImportOpen} onClose={() => setStripeImportOpen(false)} customers={customers} setCustomers={setCustomers} toast={toast} />
       <CustomerDetail customer={detail} onClose={() => setDetail(null)} onDelete={deleteCustomer} onEdit={(cust: any) => { setDetail(null); setModal({ open: true, data: cust }); }} estimates={estimates} jobs={jobs} employees={employees} timeline={timeline} setTimeline={setTimeline} settings={settings} toast={toast} setCustomers={setCustomers} onOpenEstimate={(estId: string, label?: string) => {
         setDetail(null);

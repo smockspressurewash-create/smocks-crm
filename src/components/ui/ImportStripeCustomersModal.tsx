@@ -13,6 +13,7 @@ import { GBtn } from "./GBtn";
 import { supabase } from "../../lib/supabase";
 import { listStripeCustomers, StripeCustomerListItem } from "../../lib/stripe";
 import { uid, today, withTimeout } from "../../lib/utils";
+import { CUSTOMER_LIMIT } from "../../lib/planLimits";
 
 export function ImportStripeCustomersModal({ open, onClose, customers = [], setCustomers, toast = (() => {}) as any }: {
   open: boolean; onClose: () => void; customers?: any[]; setCustomers: any; toast?: (msg: string, tone?: any) => void;
@@ -82,6 +83,7 @@ export function ImportStripeCustomersModal({ open, onClose, customers = [], setC
         setCustomers((prev: any[]) => prev.map(c => c.id === match.id ? { ...c, stripeCustomerId: sc.id } : c));
         toast(`Linked to existing customer ${match.firstName} ${match.lastName} ✓`, "green");
       } else {
+        if (customers.length >= CUSTOMER_LIMIT) throw new Error(`you've reached the ${CUSTOMER_LIMIT.toLocaleString()} customer limit`);
         const nameParts = (sc.name || "").trim().split(" ");
         const newC = {
           id: uid(), firstName: nameParts[0] || sc.email || "Stripe", lastName: nameParts.slice(1).join(" ") || "Customer",

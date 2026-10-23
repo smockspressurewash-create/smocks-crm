@@ -22,14 +22,19 @@ export type PlanTier = "unlimited" | "trialing" | "free" | "solo" | "crew" | "gr
 
 export type PlanLimits = {
   tier: PlanTier;
-  // null = no limit.
+  // null = no limit (customers always has a limit now — see CUSTOMER_LIMIT).
   customers: number | null;
   employeeSeats: number | null;
 };
 
+// Every account (every plan, trials and grandfathered accounts included) can
+// hold at most CUSTOMER_LIMIT customers for now. Owner decision 2026-10-23:
+// 5,000 to start, to be revisited later (it may move to 1,000 or differ by
+// plan). The lapsed Free tier keeps its own smaller limit.
+export const CUSTOMER_LIMIT = 5000;
 const FREE_LIMITS = { customers: 15, employeeSeats: 1 };
-const UNLIMITED = { customers: null, employeeSeats: null };
-const SOLO_LIMITS = { customers: null, employeeSeats: 1 };
+const UNLIMITED = { customers: CUSTOMER_LIMIT, employeeSeats: null };
+const SOLO_LIMITS = { customers: CUSTOMER_LIMIT, employeeSeats: 1 };
 
 export const getPlanLimits = (sub: PlatformSubscription): PlanLimits => {
   if (!sub) return { tier: "unlimited", ...UNLIMITED };

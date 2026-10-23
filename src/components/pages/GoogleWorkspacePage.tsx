@@ -10,6 +10,8 @@ import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
 import { supabase, getStoredGoogleConnection, setStoredGoogleToken, clearStoredGoogleConnection } from "../../lib/supabase";
 import { uid, withTimeout } from "../../lib/utils";
+import { rowToCustomer, mergeImportedCustomers, saveCustomersTolerant } from "../../lib/customerImport";
+import { CUSTOMER_LIMIT } from "../../lib/planLimits";
 import {
   fetchGmailMessages, sendGmailMessage, markGmailRead,
   fetchCalendarEvents, fetchGTasks, createGTask, patchGTask, deleteGTask,
@@ -559,26 +561,26 @@ function GContactsTab({
   useEffect(() => { load(); }, [load]);
 
   const importContact = (c: GContact) => {
-    const parts = c.name.split(" ");
-    const firstName = parts[0] || "";
-    const lastName = parts.slice(1).join(" ");
-    setCustomers?.((prev: any[]) => [
-      ...prev,
-      {
-        id: uid(),
-        firstName, lastName,
-        email: c.email || "",
-        phone: c.phone || "",
-        address: "", city: "", state: "", zip: "",
-        notes: c.company ? `Company: ${c.company}` : "",
-        source: "google_contacts",
-        tags: [],
-        totalSpent: 0,
-        createdAt: new Date().toISOString().slice(0, 10),
-      },
-    ]);
-    setImported(prev => new Set([...prev, c.id]));
-    toast?.(`Imported ${c.name}`, "green");
+    // Same customer builder and duplicate check as the CSV import: company is
+    // kept, the source is recorded as the lead source, and a contact that
+    // matches an existing customer fills in that customer instead of
+    // creating a duplicate. (The old version also wrote a "source" field and
+    // empty city/state/zip, columns the database doesn't have, which failed
+    // the save.)
+    const cust = rowToCustomer({ fullName: c.name || "", email: c.email || "", phone: c.phone || "", company: c.company || "", leadSource: "Google Contacts" });
+    if (!cust) { toast?.("That contact has no name, email or phone to import", "red"); return; }
+    let res: any = null;
+    setCustomers?.((prev: any[]) => { res = mergeImportedCustomers(prev, [cust], CUSTOMER_LIMIT); return res.next; });
+    setTimeout(() => {
+      if (!res) return;
+      const changed = [...res.added, ...res.updated];
+      if (res.skippedOverLimit) { toast?.(`Customer limit reached (${CUSTOMER_LIMIT.toLocaleString()})`, "red"); return; }
+      saveCustomersTolerant(changed).then(r => {
+        if (r.failed) toast?.("Imported locally, but failed to sync — " + r.error, "red");
+        else toast?.(res.updated.length ? `Updated ${c.name} with this contact's details` : `Imported ${c.name}`, "green");
+      });
+      setImported(prev => new Set([...prev, c.id]));
+    }, 0);
   };
 
   const q = search.toLowerCase();
