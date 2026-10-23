@@ -23,5 +23,6 @@ Needs Google Chrome installed (`channel: "chrome"`); GitHub's ubuntu runners hav
 | `customer-import.cjs` | Customer CSV import: column matching, merge into an existing customer, imports stay customers (not leads) by default |
 | `bulk-delete.cjs` | Deleting 1,000+ customers goes out in batches and nothing comes back after a reload |
 | `owner-screens.cjs` | Desktop + phone: Jobs day clock bar / tap card to open / work details only on the owner's own job; Inbox customer-file pop-up + Edit; vehicle fields + problem log; Accountability (no meditation); Lead Intake select all → Move to Customers |
+| `voice-note.cjs` | Alfred chat voice note with Chrome's fake mic, desktop + phone: records, Stop works, audio reaches /api/alfred-transcribe, transcript shows, Send puts it in the chat |
 
 Pattern for a new check: copy the closest script. The mocked owner session is seeded into `localStorage` (`sb-boaqaihymgmrhnjtiqrs-auth-token`) or created through the login form; `ctx.route(/boaqaihymgmrhnjtiqrs\.supabase\.co/ …)` answers REST calls (return the owner `employees` row so `resolveUserRole` says owner).

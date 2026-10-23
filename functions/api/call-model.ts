@@ -34,7 +34,7 @@ const MODELS: Record<string, ModelDef> = {
   nvidia_kimi: { modelId: "deepseek-ai/deepseek-v4.1-flash", provider: "nvidia", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions" },
   nvidia_nemotron: { modelId: "nvidia/nemotron-3.5-lightning-30b-a3b", provider: "nvidia", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions" },
   nvidia_muse: { modelId: "meta/muse-glimmer-30b", provider: "nvidia", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions" },
-  nvidia_deepseek_r1: { modelId: "moonshotai/kimi-k3", provider: "nvidia", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions" },
+  nvidia_deepseek_r1: { modelId: "moonshotai/kimi-k2.6", provider: "nvidia", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions" },
   nvidia_qwen: { modelId: "nvidia/nemotron-3-super-120b-a12b", provider: "nvidia", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions" },
   openrouter: { modelId: "nvidia/nemotron-3-super-120b-a12b:free", provider: "openrouter", endpoint: "https://openrouter.ai/api/v1/chat/completions" },
   cerebras: { modelId: "gpt-oss-120b", provider: "cerebras", endpoint: "https://api.cerebras.ai/v1/chat/completions" },

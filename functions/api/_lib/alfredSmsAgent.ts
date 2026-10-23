@@ -36,6 +36,7 @@ import { stripMarkdownForSms } from "./textFormat";
 import { COCKPIT_TOOLS, cockpitPrompt, cockpitSender, cockpitSenderFor, runCockpitTool } from "./cockpitBridge";
 import { recGet, recList, recPut, OWNER_RECORDS_MISSING } from "./ownerRecords";
 import { runBulkSendBatch } from "./bulkTextSend";
+import { searchCustomers as auditSearch, findDuplicateCustomers, customersMissingInfo, filterCustomers } from "../../../src/lib/customerAudit";
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 
@@ -54,7 +55,7 @@ const SMS_MODELS: Record<string, { provider: string; modelId: string; endpoint: 
   // "Function ... not found for account"), same ids the in-app chat had.
   nvidia_kimi: { provider: "openai-compat", modelId: "deepseek-ai/deepseek-v4.1-flash", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", name: "DeepSeek V4.1 Flash", maxTokens: 4096, supportsTools: true },
   nvidia_nemotron: { provider: "openai-compat", modelId: "nvidia/nemotron-3.5-lightning-30b-a3b", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", name: "Nemotron 3.5 Lightning", maxTokens: 4096, supportsTools: true },
-  nvidia_deepseek_r1: { provider: "openai-compat", modelId: "moonshotai/kimi-k3", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", name: "Kimi K3", maxTokens: 4096, supportsTools: true },
+  nvidia_deepseek_r1: { provider: "openai-compat", modelId: "moonshotai/kimi-k2.6", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", name: "Kimi K2.6", maxTokens: 4096, supportsTools: true },
   nvidia_qwen: { provider: "openai-compat", modelId: "nvidia/nemotron-3-super-120b-a12b", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", name: "Nemotron 3 Super 120B", maxTokens: 4096, supportsTools: true },
   nvidia_muse: { provider: "openai-compat", modelId: "meta/muse-glimmer-30b", endpoint: "https://integrate.api.nvidia.com/v1/chat/completions", name: "Muse Glimmer 30B", maxTokens: 4096, supportsTools: true },
   // OpenRouter's free router (picks a free model that's up) and Cerebras's free tier.
@@ -829,12 +830,31 @@ const TOOLS = [
   },
   {
     name: "search_customers",
-    description: "Search customers by name, email, or address fragment — use this to find a customer (or confirm one exists) before referencing them, especially when the exact full name isn't known.",
+    description: "Search the WHOLE customer list for a person — partial/misspelled names, nicknames, sound-alikes, part of a phone number or email, street, city, company, tags, notes ('a Jon on Oak St', 'someone with a 0199 number'). Use to find a customer or answer 'do I have anyone like this'.",
     input_schema: {
       type: "object",
-      properties: { query: { type: "string", description: "Search text (name, email, or address fragment)" } },
+      properties: { query: { type: "string", description: "Anything known about them" } },
       required: ["query"],
     },
+  },
+  {
+    name: "find_duplicate_customers",
+    description: "Scan the ENTIRE customer list for duplicates — same phone, same email, same name, nicknames (Bill/William), similar spellings (Smith/Smyth, Katherine/Catherine), same address. No names needed. Use for 'check my client base for duplicates'.",
+    input_schema: { type: "object", properties: { includePossible: { type: "boolean", description: "Also list weaker matches (similar spelling / same address). Default true." } } }
+  },
+  {
+    name: "customers_missing_info",
+    description: "Scan the ENTIRE customer list for missing details — which customers have no phone, email, address, last name, birthday or lead source. Use for 'who am I missing info for'.",
+    input_schema: { type: "object", properties: { fields: { type: "array", items: { type: "string", enum: ["phone", "email", "address", "lastName", "birthday", "leadSource"] }, description: "Default phone, email, address" } } }
+  },
+  {
+    name: "filter_customers",
+    description: "Find every customer matching a description across the whole CRM — 'customers in Hanover', 'VIPs who spent over $1,000', 'people I haven't serviced in a year', 'leads from Facebook', 'birthdays this month', 'anyone with pool in their notes'. Returns the count and the list.",
+    input_schema: { type: "object", properties: {
+        city: { type: "string" }, tag: { type: "string" }, leadSource: { type: "string" }, minSpent: { type: "number" }, maxSpent: { type: "number" },
+        noServiceInDays: { type: "number" }, servicedWithinDays: { type: "number" }, hasJobs: { type: "boolean" }, isLead: { type: "boolean" },
+        createdAfter: { type: "string" }, createdBefore: { type: "string" }, textContains: { type: "string" }, hasBirthdayThisMonth: { type: "boolean" }, optedOutOfTexts: { type: "boolean" },
+      } }
   },
   {
     name: "get_customer_details",
@@ -2069,13 +2089,30 @@ const executeToolCore = async (ctx: Ctx, name: string, input: Record<string, any
         if (!res.ok) return { error: (await res.text().catch(() => "")).slice(0, 200) };
         return { success: true, jobId: job.id, priority: input.priority };
       }
+      // Whole-CRM search — see src/lib/customerAudit.ts.
       case "search_customers": {
-        const q = String(input.query || "").toLowerCase();
-        const rows = await sbGet(ctx, `customers?select=id,firstName,lastName,email,phone,address,totalSpent,notes${ownerScope(ctx)}&limit=1000`);
-        const results = rows.filter((c: any) => `${c.firstName} ${c.lastName} ${c.email || ""} ${c.address || ""}`.toLowerCase().includes(q)).slice(0, 10).map((c: any) => ({
-          id: c.id, name: `${c.firstName} ${c.lastName}`.trim(), email: c.email, phone: c.phone, address: c.address, totalSpent: c.totalSpent, notes: c.notes,
-        }));
-        return { success: true, count: results.length, customers: results };
+        const all = await sbGetAll(ctx, `customers?select=*${ownerScope(ctx)}`);
+        const r = auditSearch(all, String(input.query || ""), 15);
+        if (!r.total) return { success: true, count: 0, customersChecked: all.length, note: "No one matched." };
+        return { success: true, count: r.total, customersChecked: all.length, customers: r.results.map(x => ({ id: x.id, name: x.name, phone: x.phone, email: x.email, address: x.address, matchedOn: x.matched })) };
+      }
+      case "find_duplicate_customers": {
+        const all = await sbGetAll(ctx, `customers?select=*${ownerScope(ctx)}`);
+        const r = findDuplicateCustomers(all, { includePossible: input.includePossible !== false });
+        return { success: true, customersChecked: r.customersChecked, groupsFound: r.groups.length, groups: r.groups.slice(0, 30).map(g => ({ strength: g.strength, reason: g.reason, names: g.customers.map(c => c.name) })) };
+      }
+      case "customers_missing_info": {
+        const all = await sbGetAll(ctx, `customers?select=*${ownerScope(ctx)}`);
+        const r = customersMissingInfo(all, Array.isArray(input.fields) ? input.fields : undefined, 25);
+        return { success: true, ...r, customers: r.customers.map(c => `${c.name}: missing ${c.missing.join(", ")}`) };
+      }
+      case "filter_customers": {
+        const [all, jb] = await Promise.all([
+          sbGetAll(ctx, `customers?select=*${ownerScope(ctx)}`),
+          sbGetAll(ctx, `jobs?select=customerId,scheduledDate,completedAt,status${ownerScope(ctx)}`),
+        ]);
+        const r = filterCustomers(all, jb, input || {}, 30);
+        return { success: true, total: r.total, customersChecked: all.length, customers: r.customers.map(c => `${c.name}${c.phone ? " " + c.phone : ""}${c.lastService ? " · last service " + c.lastService : ""}${c.totalSpent ? " · $" + c.totalSpent : ""}`) };
       }
       case "get_customer_details": {
         const cust = await findCustomerByName(ctx, input.customerName);
@@ -2250,7 +2287,7 @@ const executeToolCore = async (ctx: Ctx, name: string, input: Record<string, any
       case "prepare_bulk_text": {
         if (!ctx.ownerId) return { error: "Can't tell which business this is." };
         if (!String(input.message || "").trim()) return { error: "message required — ask the owner what it should say." };
-        let rows = await sbGetAll(ctx, `customers?select=id,firstName,lastName,phone,tags,smsOptOut,isTestClient,birthday,email,address${ownerScope(ctx)}`);
+        let rows = await sbGetAll(ctx, `customers?select=*${ownerScope(ctx)}`);
         const total = rows.length;
         rows = rows.filter((c: any) => c.phone && !c.smsOptOut && !(ctx.testModeEnabled && c.isTestClient));
         if (input.audience === "tag") {
@@ -3429,6 +3466,8 @@ WATCHING FOR REPLIES: when a bulk text asks customers something (their birthday,
 MANY THINGS IN ONE MESSAGE: when the owner sends a long list (e.g. 50 customers, each with their own date/instructions), use the bulk tools — schedule_jobs_bulk (one entry per job, with each one's own date, time, crew, notes, checklist, tags, recurring), create_customers_bulk, update_customers_bulk — in as few calls as possible, carrying every detail they gave for each one. Don't drop or merge per-customer instructions, don't ask them to send it in pieces, and don't stop halfway: keep calling tools until every item is done, then report the totals plus any that failed by name.
 
 CAMPAIGNS AND GOALS: create_campaign puts a draft/scheduled campaign in the CRM's Campaigns page; create_goal puts a goal in the Goals page (business metrics like revenue/jobs/clients track themselves). Never say you created one unless the tool returned success — if it says the records table isn't set up, tell the owner exactly that.
+
+WHOLE-CRM QUESTIONS: you can scan every customer at once — never say you can only check names the owner gives you. Duplicates → find_duplicate_customers. "Do I have anyone like…" → search_customers. "Who's missing info" → customers_missing_info. "Customers who / in / with …" → filter_customers. Text the count first, then the names (keep it short; offer to text the full list).
 
 PERSONAL VS. BUSINESS: while the owner is working through business (jobs, customers, quotes, scheduling), stay on it — don't drift into sleep, workouts, mood or personal reminders. get_accountability_summary is for check-ins, the morning briefing, reflections, or when they ask. Personal reminders ("remind me to call Mom Sunday at 6") use set_reminder like any reminder.
 

@@ -10,7 +10,8 @@
 #   3. Claude Code      — new cards, free-text replies, and anything handed
 #                         over (.claude/commands/cockpit.md)
 #   4. finish.mjs       — always runs: no card is left spinning; failed runs
-#                         say so and leftovers get one automatic re-run
+#                         say so (a Claude usage limit is named as such, with
+#                         its reset time) and leftovers get one automatic re-run
 #
 # Claude runs on a Claude Pro/Max subscription via CLAUDE_CODE_OAUTH_TOKEN
 # (created once with `claude setup-token`) — no API credits.
@@ -72,6 +73,7 @@ jobs:
         run: node scripts/cockpit/fast-actions.mjs
 
       - name: Work the queue with Claude
+        id: claude
         if: steps.queue.outputs.claude != '0' || steps.fast.outputs.handoffs > 0
         uses: anthropics/claude-code-action@v1
         env:
@@ -79,6 +81,10 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          # The leftover re-run (finish.mjs) and the CRM's wake-up are started
+          # by GitHub's own bot; without this the Claude step refuses them
+          # ("Workflow initiated by non-human actor").
+          allowed_bots: "github-actions"
           prompt: |
             Follow .claude/commands/cockpit.md exactly to work the Alfred Cockpit queue.
             You are running unattended in GitHub Actions; git is configured and can push branches and master.
@@ -94,4 +100,7 @@ jobs:
           JOB_STATUS: ${{ job.status }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUN_ATTEMPT_CHAIN: ${{ inputs.chained == '1' && 'stop' || '' }}
+          # Claude's run log — finish.mjs reads it to tell the owner when the
+          # Claude subscription's usage limit (not a bug) stopped the run.
+          CLAUDE_EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
         run: node scripts/cockpit/finish.mjs
