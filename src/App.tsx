@@ -2542,7 +2542,10 @@ export function App() {
     if ((settings as any).alfredPersonality !== personality) {
       setSettings((s: any) => ({ ...s, alfredPersonality: personality }));
     }
-  }, [personality]); // eslint-disable-line react-hooks/exhaustive-deps
+    // Also re-run when the synced value changes: the 10s settings poll can
+    // bring back an older server copy right after the owner switches style,
+    // which left text-Alfred stuck on the old personality.
+  }, [personality, (settings as any).alfredPersonality]); // eslint-disable-line react-hooks/exhaustive-deps
   const [modelStatus, setModelStatus]                 = usePersistent<ModelStatus>("smocks.modelStatus", {});
   const [googleData, setGoogleData]                   = usePersistent("smocks.googleData", {});
 
