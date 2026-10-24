@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, describeRecurringSchedule, isEmployeeUnavailable, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, getEffectiveRate, totalJobPhotoCount, stripLegacyJobFields, insertClientIdRowWithRetry, insertJobRequestSafely, buildJobCalendarDescription } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, describeRecurringSchedule, isEmployeeUnavailable, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, getEffectiveRate, totalJobPhotoCount, stripLegacyJobFields, insertClientIdRowWithRetry, insertJobRequestSafely, buildJobCalendarDescription } from "../../lib/utils";
 const weatherRisk = (_dateStr: string): {icon: string; level: string; reason: string} | null => null;
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, emailShell, emailButton, getFreshOwnerGoogleToken, logOutboundSmsToInbox } from "../../lib/messaging";
@@ -274,7 +274,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
     return route;
   };
 
-  const todayScheduled = jobs.filter(j => j.scheduledDate === today() && j.status === "scheduled");
+  const todayScheduled = jobs.filter(j => j.scheduledDate === localDateStr() && j.status === "scheduled");
   const optimizedRoute = optimizeRoute(todayScheduled);
 
   // BUG FIX — the owner asked for an "Unscheduled" section like the
@@ -555,7 +555,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
   const isOwnerWorkingOn = (j: any) => {
     if (!ownerEmp || !crewIncludesEmployee(j.crew, ownerEmp.id, ownerEmp.user_id)) return false;
     if (j.status === "completed" || j.status === "cancelled") return false;
-    return j.status === "in_progress" || !!j.arrivedAt || !!j.clockInAt || (j.scheduledDate === today() && ownerOnClock);
+    return j.status === "in_progress" || !!j.arrivedAt || !!j.clockInAt || (j.scheduledDate === localDateStr() && ownerOnClock);
   };
   const clockOut = j => {
     if (!j.clockInAt) return;
@@ -1673,11 +1673,11 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
 
               <div className="flex gap-2 pt-2 border-t border-red-900/30 flex-wrap">
                 {/* On My Way — only when the owner is the one heading there. */}
-                {(tab === "scheduled" || tab === "in_progress") && (working || (onCrew && j.scheduledDate === today())) && (() => {
+                {(tab === "scheduled" || tab === "in_progress") && (working || (onCrew && j.scheduledDate === localDateStr())) && (() => {
                   const c = customers.find(x => x.id === j.customerId);
                   if (!c?.phone && !c?.email) return null;
                   return <button onClick={() => {
-                    if (j.scheduledDate && j.scheduledDate !== today()) {
+                    if (j.scheduledDate && j.scheduledDate !== localDateStr()) {
                       const ok = window.confirm(`This job is scheduled for ${j.scheduledDate}, not today. Send the "on my way" message anyway?`);
                       if (!ok) return;
                     }

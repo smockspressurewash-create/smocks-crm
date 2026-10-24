@@ -1784,7 +1784,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
         </Glass>
       )}
       {(w.weather ?? true) && settings.owmKey && wCurrent && (() => {
-        const todayJobs_ = jobs.filter(j => j.scheduledDate === today() && j.status === "scheduled");
+        const todayJobs_ = jobs.filter(j => j.scheduledDate === localDateStr() && j.status === "scheduled");
         const rainRisk = wCurrent.rainChance > 50;
         const freezeRisk = wCurrent.temp < 35;
         const windRisk = wCurrent.wind > 20;

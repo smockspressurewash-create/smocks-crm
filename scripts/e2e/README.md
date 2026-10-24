@@ -25,5 +25,6 @@ Needs Google Chrome installed (`channel: "chrome"`); GitHub's ubuntu runners hav
 | `owner-screens.cjs` | Desktop + phone: Jobs day clock bar / tap card to open / work details only on the owner's own job; Inbox customer-file pop-up + Edit; vehicle fields + problem log; Accountability (no meditation); Lead Intake select all → Move to Customers |
 | `voice-note.cjs` | Alfred chat voice note with Chrome's fake mic, desktop + phone: records, Stop works, audio reaches /api/alfred-transcribe, transcript shows, Send puts it in the chat |
 | `client-portal.cjs` | Customer portal, desktop + phone: invite link pre-fills sign-up and opens the account, Coupons tab shows the unused coupon and its expiry, past jobs, business search ranks the right business first and Connect opens it |
+| `estimate-builder.cjs` | Quotes → New with 1,500 customers, desktop + phone: search-and-pick a customer, add a line, two background syncs (fake clock) — customer and line stay, Save explains what's missing and saves for the right customer |
 
 Pattern for a new check: copy the closest script. The mocked owner session is seeded into `localStorage` (`sb-boaqaihymgmrhnjtiqrs-auth-token`) or created through the login form; `ctx.route(/boaqaihymgmrhnjtiqrs\.supabase\.co/ …)` answers REST calls (return the owner `employees` row so `resolveUserRole` says owner).
