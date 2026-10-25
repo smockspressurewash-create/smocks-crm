@@ -9,7 +9,7 @@ import React, { useState } from "react";
 import { Sparkles, Trash2, Loader2, UserPlus, Check } from "lucide-react";
 import { uid, today, pickLeastLoadedEmployee } from "../../lib/utils";
 import { MODELS } from "../../lib/api";
-import { readAsTable, recordsFromTable, extractRecordsWithAI, parseFrequency, parseWeekday, matchEmployee } from "../../lib/bulkImport";
+import { readAsTable, recordsFromTable, extractRecordsWithAI, parseFrequency, parseWeekday, matchEmployee, insertJobsTolerant } from "../../lib/bulkImport";
 import { parseDateLoose } from "../../lib/customerImport";
 import { supabase } from "../../lib/supabase";
 import { Modal } from "./Modal";
@@ -166,9 +166,9 @@ export function BulkJobImportModal({
           checklist: [], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
           loggedHours: 0, createdAt: today(), notes: row.notes || "", owner_id: ownerId,
         };
-        const { data: jobData, error: jobErr } = await (supabase as any).from("jobs").insert(jobRecord).select().single();
-        if (jobErr || !jobData) throw new Error(jobErr?.message || "Job save failed");
-        newJobs.push(jobData);
+        const saved = await insertJobsTolerant([jobRecord]);
+        if (!saved.saved) throw new Error(saved.errors[0] || "Job save failed");
+        newJobs.push(jobRecord);
         createdJobs++;
       } catch (e: any) {
         failed++;

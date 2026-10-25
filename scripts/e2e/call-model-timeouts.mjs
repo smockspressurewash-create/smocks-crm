@@ -27,6 +27,7 @@ globalThis.fetch = async (url, init = {}) => {
   const j = (b, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { "Content-Type": "application/json" } });
   if (u.pathname === "/auth/v1/user") return j({ id: "own1" });
   if (u.pathname.endsWith("/employees")) return j([]);
+  if (u.pathname.endsWith("/rpc/current_member")) return j({ active: true, owner_id: "own1", role: "owner", office: true }); // cleaning CRM's caller lookup
   if (u.pathname.endsWith("/owner_secrets")) return j([{ model_keys: { nvidia_deepseek_r1: "nvapi-test" } }]);
   if (u.hostname === "integrate.api.nvidia.com") {
     const model = JSON.parse(init.body).model; nvCalls.push(model);

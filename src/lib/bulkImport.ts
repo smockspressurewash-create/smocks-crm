@@ -282,7 +282,7 @@ export function buildImportPlan(records: ImportRecord[], ctx: { customers: any[]
     const job: any = {
       id: uid(), customerId: target.id, address: target.address || cust.address || "", amount,
       status: "scheduled", scheduledDate: date, scheduledTime: parseTime(rec.scheduledTime), priority: "normal",
-      serviceCategory, crew: emp ? [emp.id] : [], ...(emp ? { crewAssignedAt: { [emp.id]: Date.now() } } : {}),
+      ...(serviceCategory !== "general" ? { serviceCategory } : {}), crew: emp ? [emp.id] : [], ...(emp ? { crewAssignedAt: { [emp.id]: Date.now() } } : {}),
       checklist: [], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
       loggedHours: 0, createdAt: today(), notes: [rec.service ? `Service: ${rec.service}` : "", rec.notes || ""].filter(Boolean).join("\n"),
       ...(serviceCategory === "trash_can" ? { cansCount: Math.max(1, cans || 1) } : {}),
@@ -321,6 +321,37 @@ export const planSummary = (p: ImportPlan) => ({
 
 // ── Saving ───────────────────────────────────────────────────────────────
 
+// Inserts jobs 100 at a time. A column this database doesn't have (e.g.
+// serviceCategory / cansCount outside CrewBoss) is dropped and the batch
+// retried, like saveCustomersTolerant; any other failure retries that batch
+// one job at a time so one bad row doesn't sink the other 99.
+export async function insertJobsTolerant(rows: any[], onProgress?: (done: number, total: number) => void): Promise<{ saved: number; failed: number; errors: string[]; droppedColumns: string[] }> {
+  const dropped = new Set<string>();
+  const errors: string[] = [];
+  let saved = 0, failed = 0;
+  const strip = (r: any) => { const x = { ...r }; dropped.forEach(d => delete x[d]); return x; };
+  const missingColumn = (msg: string) => (msg.match(/Could not find the '([^']+)' column/) || msg.match(/column "?([A-Za-z_]+)"? of relation "jobs" does not exist/) || [])[1];
+  for (let i = 0; i < rows.length; i += 100) {
+    let chunk = rows.slice(i, i + 100);
+    let done = false;
+    for (let attempt = 0; attempt < 12 && !done; attempt++) {
+      chunk = chunk.map(strip);
+      const { data, error } = await (supabase as any).from("jobs").insert(chunk).select("id");
+      if (!error) { saved += data?.length || 0; done = true; break; }
+      const col = missingColumn(String(error.message || ""));
+      if (col && !dropped.has(col)) { dropped.add(col); continue; }
+      for (const one of chunk) {
+        const r = await (supabase as any).from("jobs").insert(strip(one)).select("id");
+        if (r.error || !r.data?.length) { failed++; if (errors.length < 5) errors.push("Job: " + (r.error?.message || "not saved")); }
+        else saved++;
+      }
+      done = true;
+    }
+    onProgress?.(Math.min(i + 100, rows.length), rows.length);
+  }
+  return { saved, failed, errors, droppedColumns: Array.from(dropped) };
+}
+
 export async function runImportPlan(p: ImportPlan, opts: { ownerId: string; onProgress?: (label: string, done: number, total: number) => void }): Promise<{ customersSaved: number; customersFailed: number; jobsSaved: number; jobsFailed: number; errors: string[] }> {
   const errors: string[] = [];
   const toSave = [...p.customers.added, ...p.customers.updated];
@@ -332,18 +363,7 @@ export async function runImportPlan(p: ImportPlan, opts: { ownerId: string; onPr
   const newIds = new Set(p.customers.added.map((x: any) => x.id));
   const jobs = c.failed === 0 ? p.jobs : p.jobs.filter(j => !newIds.has(j.customerId));
   if (jobs.length < p.jobs.length) errors.push(`${p.jobs.length - jobs.length} job(s) not created because their new customer didn't save — run the import again after fixing the error above (existing customers aren't duplicated).`);
-  for (let i = 0; i < jobs.length; i += 100) {
-    const chunk = jobs.slice(i, i + 100).map(j => ({ ...j, owner_id: opts.ownerId }));
-    const { data, error } = await (supabase as any).from("jobs").insert(chunk).select("id");
-    if (error) {
-      // One bad row fails the whole batch — retry this batch one at a time.
-      for (const one of chunk) {
-        const r = await (supabase as any).from("jobs").insert(one).select("id");
-        if (r.error || !r.data?.length) { jobsFailed++; if (errors.length < 5) errors.push("Job: " + (r.error?.message || "not saved")); }
-        else jobsSaved++;
-      }
-    } else jobsSaved += data?.length || 0;
-    opts.onProgress?.("jobs", Math.min(i + 100, jobs.length), jobs.length);
-  }
+  const j = await insertJobsTolerant(jobs.map(x => ({ ...x, owner_id: opts.ownerId })), (d, t) => opts.onProgress?.("jobs", d, t));
+  jobsSaved = j.saved; jobsFailed = j.failed; errors.push(...j.errors);
   return { customersSaved: c.saved, customersFailed: c.failed, jobsSaved, jobsFailed, errors };
 }

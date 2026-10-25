@@ -30,6 +30,7 @@ globalThis.__supabase = {
       upsert(rows) { inserts.customers += rows.length; return Promise.resolve({ error: null }); },
       insert(rows) {
         const arr = Array.isArray(rows) ? rows : [rows];
+        if (table === "jobs" && globalThis.__noCansColumn && arr.some(x => "cansCount" in x)) return { select: () => Promise.resolve({ data: null, error: { message: "Could not find the 'cansCount' column of 'jobs' in the schema cache" } }) };
         inserts[table] += arr.length; if (table === "jobs") inserts.jobBatches++;
         return { select: () => Promise.resolve({ data: arr.map(r => ({ id: r.id })), error: null }) };
       },
@@ -66,6 +67,16 @@ r.notesKept = plan.customers.added.filter(c => /Gate code/.test(c.notes || "")).
 r.existingJobOnExisting = plan.jobs.some(j => j.customerId === "x1");
 const saved = await mod.runImportPlan(plan, { ownerId: "own1" });
 r.savedInBatches = saved.customersSaved === 2000 && saved.jobsSaved === 2000 && inserts.jobBatches === 20;
+
+// 1b. A database without the cansCount column (template / cleaning CRM):
+// the column is dropped and the jobs still save, in batches.
+globalThis.__noCansColumn = true; inserts.jobs = 0; inserts.jobBatches = 0;
+const plan1b = mod.buildImportPlan(recs.slice(0, 250), { customers: [], employees, serviceCategory: "trash_can" });
+const saved1b = await mod.runImportPlan(plan1b, { ownerId: "own1" });
+r.missingColumnDropped = saved1b.jobsSaved === 250 && saved1b.jobsFailed === 0 && inserts.jobs === 250;
+globalThis.__noCansColumn = false;
+const generalPlan = mod.buildImportPlan(recs.slice(0, 3), { customers: [], employees });
+r.generalJobsHaveNoCategory = generalPlan.jobs.every(j => !("serviceCategory" in j));
 
 // 2. Free text, 300 clients → pieces; one answer cut off; first model down.
 const free = Array.from({ length: 300 }, (_, i) => `${i % 2 ? "Mrs." : ""} Person${i} Example lives at ${i} Pine Rd, York PA. ${days[i % 5]}s, ${1 + (i % 2)} cans, $${20 + i % 4}/mo. ${i % 3 ? "" : "Dog in yard."} Done by ${i % 2 ? "Mike" : "Unknown Guy"}.`).join("\n");
