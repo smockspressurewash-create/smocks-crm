@@ -70,6 +70,22 @@ const TARGET = customers[1234];
     await page.clock.fastForward("02:10"); await page.waitForTimeout(2500); // and another
     r.syncedWhileOpen = customerFetches > fetchesBefore;
     r.customerStillPicked = (await page.locator('[data-customer-picker]').innerText().catch(() => "")).includes("Zelda Quinterro");
+    // Switch to a different customer: click the picked customer, search, pick.
+    await page.locator('[data-customer-picker] button').first().click().catch(e => errs.push(label + " change: " + e.message.slice(0, 80)));
+    await page.waitForTimeout(400);
+    await page.locator('[data-customer-picker] input').fill("cust 77").catch(e => errs.push(label + " change fill: " + e.message.slice(0, 80)));
+    await page.waitForTimeout(400);
+    await page.locator('[data-customer-picker] [data-option]').first().click().catch(e => errs.push(label + " change pick: " + e.message.slice(0, 80)));
+    await page.waitForTimeout(400);
+    r.switchedCustomer = /Cust 77\b/.test(await page.locator('[data-customer-picker]').innerText().catch(() => ""));
+    // and back
+    await page.locator('[data-customer-picker] button').first().click().catch(() => {});
+    await page.waitForTimeout(300);
+    await page.locator('[data-customer-picker] input').fill("zelda").catch(() => {});
+    await page.waitForTimeout(300);
+    await page.locator('[data-customer-picker] [data-option]').first().click().catch(() => {});
+    await page.waitForTimeout(300);
+    r.switchedBack = (await page.locator('[data-customer-picker]').innerText().catch(() => "")).includes("Zelda Quinterro");
     r.lineItemKept = (await desc.inputValue().catch(() => "")) === "House wash + gutters";
     await page.screenshot({ path: `${OUT}/estimate-builder-${label}.png` });
     await page.locator('[data-builder-save]').click(); await page.waitForTimeout(2500);

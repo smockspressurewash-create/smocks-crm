@@ -29,6 +29,8 @@ import { seedWeather } from "../../lib/weather";
 import { sendPushNotification } from "../../lib/push";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES, automationFromTemplate } from "../../lib/seed";
 import { callModel, MODELS, parseRateLimitError } from "../../lib/api";
+import { readImportFile } from "../../lib/spreadsheetFile";
+import { readAsTable, recordsFromTable, describeColumns, extractRecordsWithAI, buildImportPlan, planSummary, runImportPlan, type ImportPlan } from "../../lib/bulkImport";
 import { supabase, getStoredGoogleConnection } from "../../lib/supabase";
 import { runAlfredHealthCheck } from "../ui/AlfredHealthPanel";
 import { searchCustomers as auditSearch, findDuplicateCustomers, customersMissingInfo, filterCustomers } from "../../lib/customerAudit";
@@ -492,7 +494,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       const rr = new FileReader();
       rr.onload = ev => {
         const dataUrl = ev.target!.result as string;
-        resolve({ id: uid(), file, dataUrl, base64: dataUrl.split(",")[1], mediaType: file.type || "image/jpeg", isPdf: file.type === "application/pdf" });
+        resolve({ id: uid(), file, dataUrl, base64: dataUrl.split(",")[1], mediaType: file.type || (/\.(csv|tsv|txt|xlsx|xlsm|vcf|vcard|json)$/i.test(file.name) ? "application/octet-stream" : "image/jpeg"), isPdf: file.type === "application/pdf" });
       };
       rr.onerror = reject;
       rr.readAsDataURL(file);
@@ -2164,6 +2166,10 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // handled, so a draft made during it can't be sent until they reply.
   const bulkDraftsRef = useRef<Map<string, { id: string; message: string; recipients: any[]; createdAt: number; watchReplies?: any; campaignName?: string }>>(new Map());
   const turnStartRef = useRef(0);
+  // Big lists for import (attached spreadsheets, long pastes) are kept here
+  // instead of being sent to the model whole — see prepare_import below.
+  const importBatchesRef = useRef<Map<string, { id: string; kind: "table" | "text"; name: string; headers?: string[]; data?: string[][]; text?: string; createdAt: number }>>(new Map());
+  const importPlansRef = useRef<Map<string, ImportPlan>>(new Map());
   const directSendsRef = useRef(0);
   const executeTool = async (name, inputs) => {
     const __t0 = Date.now();
@@ -4277,6 +4283,72 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         // FEATURE — "have it check with me which customers to send to … it
         // should only send after I give the okay." Drafts the list; nothing
         // is sent until send_bulk_text in a later message.
+        case "prepare_import": {
+          const batch = inputs.batchId ? importBatchesRef.current.get(String(inputs.batchId)) : null;
+          if (inputs.batchId && !batch) return { error: "That import batch isn't here anymore (they last until the page is reloaded) — ask the owner to attach or paste the list again." };
+          const text = batch?.kind === "text" ? batch.text || "" : String(inputs.text || "");
+          if (!batch && !text.trim()) return { error: "Give a batchId or the text to import." };
+          const category = inputs.serviceCategory === "trash_can" ? "trash_can" : "general";
+          let records: any[] = [];
+          let how = "";
+          let columns: Record<string, string> | undefined;
+          let failedPieces = 0;
+          const table = batch?.kind === "table" ? { headers: batch.headers || [], data: batch.data || [] } : readAsTable(text);
+          if (table) {
+            records = recordsFromTable(table.headers, table.data, inputs.columnOverrides || {});
+            how = `read as a table (${table.data.length} rows) without AI`;
+            columns = describeColumns(table.headers, inputs.columnOverrides || {});
+          } else {
+            const priority: string[] = (settings as any).modelPriority || Object.keys(MODELS);
+            const all = Array.from(new Set([...priority, ...Object.keys(MODELS)]));
+            const chain = all.filter(mid => { const m: any = (MODELS as any)[mid]; if (!m) return false; if (m.needsKey && !(settings.modelKeys || {})[mid]) return false; const st: any = (modelStatus as any)[mid]; return !(st?.lockedUntil > Date.now()); });
+            toast(`Reading the list in pieces…`);
+            const out = await extractRecordsWithAI(text, chain, { onProgress: (d, t) => { if (t > 1) toast(`Reading the list: ${d}/${t} pieces`); } });
+            records = out.records; failedPieces = out.failedPieces;
+            how = `read with AI in ${out.pieces} piece(s)` + (failedPieces ? ` — ${failedPieces} piece(s) couldn't be read` : "");
+          }
+          if (!records.length) return { error: "Couldn't find any customers in that list.", how };
+          const plan = buildImportPlan(records, { customers, employees, serviceCategory: category, createJobs: inputs.createJobs !== false, costPerCan: Number((settings as any)?.trashCanCostPerCan) || 5 });
+          importPlansRef.current.set(plan.id, plan);
+          return {
+            success: true, ...planSummary(plan), how, columns,
+            ...(failedPieces ? { warningPieces: `${failedPieces} piece(s) of the text couldn't be read — those customers are missing; tell the owner.` } : {}),
+            next: "NOTHING is saved yet. Show the owner these numbers, the warnings and the sample, and ask them to confirm. Call run_import with this planId only after they say yes.",
+          };
+        }
+        case "run_import": {
+          // Earlier tool results aren't in the chat history the model sees on
+          // the next message, so it often doesn't have the planId when the
+          // owner says "yes" — then the latest prepared plan is the one.
+          const plans = Array.from(importPlansRef.current.values()).sort((a, b) => b.createdAt - a.createdAt);
+          const plan = importPlansRef.current.get(String(inputs.planId || "")) || plans[0];
+          if (!plan) return { error: "There's no prepared import (plans last until the page is reloaded) — run prepare_import again." };
+          if (plan.createdAt >= turnStartRef.current) return { error: "Refused: the owner hasn't seen this summary yet. Show it and wait for their yes." };
+          if (!ownerId) return { error: "Not signed in as the owner." };
+          importPlansRef.current.delete(plan.id);
+          const r = await runImportPlan(plan, { ownerId, onProgress: (label, d, t) => { if (t > 100) toast(`Saving ${label}: ${d}/${t}`); } });
+          const savedCustomers = [...plan.customers.added, ...plan.customers.updated];
+          if (r.customersSaved) setCustomers?.((prev: any[]) => {
+            const byId = new Map(savedCustomers.map((c: any) => [c.id, c]));
+            const kept = prev.map((c: any) => byId.get(c.id) || c);
+            const have = new Set(prev.map((c: any) => c.id));
+            return [...kept, ...plan.customers.added.filter((c: any) => !have.has(c.id))];
+          });
+          if (r.jobsSaved) {
+            const newJobIds = new Set(plan.jobs.map(j => j.id));
+            setJobs?.((prev: any[]) => [...prev.filter((j: any) => !newJobIds.has(j.id)), ...plan.jobs.map(j => ({ ...j, owner_id: ownerId }))]);
+          }
+          toast(`Imported ${r.customersSaved} customer${r.customersSaved !== 1 ? "s" : ""} and ${r.jobsSaved} job${r.jobsSaved !== 1 ? "s" : ""}` + (r.customersFailed || r.jobsFailed ? ` (${r.customersFailed + r.jobsFailed} failed)` : ""), r.customersFailed || r.jobsFailed ? "yellow" : "green");
+          return { success: r.customersFailed === 0 && r.jobsFailed === 0, ...r };
+        }
+        case "read_pasted_text": {
+          const batch = importBatchesRef.current.get(String(inputs.batchId || ""));
+          if (!batch) return { error: "That paste isn't here anymore — ask the owner to paste it again." };
+          const full = batch.kind === "text" ? batch.text || "" : [batch.headers || [], ...(batch.data || [])].map(r => r.join("\t")).join("\n");
+          const pages = Math.max(1, Math.ceil(full.length / 8000));
+          const page = Math.min(pages, Math.max(1, Number(inputs.page) || 1));
+          return { page, pages, text: full.slice((page - 1) * 8000, page * 8000) };
+        }
         case "notify_all_customers": {
           if (!inputs.message?.trim()) return { error: "message required" };
           let eligible = customers.filter((c: any) => c.phone && !c.smsOptOut && !((settings as any)?.testModeEnabled && c.isTestClient));
@@ -4972,6 +5044,27 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       input_schema: { type: "object", properties: { phone: { type: "string", description: "The recipient's phone number, any format" }, message: { type: "string", description: "The exact SMS text to send" }, label: { type: "string", description: "Optional — a name/label for this contact, for the Inbox log" }, customerId: { type: "string", description: "Pass this whenever the recipient is a known/just-created CRM customer, so the Inbox thread links to their profile instead of being orphaned" } }, required: ["phone", "message"] }
     },
     {
+      name: "prepare_import",
+      description: "Read a big list of customers (and their jobs/schedules) for import — an attached spreadsheet/CSV or a long pasted list (both arrive as an import batch id), or text you pass directly. Handles hundreds or thousands of rows: tables are read column by column, free text is read in pieces. Matches existing customers (no duplicates) and workers to employees, works out each job's date, time, price, repeat schedule and number of cans. Saves NOTHING — returns a summary to show the owner. Use this instead of create_customer/schedule_job for more than a few records.",
+      input_schema: { type: "object", properties: {
+        batchId: { type: "string", description: "The import batch id from the attachment/paste note" },
+        text: { type: "string", description: "Only when there's no batch id: the list itself" },
+        serviceCategory: { type: "string", enum: ["trash_can", "general"], description: "trash_can for trash-can cleaning clients (jobs go on the Trash Cans page/route), otherwise general" },
+        createJobs: { type: "boolean", description: "Create jobs from the schedule/price info (default true). false = customers only" },
+        columnOverrides: { type: "object", description: "Only for tables, only if the summary shows a column read wrong: { \"Column header\": \"field\" } — fields: fullName firstName lastName phone email address city state zip notes gateCode company amount frequency weekday scheduledDate scheduledTime cans worker service __skip__" },
+      } }
+    },
+    {
+      name: "run_import",
+      description: "Save an import prepared with prepare_import — only after the owner has seen that summary and said yes in a later message. Creates/updates the customers and creates their jobs in batches.",
+      input_schema: { type: "object", properties: { planId: { type: "string", description: "From prepare_import; leave out to use the latest prepared import" } } }
+    },
+    {
+      name: "read_pasted_text",
+      description: "Read a long pasted message in full, a page at a time (for a paste that ISN'T an import, e.g. an email to summarize).",
+      input_schema: { type: "object", properties: { batchId: { type: "string" }, page: { type: "number", description: "1-based, 8,000 characters per page" } }, required: ["batchId"] }
+    },
+    {
       name: "notify_all_customers",
       description: "Step 1 of texting more than 2 customers (an announcement, a promo, a question to your list): DRAFTS it and returns the numbered recipient list — nothing is sent. Show the owner the list and ask which to send to, then wait for their reply and call send_bulk_text. Skips opted-out customers. Supports {{first_name}}. If the text asks customers something (birthday, email, address), pass watchReplies so their answers are saved to their files as they come in.",
       input_schema: { type: "object", properties: {
@@ -5505,15 +5598,24 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
             // Wrapping it in withTimeout means a hung provider now correctly
             // fails over to the next model within 25s, same as every other
             // async action in this app already does per CLAUDE.md.
+            // Same budget as functions/api/call-model.ts: 45s for a normal
+            // message, more for a big one (a pasted client list), plus time
+            // for its NVIDIA/OpenRouter fallbacks — a flat 60s here cut off
+            // big imports the server was still waiting on.
+            const reqSystem = toolsForModel ? systemPrompt : noToolsPrompt;
+            const reqSize = reqSystem.length + JSON.stringify(localConv).length + JSON.stringify(toolsForModel || []).length;
+            const serverFirstMs = Math.min(110000, 45000 + Math.floor(reqSize / 1000) * 1000);
+            const provider = MODELS_MAP[mid]?.provider;
+            const clientTimeoutMs = serverFirstMs + (provider === "nvidia" ? 90000 : provider === "openrouter" ? 60000 : 15000);
             const result: any = await withTimeout<any>((callModel as any)({
               modelId: mid,
               apiKey: (settings.modelKeys || {})[mid],
-              systemPrompt: toolsForModel ? systemPrompt : noToolsPrompt,
+              systemPrompt: reqSystem,
               messages: localConv,
               tools: toolsForModel,
               maxTokens: Math.min(8192, MODELS_MAP[mid]?.maxTokens || 4096),
               signal: abortController.signal,
-            }), 60000, MODELS_MAP[mid]?.name || mid);
+            }), clientTimeoutMs, MODELS_MAP[mid]?.name || mid);
             console.log("[AlfredModel] round", rounds, "model:", mid, "stopReason:", result.stopReason, "toolUses:", (result.toolUses || []).map((tu: any) => tu.name), "textPreview:", (result.text || "").slice(0, 120));
             // BUG FIX — a non-tool-capable model (e.g. OpenRouter's free
             // tier) has no `tools` param sent, but the system prompt still
@@ -5964,16 +6066,51 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
   // Composer's real entry point — routes to the attachment pipeline above
   // when something's staged, otherwise the plain text send(). Used by the
   // Send button, Enter key, suggested-prompt chips, and voice auto-send.
+  // BUG FIX (user report — a huge trash-can client list "Alfred couldn't
+  // handle"). Spreadsheets/CSVs and long pasted lists are kept in
+  // importBatchesRef and the model gets a short note with a preview and the
+  // batch id, instead of the whole list (which timed out the model and was
+  // too long for it to copy back out). prepare_import reads the full batch.
+  const LONG_PASTE_CHARS = 4000;
+  const stashLongPaste = (text: string): string => {
+    const lines = text.split(/\r?\n/).filter(l => l.trim()).length;
+    if (text.length < LONG_PASTE_CHARS || lines < 10) return text;
+    const id = "B-" + uid().slice(0, 8);
+    importBatchesRef.current.set(id, { id, kind: "text", name: "pasted text", text, createdAt: Date.now() });
+    return `${text.slice(0, 1500)}\n…\n\n[Pasted text: ${lines} lines, ${text.length.toLocaleString()} characters — only the start is shown above. Saved as import batch ${id}. If it's customers/jobs to import, call prepare_import with batchId "${id}". To read all of it for anything else, call read_pasted_text.]`;
+  };
+  const isTableFile = (f: File) => /\.(csv|tsv|txt|xlsx|xlsm|vcf|vcard|json)$/i.test(f.name) || /csv|spreadsheet|excel|vcard|json|text\/plain/i.test(f.type);
+  const stashTableFiles = async (files: File[]): Promise<string[]> => {
+    const notes: string[] = [];
+    for (const f of files) {
+      try {
+        const rows = await readImportFile(f);
+        const head = rows[0] || [];
+        const id = "B-" + uid().slice(0, 8);
+        importBatchesRef.current.set(id, { id, kind: "table", name: f.name, headers: head.map((h, i) => h || `Column ${i + 1}`), data: rows.slice(1), createdAt: Date.now() });
+        notes.push(`[Attached file "${f.name}": ${Math.max(0, rows.length - 1)} rows. Columns: ${head.join(" | ")}. First rows: ${rows.slice(1, 3).map(r => r.join(" | ")).join(" // ")}. Saved as import batch ${id} — call prepare_import with batchId "${id}" to import it.]`);
+      } catch (e: any) {
+        notes.push(`[Attached file "${f.name}" couldn't be read: ${e?.message || "unknown error"}]`);
+      }
+    }
+    return notes;
+  };
   const sendMessage = async (overrideText?: string) => {
+    const raw = (overrideText ?? input);
     if (pendingAttachments.length > 0) {
       const attachments = pendingAttachments;
-      const caption = (overrideText ?? input).trim();
+      const tables = attachments.filter(a => isTableFile(a.file));
+      const media = attachments.filter(a => !isTableFile(a.file));
       setPendingAttachments([]);
       setInput("");
       setShowSlash(false);
-      await sendWithAttachments(caption, attachments);
+      const notes = tables.length ? await stashTableFiles(tables.map(a => a.file)) : [];
+      const caption = [stashLongPaste(raw.trim()), ...notes].filter(Boolean).join("\n\n");
+      if (media.length) await sendWithAttachments(caption, media);
+      else await send(caption || "Import this list.");
     } else {
-      await send(overrideText);
+      const text = stashLongPaste(raw);
+      await send(text === raw ? overrideText : text);
     }
   };
   useEffect(() => { sendMessageRef.current = sendMessage; }); // no deps — always the latest, see sendMessageRef's comment
@@ -6766,7 +6903,7 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
               <div className="flex flex-wrap gap-2 mb-2 px-0.5">
                 {pendingAttachments.map(a => (
                   <div key={a.id} className="relative flex-shrink-0">
-                    {a.isPdf ? (
+                    {a.isPdf || !a.mediaType.startsWith("image/") ? (
                       <div className="w-14 h-14 rounded-lg border border-red-900/40 bg-black/60 flex flex-col items-center justify-center gap-0.5 px-1 overflow-hidden">
                         <FileText size={16} className="text-red-400 flex-shrink-0" />
                         <span className="text-[8px] text-white/50 truncate w-full text-center">{a.file.name}</span>
@@ -6842,6 +6979,22 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
                           }}
                         />
                       </label>
+                      <label className="w-full flex items-center gap-2.5 px-3 py-2.5 text-xs text-white/80 hover:bg-red-950/40 cursor-pointer border-b border-red-900/20">
+                        <FileText size={14} className="text-red-400" />
+                        Spreadsheet or list (import)
+                        <input
+                          type="file"
+                          accept=".csv,.tsv,.txt,.xlsx,.xlsm,.vcf,.json,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                          multiple
+                          className="hidden"
+                          onChange={async e => {
+                            setAttachMenuOpen(false);
+                            const files = Array.from(e.target.files || []);
+                            e.target.value = "";
+                            await stageFiles(files);
+                          }}
+                        />
+                      </label>
                       <label className="w-full flex items-center gap-2.5 px-3 py-2.5 text-xs text-white/80 hover:bg-red-950/40 cursor-pointer">
                         <FileText size={14} className="text-red-400" />
                         Document (PDF)
@@ -6866,7 +7019,7 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
                     </div>
                   </>
                 )}
-                <input ref={mainAttachInputRef} type="file" accept="image/*,application/pdf" multiple className="hidden" onChange={async e => {
+                <input ref={mainAttachInputRef} type="file" accept="image/*,application/pdf,.csv,.tsv,.txt,.xlsx,.xlsm,.vcf,.json" multiple className="hidden" onChange={async e => {
                   const filesList = Array.from(e.target.files || []);
                   e.target.value = "";
                   // BUG FIX (user report) — "it still sends the file...
