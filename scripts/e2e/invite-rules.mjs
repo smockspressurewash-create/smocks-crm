@@ -8,7 +8,10 @@ import os from "node:os";
 
 const repo = process.argv[2];
 const out = path.join(os.tmpdir(), "invite-test-" + Date.now() + ".mjs");
-await build({ entryPoints: [path.join(repo, "functions/api/public-data.ts")], bundle: true, format: "esm", platform: "neutral", outfile: out, logLevel: "error" });
+// Also exposes _lib/env's setEnv (the template sets env per request in _middleware.ts).
+const api = path.resolve(repo, "functions/api").split(path.sep).join("/");
+const envExport = fs.existsSync(`${api}/_lib/env.ts`) ? ` export * as envMod from "${api}/_lib/env.ts";` : "";
+await build({ stdin: { contents: `export * from "${api}/public-data.ts";${envExport}`, resolveDir: repo, loader: "ts" }, bundle: true, format: "esm", platform: "neutral", outfile: out, logLevel: "error" });
 
 const TOKEN = "AbCdEfGhIjKlMnOpQrSt";
 let customer, calls, user;
@@ -25,6 +28,7 @@ globalThis.fetch = async (url, init = {}) => {
 };
 const mod = await import(pathToFileURL(out).href);
 const env = { SUPABASE_SERVICE_ROLE_KEY: "svc", SUPABASE_ANON_KEY: "anon", SUPABASE_URL: "https://x.supabase.co" };
+mod.envMod?.setEnv?.(env);
 const call = async (body, auth) => {
   const req = new Request("https://app.test/api/public-data", { method: "POST", headers: { "Content-Type": "application/json", ...(auth ? { Authorization: "Bearer " + auth } : {}) }, body: JSON.stringify(body) });
   const res = await mod.onRequestPost({ request: req, env, waitUntil() {} });
