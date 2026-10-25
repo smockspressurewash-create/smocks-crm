@@ -54,7 +54,10 @@ const resolveCallerEmail = async (accessToken: string, anonKey: string): Promise
   const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, { headers: { apikey: anonKey, Authorization: `Bearer ${accessToken}` } });
   if (!res.ok) return null;
   const user = await res.json().catch(() => null) as any;
-  return user?.email || null;
+  // Only a confirmed e-mail identifies a customer — an unconfirmed sign-up
+  // must not see the records of whoever owns that address.
+  if (!user?.email || !user?.email_confirmed_at) return null;
+  return user.email;
 };
 
 export const onRequestPost = async (context: { request: Request; env: Record<string, string> }) => {
@@ -905,10 +908,15 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // send them a link that already has their information, so all they do
     // is pick a password." An invite is an owner_records row (kind
     // "portal_invite", id = the random token in the link, migration 0103).
-    // Opening #/client?invite=TOKEN pre-fills their name/email/phone; signing
-    // up through it creates an already-confirmed login (no "confirm your
-    // email" step that left people unable to sign in) and ties it to that
-    // customer record.
+    // Opening #/client?invite=TOKEN pre-fills their name/email/phone.
+    // SECURITY — the portal finds a customer's records by their confirmed
+    // e-mail, at every business that has that address. So the invite may skip
+    // the "confirm your email" step only for the address the business already
+    // has on file for that customer (the link went to that customer). Any
+    // other address is refused, and a customer with no e-mail on file signs up
+    // the normal way and confirms it. Before this, an invite could hand out a
+    // confirmed login for someone else's address — and with it their records
+    // at other businesses — and could overwrite the e-mail on file.
     const findInvite = async (token: string) => {
       if (!/^[A-Za-z0-9_-]{16,64}$/.test(token)) return null;
       const r = await sb(serviceRoleKey, `owner_records?kind=eq.portal_invite&id=eq.${encodeURIComponent(token)}&deleted_at=is.null&select=owner_id,id,data`);
@@ -919,8 +927,10 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       const r = await sb(serviceRoleKey, `customers?id=eq.${encodeURIComponent(inv.customerId)}&owner_id=eq.${encodeURIComponent(inv.ownerId)}&select=*`);
       return Array.isArray(r.data) ? r.data[0] : null;
     };
+    const maskEmail = (e: string) => e.replace(/^(.)[^@]*(@.*)$/, "$1***$2");
     const linkCustomerToEmail = async (inv: any, cust: any, email: string, extra: Record<string, string> = {}) => {
-      const patch: Record<string, unknown> = { email };
+      // Never replaces an address the business already has on file.
+      const patch: Record<string, unknown> = String(cust.email || "").trim() ? {} : { email };
       for (const [k, v] of Object.entries(extra)) if (v && !String(cust[k] || "").trim()) patch[k] = String(v).slice(0, 80);
       if (cust.pipelineStage === "lead") patch.pipelineStage = null;
       await sb(serviceRoleKey, `customers?id=eq.${encodeURIComponent(cust.id)}`, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify(patch) });
@@ -998,7 +1008,15 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       const password = String(body.password || "");
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json({ error: "Enter a valid email address" }, 400);
       if (password.length < 6) return json({ error: "Password must be at least 6 characters" }, 400);
-      if (inv.claimedAt && inv.claimedEmail && inv.claimedEmail !== email) return json({ error: `This invite was already used by ${inv.claimedEmail} — log in with that email.` }, 409);
+      if (inv.claimedAt && inv.claimedEmail && inv.claimedEmail !== email) return json({ error: `This invite was already used by ${maskEmail(inv.claimedEmail)} — log in with that email.` }, 409);
+      const onFile = String(cust.email || "").trim().toLowerCase();
+      if (onFile && onFile !== email) return json({ error: `This invite is for the e-mail ${maskEmail(onFile)} the business has on file. Use that address, or ask them to update it.` }, 409);
+      if (!onFile) {
+        // No address on file: save it on the customer, then the browser signs
+        // up normally and the customer confirms the address before seeing anything.
+        await linkCustomerToEmail(inv, cust, email, { firstName: body.firstName, lastName: body.lastName, phone: body.phone });
+        return json({ confirmEmail: true, email });
+      }
       const create = await fetch(`${SUPABASE_URL}/auth/v1/admin/users`, {
         method: "POST", headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({ email, password, email_confirm: true, user_metadata: { firstName: body.firstName || cust.firstName || "", lastName: body.lastName || cust.lastName || "", role: "customer" } }),
@@ -1026,9 +1044,10 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       if (!email) return json({ error: "Not signed in" }, 401);
       const inv = await findInvite(String(body.token || ""));
       if (!inv) return json({ error: "This invite link isn't valid anymore" }, 404);
-      if (inv.claimedAt && inv.claimedEmail && inv.claimedEmail !== email.toLowerCase()) return json({ error: `This invite was already used by ${inv.claimedEmail}` }, 409);
+      if (inv.claimedAt && inv.claimedEmail && inv.claimedEmail !== email.toLowerCase()) return json({ error: `This invite was already used by ${maskEmail(inv.claimedEmail)}` }, 409);
       const cust = await inviteCustomer(inv);
       if (!cust) return json({ error: "This invite link isn't valid anymore" }, 404);
+      if (String(cust.email || "").trim() && String(cust.email).trim().toLowerCase() !== email.toLowerCase()) return json({ error: `This invite is for ${maskEmail(String(cust.email).trim().toLowerCase())} — log in with that address.` }, 409);
       await linkCustomerToEmail(inv, cust, email.toLowerCase());
       return json({ success: true });
     }

@@ -398,12 +398,19 @@ export function ClientAuthPortal({
     setAuthBusy(true);
     try {
       if (mode === "signup" && inviteToken && invite && !invite.error) {
-        // Invite: the server creates an already-confirmed login tied to this
-        // customer record, then we sign straight in.
+        // Invite: for the e-mail the business has on file, the server creates an
+        // already-confirmed login tied to this customer record and we sign straight in.
         const res = await fetch("/api/public-data", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "portal_signup_with_invite", token: inviteToken, email: email.trim(), password, firstName, lastName, phone }) });
         const out = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(out?.error || "Couldn't create your login");
         if (out.existingAccount) { setMode("login"); setAuthInfo(out.message || "You already have a login — log in with your password."); return; }
+        if (out.confirmEmail) {
+          // No e-mail on file for this customer yet: normal sign-up, confirmed by e-mail.
+          const { error } = await supabase.auth.signUp({ email: email.trim(), password, options: { data: { firstName, lastName, phone, role: "customer" } } });
+          if (error) throw error;
+          setMode("login"); setAuthInfo("Almost done — open the confirmation e-mail we just sent, then log in here.");
+          return;
+        }
         const { data, error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
         if (error) throw error;
         setSession(data.session || null);
