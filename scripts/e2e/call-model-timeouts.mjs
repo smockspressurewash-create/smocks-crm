@@ -10,7 +10,10 @@ import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 
 const out = path.join(os.tmpdir(), "call-model-" + Date.now() + ".mjs");
-await build({ entryPoints: [path.resolve("functions/api/call-model.ts")], bundle: true, format: "esm", platform: "neutral", outfile: out, logLevel: "error" });
+// Also exposes _lib/env's setEnv when there is one (the template sets env per request in _middleware.ts).
+const api = path.resolve("functions/api").split(path.sep).join("/");
+const envExport = fs.existsSync(`${api}/_lib/env.ts`) ? ` export * as envMod from "${api}/_lib/env.ts";` : "";
+await build({ stdin: { contents: `export * from "${api}/call-model.ts";${envExport}`, resolveDir: path.resolve("."), loader: "ts" }, bundle: true, format: "esm", platform: "neutral", outfile: out, logLevel: "error" });
 
 // Fake clock: setTimeout(ms) fires after ms/1000 real ms, and we record ms.
 const timeouts = [];
@@ -35,6 +38,7 @@ globalThis.fetch = async (url, init = {}) => {
   return j({});
 };
 const mod = await import(pathToFileURL(out).href);
+mod.envMod?.setEnv?.({ SUPABASE_URL: "https://x.supabase.co", SUPABASE_ANON_KEY: "anon" });
 const call = async (content) => {
   const req = new Request("https://app.test/api/call-model", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer t" }, body: JSON.stringify({ modelId: "nvidia_deepseek_r1", messages: [{ role: "user", content }] }) });
   const res = await mod.onRequestPost({ request: req, env: { SUPABASE_SERVICE_ROLE_KEY: "svc", SUPABASE_URL: "https://x.supabase.co" } });
