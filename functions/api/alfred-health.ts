@@ -71,6 +71,14 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     checks.push({ area: "Google", name: "Google (Gmail / Calendar)", ok: g.ok, detail: g.ok ? `Connected${scopes ? " — " + ["gmail", "calendar", "drive"].filter(x => scopes.includes(x)).join(", ") : ""}` : `Google refused the saved sign-in (${g.body?.error || "error"})`, fix: g.ok ? undefined : g.body?.error === "invalid_grant" ? "Reconnect Google in Settings. If this keeps happening every week, publish the Google OAuth app (Testing apps expire sign-ins after 7 days)." : "Reconnect Google in Settings." });
   }
 
+  // ── Voice (voice notes, dictation, Voice Mode fallback) ──
+  {
+    const engines = [context.env.AI ? "Cloudflare Whisper (free)" : "", keys.openai ? "OpenAI" : "", keys.groq ? "Groq" : "", keys.gemini ? "Gemini" : ""].filter(Boolean);
+    checks.push({ area: "Voice", name: "Speech to text", ok: engines.length > 0,
+      detail: engines.length ? "Voice notes are turned into text by: " + engines.join(", ") : "Nothing is set up to turn voice notes into text.",
+      fix: engines.length ? undefined : "Free option: Cloudflare → Workers & Pages → this project → Settings → Bindings → Add → Workers AI, name it AI, then redeploy. Or add an OpenAI, Groq or Gemini key in Settings → AI Models." });
+  }
+
   // ── Database ──
   const probe = async (path: string) => { const r = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, { headers: h }).catch(() => null); return r ? { ok: r.ok, msg: r.ok ? "" : ((await r.json().catch(() => ({}))) as any)?.message || `HTTP ${r.status}` } : { ok: false, msg: "network" }; };
   const tables: [string, string, string][] = [

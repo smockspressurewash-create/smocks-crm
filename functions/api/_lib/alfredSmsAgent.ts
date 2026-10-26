@@ -31,6 +31,7 @@
 // convention this is NOT routable, purely a shared module for the actual
 // route files (twilio-sms-webhook.ts) to import from.
 
+import { prepareImportFromFile, runTextImport } from "./textImport";
 import { syncEmployeeJobToCalendar } from "./employeeCalendarSync";
 import { stripMarkdownForSms } from "./textFormat";
 import { COCKPIT_TOOLS, cockpitPrompt, cockpitSender, cockpitSenderFor, runCockpitTool } from "./cockpitBridge";
@@ -1105,6 +1106,27 @@ const TOOLS = [
       },
       required: ["updates"],
     },
+  },
+  // ─── Client / job list imports ─────────────────────────────────────────────
+  {
+    name: "prepare_import_from_file",
+    description: "Read a client list or job/route list the owner texted — a CSV, a photo or PDF of a list (its url is in the '[Attached file ready to save …]' line), a Google Sheets link, or a list typed in the text — and get it ready to import: every row, existing customers matched (no duplicates), workers matched to employees, dates/times/repeat schedules/prices worked out. Saves NOTHING; returns counts and a sample to text the owner. Use this whenever a file or message is a list of customers or jobs.",
+    input_schema: {
+      type: "object",
+      properties: {
+        fileUrl: { type: "string", description: "The url from the attached-file line" },
+        fileType: { type: "string", description: "The type from the attached-file line" },
+        sheetUrl: { type: "string", description: "A Google Sheets link from the text" },
+        text: { type: "string", description: "Only when the list was typed into the text itself" },
+        serviceCategory: { type: "string", enum: ["trash_can", "general"], description: "trash_can for trash-can cleaning clients, otherwise general" },
+        createJobs: { type: "boolean", description: "Create jobs from schedule/price info (default true)" },
+      },
+    },
+  },
+  {
+    name: "run_import",
+    description: "Save the import prepare_import_from_file got ready — only after the owner replied YES to that summary in a later text. Leave planId out to use the latest one.",
+    input_schema: { type: "object", properties: { planId: { type: "string" } } },
   },
   // ─── Money documents ──────────────────────────────────────────────────────
   {
@@ -2521,6 +2543,12 @@ const executeToolCore = async (ctx: Ctx, name: string, input: Record<string, any
         }
         if (!saved) return { error: OWNER_RECORDS_MISSING + " (" + errs[0] + ")" };
         return { success: true, saved, failed: list.length - saved, total: list.reduce((s, e) => s + Math.abs(Number(e.amount) || 0), 0) };
+      }
+      case "prepare_import_from_file": {
+        return await prepareImportFromFile(ctx, input || {});
+      }
+      case "run_import": {
+        return await runTextImport(ctx, input?.planId ? String(input.planId) : undefined);
       }
       case "import_financial_document": {
         if (!ctx.ownerId) return { error: "Can't tell which business this is." };

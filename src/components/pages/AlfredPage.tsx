@@ -30,6 +30,9 @@ import { sendPushNotification } from "../../lib/push";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES, automationFromTemplate } from "../../lib/seed";
 import { callModel, MODELS, parseRateLimitError } from "../../lib/api";
 import { readImportFile } from "../../lib/spreadsheetFile";
+import { readAttachmentFully, LIST_KINDS, KIND_LABEL } from "../../lib/attachmentReader";
+import { fetchGoogleSheetRows, GOOGLE_SHEET_URL } from "../../lib/googleSheet";
+import { browserRecognizerUsable, markBrowserRecognizerBroken, RECOGNIZER_FATAL, recordVoice, transcribeAudio, canRecordAudio } from "../../lib/voiceCapture";
 import { readAsTable, recordsFromTable, describeColumns, extractRecordsWithAI, buildImportPlan, planSummary, runImportPlan, type ImportPlan } from "../../lib/bulkImport";
 import { supabase, getStoredGoogleConnection } from "../../lib/supabase";
 import { runAlfredHealthCheck } from "../ui/AlfredHealthPanel";
@@ -4341,6 +4344,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           toast(`Imported ${r.customersSaved} customer${r.customersSaved !== 1 ? "s" : ""} and ${r.jobsSaved} job${r.jobsSaved !== 1 ? "s" : ""}` + (r.customersFailed || r.jobsFailed ? ` (${r.customersFailed + r.jobsFailed} failed)` : ""), r.customersFailed || r.jobsFailed ? "yellow" : "green");
           return { success: r.customersFailed === 0 && r.jobsFailed === 0, ...r };
         }
+        case "read_google_sheet": {
+          if (!GOOGLE_SHEET_URL.test(String(inputs.url || ""))) return { error: "That isn't a Google Sheets link." };
+          const note = await stashGoogleSheet(String(inputs.url));
+          return /couldn't be opened/.test(note) ? { error: note.replace(/^\[|\]$/g, "") } : { success: true, note };
+        }
         case "read_pasted_text": {
           const batch = importBatchesRef.current.get(String(inputs.batchId || ""));
           if (!batch) return { error: "That paste isn't here anymore — ask the owner to paste it again." };
@@ -5058,6 +5066,11 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       name: "run_import",
       description: "Save an import prepared with prepare_import — only after the owner has seen that summary and said yes in a later message. Creates/updates the customers and creates their jobs in batches.",
       input_schema: { type: "object", properties: { planId: { type: "string", description: "From prepare_import; leave out to use the latest prepared import" } } }
+    },
+    {
+      name: "read_google_sheet",
+      description: "Open a Google Sheets link and keep its rows as an import batch (then prepare_import imports it). Works for sheets shared by link and for private sheets of the connected Google account. A link in the owner's message is usually opened already — look for the [Google Sheet …] note first.",
+      input_schema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] }
     },
     {
       name: "read_pasted_text",
@@ -5899,112 +5912,11 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
       timestamp: Date.now(),
     } as any);
     setAttachAnalyzing(true);
-    // BUG FIX (user report) — "the stop button still does not work." The
-    // composer's Stop button only ever aborted currentAbortControllerRef,
-    // which was created inside send() — but screenshot/file analysis
-    // (this function) runs BEFORE send() and is the slowest, most likely
-    // part to get stuck. Claim the same shared ref here too, so Stop works
-    // during attachment analysis as well, not just the later tool-calling
-    // reply.
+    // The composer's Stop button aborts this too (it's the slowest part).
     const attachAbort = new AbortController();
     currentAbortControllerRef.current = attachAbort;
-    try {
-      if (attachments.length > 1) {
-        // FEATURE — "Alfred can receive screenshots... extract the
-        // information, assign employees, set the cost... ask clarifying
-        // questions." One vision call reads every screenshot and extracts
-        // a plain numbered list of every job it can find, handed to the
-        // NORMAL send()/tool-calling conversation as if the owner had
-        // typed it — see the BULK JOB IMPORT rules in the system prompt.
-        const imageFiles = attachments.filter(a => !a.isPdf);
-        const pdfFiles = attachments.filter(a => a.isPdf);
-        // BUG FIX (user report) — "attach photos, files, screenshots, etc.
-        // and write the message with them and send them all at once —
-        // that wasn't working." A multi-select mixing images with a PDF
-        // used to silently drop every PDF here (only imageFiles ever got
-        // analyzed) — the PDF just vanished with no analysis and no error.
-        // Each PDF now gets its own single-document read, merged with the
-        // screenshot findings into one combined message.
-        let combinedFindings = "";
-        // BUG FIX (user report) — "Screenshot analysis timed out" kept
-        // happening even after raising the timeout to 75s. Root cause was
-        // the request itself, not just the clock: ALL screenshots went into
-        // ONE call asking for an exhaustive multi-job extraction across
-        // every image at once — a genuinely large, slow request on a
-        // free/slower model, and any single stall failed the WHOLE batch.
-        // One call PER screenshot (same pattern the PDF loop below already
-        // uses) is far smaller and faster each time, so it's much less
-        // likely to hit any timeout, and one slow/failed screenshot no
-        // longer takes the others down with it. Cross-image duplicate/
-        // conflict checking still happens — the tool-calling model gets
-        // the full merged list below and the system prompt's BULK JOB
-        // IMPORT rules already require it to scan the WHOLE batch before
-        // creating anything.
-        let stoppedByUser = false;
-        for (let i = 0; i < imageFiles.length; i++) {
-          if (attachAbort.signal.aborted) { stoppedByUser = true; break; }
-          const a = imageFiles[i];
-          setAttachProgressLabel(imageFiles.length > 1 ? `Analyzing screenshot ${i + 1} of ${imageFiles.length}…` : "Analyzing screenshot…");
-          try {
-            const result: any = await callVisionModel({
-              messages: [{
-                role: "user",
-                content: [
-                  { type: "image", source: { type: "base64", media_type: a.mediaType, data: a.base64 } },
-                  { type: "text", text: `You are Alfred, business assistant for a pressure-washing/trash-can-cleaning company. This screenshot may contain one or more job/order records — a text, a spreadsheet row, a scheduling app entry, a handwritten note, anything. Extract EVERY separate job/order visible in THIS image. For each one list: customer full name, phone number, address, the service/order details, the date and time (resolve relative wording like "today"/"tomorrow" against ${today()}), which employee (if any) is named as assigned, and the dollar amount. If a field isn't visible, write "not given" rather than guessing. Number each job. Be thorough — do not skip any job visible in this image.` }
-                ]
-              }],
-              maxTokens: 1500,
-            }, 45000, `Screenshot ${i + 1} analysis`, { externalSignal: attachAbort.signal });
-            const extracted = (result.text || "").trim();
-            if (extracted) combinedFindings += `From screenshot ${i + 1} (${a.file.name}):\n${extracted}\n\n`;
-          } catch (e: any) {
-            if (attachAbort.signal.aborted) { stoppedByUser = true; break; }
-            combinedFindings += `Couldn't analyze screenshot ${i + 1} (${a.file.name}) — ${e?.message || "unknown error"}.\n\n`;
-          }
-        }
-        for (const pdf of pdfFiles) {
-          if (stoppedByUser || attachAbort.signal.aborted) { stoppedByUser = true; break; }
-          setAttachProgressLabel(`Reading ${pdf.file.name}…`);
-          try {
-            const result: any = await callVisionModel({
-              messages: [{
-                role: "user",
-                content: [
-                  { type: "document", source: { type: "base64", media_type: "application/pdf", data: pdf.base64 } },
-                  { type: "text", text: "You are Alfred, business assistant for a pressure-washing/trash-can-cleaning company. Transcribe the FULL relevant content of this document clearly and completely — customer/company name, address, phone/email if present, every service/scope item, dates, prices, and special instructions — so this can be scheduled or acted on without re-reading the file." }
-                ]
-              }],
-              maxTokens: 1500,
-            }, 45000, "File analysis", { pdf: true, externalSignal: attachAbort.signal });
-            const reply = (result.text || "").trim();
-            if (reply) combinedFindings += `From the attached PDF "${pdf.file.name}":\n${reply}\n\n`;
-          } catch (e: any) {
-            if (attachAbort.signal.aborted) { stoppedByUser = true; break; }
-            combinedFindings += `Couldn't analyze the attached PDF "${pdf.file.name}" — ${e?.message || "unknown error"}.\n\n`;
-          }
-        }
-        if (stoppedByUser) {
-          appendMessage({ id: uid(), role: "alfred", content: "Stopped.", timestamp: Date.now() });
-          return;
-        }
-        if (!combinedFindings.trim()) {
-          appendMessage({ id: uid(), role: "alfred", content: "Couldn't find any usable info in those attachments.", timestamp: Date.now() });
-          return;
-        }
-        setAttachProgressLabel("Figuring out what to do with it…");
-        await send(`Here's what I found in what I just attached:\n\n${combinedFindings.trim()}\n\nThese may be new jobs to add to the CRM.${caption ? ` I also said: "${caption}" — do that.` : ""} Check for any scheduling conflicts or unclear ordering and ask me before creating anything — otherwise go ahead: create the customers and jobs, assign the employees, and set the price for each.`, { skipVisibleMessage: true });
-        return;
-      }
-
-      const a = attachments[0];
-      const isPdf = a.isPdf;
-      setAttachProgressLabel(isPdf ? `Reading ${a.file.name}…` : "Analyzing " + a.file.name + "…");
-      // FEATURE — upload to the SAME public bucket customer documents
-      // already live in (DocumentVault.tsx), so a later "attach this to
-      // [client]" can actually save it — fire-and-forget alongside the
-      // vision analysis below; if it fails, attach_file_to_customer will
-      // just report no file is available rather than blocking the chat.
+    // Every file is also saved, so "attach this to <client>" can file it.
+    for (const a of attachments) {
       (async () => {
         try {
           const path = `_alfred-inbound/${ownerId}/${uid()}-${a.file.name}`;
@@ -6014,47 +5926,67 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
           if (pub?.publicUrl) lastAttachedFileRef.current = { url: pub.publicUrl, fileName: a.file.name };
         } catch (e: any) { console.warn("[Alfred] file upload threw:", e?.message); }
       })();
-      const result: any = await callVisionModel({
-        messages: [{
-          role: "user",
-          content: [
-            isPdf
-              ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: a.base64 } }
-              : { type: "image", source: { type: "base64", media_type: a.mediaType, data: a.base64 } },
-            { type: "text", text: "You are Alfred, business assistant for a pressure-washing/trash-can-cleaning company. Analyze this file. If it's a receipt or invoice: extract vendor name, date (YYYY-MM-DD), total amount, and category (fuel/supplies/equipment/food/other). Format as: RECEIPT: [vendor] | [date] | $[amount] | [category]. If it's a job photo: describe what you see and whether it's before/after. If it's a work order, job order, contract, or any other document with real content (a commercial customer's order, scope of work, instructions, etc.): transcribe the FULL relevant content clearly and completely — customer/company name, address, phone/email if present, every service/scope item, dates, prices, and special instructions — so this can be summarized or acted on later without re-reading the file. Do not just describe it briefly in this case; the owner may ask you to schedule or assign work from it." }
-          ]
-        }],
-        maxTokens: 1500,
-      }, 45000, "File analysis", { pdf: isPdf, externalSignal: attachAbort.signal });
-      const reply = result.text || "Could not analyze the file.";
-      const parts = reply.match(/RECEIPT: (.+?) \| (.+?) \| \$?([\d.,]+) \| (.+)/i);
-      if (parts) {
-        const [, vendor, date, amountStr, category] = parts;
-        const amount = Number(amountStr.replace(/,/g, ""));
-        appendMessage({
-          id: uid(), role: "alfred",
-          content: `📋 Receipt detected: ${vendor.trim()} · $${amount} · ${category.trim().toLowerCase()}${date.trim() ? " · " + date.trim() : ""}`,
-          timestamp: Date.now(),
-          pendingExpense: { vendor: vendor.trim(), date: date.trim(), amount, category: category.trim().toLowerCase(), receiptDataUrl: isPdf ? undefined : a.dataUrl },
-        } as any);
-      } else {
-        recentFileContextRef.current = { fileName: a.file.name, extractedText: reply, attachedAt: Date.now(), turnsUsed: 0 };
-        // BUG FIX — a typed caption alongside a single attachment never had
-        // anywhere to go before (the vision call fired before Send even
-        // existed as a concept) — thread it into the tool-calling
-        // conversation same as the bulk-import path already does, instead
-        // of silently dropping it.
-        if (caption) {
-          await send(`${reply}\n\n(The above is what I just found in the file I attached.) ${caption}`, { skipVisibleMessage: true });
-        } else {
-          appendMessage({ id: uid(), role: "alfred", content: reply, timestamp: Date.now() });
+    }
+    try {
+      // BUG FIX (user report — files and PDF sheets sent to Alfred should be
+      // recognized and acted on). Each file is read in full and classified
+      // (lib/attachmentReader.ts), then routed: lists go to the import
+      // tools, receipts become a ready-to-log expense, and everything else
+      // reaches Alfred with a plain instruction to act on it.
+      const notes: string[] = [];
+      const receipts: any[] = [];
+      let stopped = false;
+      for (let i = 0; i < attachments.length; i++) {
+        if (attachAbort.signal.aborted) { stopped = true; break; }
+        const a = attachments[i];
+        const label = attachments.length > 1 ? ` (${i + 1} of ${attachments.length})` : "";
+        setAttachProgressLabel(`Reading ${a.file.name}${label}…`);
+        const block = a.isPdf
+          ? { type: "document", source: { type: "base64", media_type: "application/pdf", data: a.base64 } }
+          : { type: "image", source: { type: "base64", media_type: a.mediaType, data: a.base64 } };
+        const ask = async (prompt: string) => {
+          const r: any = await callVisionModel({ messages: [{ role: "user", content: [block, { type: "text", text: prompt }] }], maxTokens: 8000 }, 120000, `Reading ${a.file.name}`, { pdf: a.isPdf, externalSignal: attachAbort.signal });
+          return String(r?.text || "");
+        };
+        try {
+          const read = await readAttachmentFully(ask, "pressure-washing and trash-can-cleaning", { onRound: n => setAttachProgressLabel(`Reading ${a.file.name}${label} — part ${n}…`) });
+          const { header, body } = read;
+          const r = header.receipt;
+          if (header.kind === "receipt" && r && Number(r.total)) {
+            receipts.push({ vendor: String(r.vendor || "").trim() || a.file.name, date: String(r.date || "").trim(), amount: Number(r.total), category: String(r.category || "other").toLowerCase(), receiptDataUrl: a.isPdf ? undefined : a.dataUrl });
+            notes.push(`"${a.file.name}" is a receipt: ${r.vendor || "?"}, $${r.total}, ${r.date || "no date"} — shown to the owner with a Log expense button.`);
+            continue;
+          }
+          if (LIST_KINDS.includes(header.kind) && body.trim()) {
+            const id = "B-" + uid().slice(0, 8);
+            importBatchesRef.current.set(id, { id, kind: "text", name: a.file.name, text: body, createdAt: Date.now() });
+            const rows = Math.max(0, body.split("\n").filter(l => l.trim()).length - 1);
+            notes.push(`"${a.file.name}" is ${KIND_LABEL[header.kind]}${header.title ? ` (${header.title})` : ""} — ${rows} rows read${read.complete ? "" : " (the file was very long; some rows at the end may be missing — say so)"}. Saved as import batch ${id}: call prepare_import with batchId "${id}"${header.kind === "client_list" ? "" : " (it has schedule/job info)"}.`);
+            continue;
+          }
+          recentFileContextRef.current = { fileName: a.file.name, extractedText: body, attachedAt: Date.now(), turnsUsed: 0 };
+          notes.push(`"${a.file.name}" is ${KIND_LABEL[header.kind] || "a document"}${header.title ? ` (${header.title})` : ""}. Its content:\n${body.length > 12000 ? body.slice(0, 12000) + "\n…(cut — ask the owner if you need the rest)" : body}`);
+        } catch (e: any) {
+          if (attachAbort.signal.aborted) { stopped = true; break; }
+          notes.push(`Couldn't read "${a.file.name}" — ${e?.message || "unknown error"}.`);
         }
       }
+      if (stopped) { appendMessage({ id: uid(), role: "alfred", content: "Stopped.", timestamp: Date.now() }); return; }
+      for (const pe of receipts) {
+        appendMessage({ id: uid(), role: "alfred", content: `📋 Receipt detected: ${pe.vendor} · $${pe.amount} · ${pe.category}${pe.date ? " · " + pe.date : ""}`, timestamp: Date.now(), pendingExpense: pe } as any);
+      }
+      // Only receipts and nothing asked: the Log expense card is the answer.
+      if (receipts.length === attachments.length && !caption) return;
+      setAttachProgressLabel("Working out what to do with it…");
+      const what = caption
+        ? `I also said: "${caption}" — do that.`
+        : "I didn't say what I want — work out the most likely thing and do it: a client or job list → prepare_import (then show me the summary); a bill or statement → log each expense; an invoice or quote → match it to the customer and record it; a photo of a property or job → say what you see and ask which customer/job it belongs to. Ask one short question only if it's genuinely unclear.";
+      await send(`I attached ${attachments.length === 1 ? "a file" : attachments.length + " files"}.\n\n${notes.join("\n\n")}\n\n${what}`, { skipVisibleMessage: true });
     } catch (err: any) {
       if (attachAbort.signal.aborted) {
         appendMessage({ id: uid(), role: "alfred", content: "Stopped.", timestamp: Date.now() });
       } else {
-        appendMessage({ id: uid(), role: "alfred", content: "Couldn't analyze " + (attachments.length > 1 ? "those screenshots" : "that file") + " — " + (err?.message || "unknown error") + ".", timestamp: Date.now() });
+        appendMessage({ id: uid(), role: "alfred", content: "Couldn't read " + (attachments.length > 1 ? "those files" : "that file") + " — " + (err?.message || "unknown error") + ".", timestamp: Date.now() });
       }
     } finally {
       if (currentAbortControllerRef.current === attachAbort) currentAbortControllerRef.current = null;
@@ -6095,6 +6027,23 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
     }
     return notes;
   };
+  const stashGoogleSheet = async (url: string): Promise<string> => {
+    try {
+      const rows = await fetchGoogleSheetRows(url);
+      const head = rows[0] || [];
+      const id = "B-" + uid().slice(0, 8);
+      importBatchesRef.current.set(id, { id, kind: "table", name: "Google Sheet", headers: head.map((h, i) => h || `Column ${i + 1}`), data: rows.slice(1), createdAt: Date.now() });
+      return `[Google Sheet ${url}: ${Math.max(0, rows.length - 1)} rows. Columns: ${head.join(" | ")}. First rows: ${rows.slice(1, 3).map(r => r.join(" | ")).join(" // ")}. Saved as import batch ${id} — call prepare_import with batchId "${id}" to import it, or read_pasted_text to read it.]`;
+    } catch (e: any) {
+      return `[Google Sheet ${url} couldn't be opened: ${e?.message || "unknown error"} — tell the owner exactly that.]`;
+    }
+  };
+  const withSheetNotes = async (text: string): Promise<string> => {
+    const urls = Array.from(new Set((text.match(new RegExp(GOOGLE_SHEET_URL.source, "gi")) || []))).slice(0, 3);
+    if (!urls.length) return text;
+    setAttachProgressLabel("Opening the Google Sheet…");
+    try { return [text, ...(await Promise.all(urls.map(stashGoogleSheet)))].join("\n\n"); } finally { setAttachProgressLabel(""); }
+  };
   const sendMessage = async (overrideText?: string) => {
     const raw = (overrideText ?? input);
     if (pendingAttachments.length > 0) {
@@ -6105,11 +6054,11 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
       setInput("");
       setShowSlash(false);
       const notes = tables.length ? await stashTableFiles(tables.map(a => a.file)) : [];
-      const caption = [stashLongPaste(raw.trim()), ...notes].filter(Boolean).join("\n\n");
+      const caption = [await withSheetNotes(stashLongPaste(raw.trim())), ...notes].filter(Boolean).join("\n\n");
       if (media.length) await sendWithAttachments(caption, media);
       else await send(caption || "Import this list.");
     } else {
-      const text = stashLongPaste(raw);
+      const text = await withSheetNotes(stashLongPaste(raw));
       await send(text === raw ? overrideText : text);
     }
   };
@@ -6162,8 +6111,40 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
     setVoiceManualText("");
     setVoiceTextOpen(false);
   };
+  // Voice Mode without the browser's recognizer (lib/voiceCapture.ts): the
+  // mic is recorded until the owner stops talking, the server turns it into
+  // text, and that's the turn. Same state machine as the recognizer path.
+  const serverVoiceFailsRef = useRef(0);
+  const startServerListeningTurn = () => {
+    setVoiceModeState("listening");
+    setVoiceModeTranscript("");
+    voiceModeTranscriptRef.current = "";
+    let dropped = false;
+    const h = recordVoice({ stopOnSilence: true, silenceMs: 1300, waitForSpeechMs: 20000, maxMs: 90000, onSpeechStart: () => setVoiceModeTranscript("…") });
+    voiceModeRecognitionRef.current = { stop: () => { dropped = true; h.cancel(); } };
+    h.result.then(async blob => {
+      if (dropped || !voiceModeKeepGoingRef.current || voiceMutedRef.current) return;
+      if (!blob) { startVoiceListeningTurn(); return; } // nobody spoke — keep listening
+      setVoiceModeTranscript("Turning that into text…");
+      try {
+        const text = await transcribeAudio(blob);
+        if (dropped || !voiceModeKeepGoingRef.current) return;
+        serverVoiceFailsRef.current = 0;
+        if (!text) { startVoiceListeningTurn(); return; }
+        voiceModeTranscriptRef.current = text;
+        setVoiceModeTranscript(text);
+        processVoiceTurn(text);
+      } catch (e: any) {
+        serverVoiceFailsRef.current++;
+        if (serverVoiceFailsRef.current >= 3) { toast("Voice isn't working: " + (e?.message || "transcription failed") + " — check Settings → AI Models → Check connections.", "red"); closeVoiceMode(); return; }
+        toast("Didn't catch that — " + (e?.message || "try again"), "yellow");
+        setTimeout(() => { if (voiceModeKeepGoingRef.current) startVoiceListeningTurn(); }, 1200);
+      }
+    }).catch((e: any) => { toast(e?.message || "Couldn't use the microphone", "red"); closeVoiceMode(); });
+  };
   const startVoiceListeningTurn = () => {
-    if (!voiceModeKeepGoingRef.current || !VoiceRecognitionCtor || voiceMutedRef.current) return;
+    if (!voiceModeKeepGoingRef.current || voiceMutedRef.current) return;
+    if (!browserRecognizerUsable()) { if (canRecordAudio()) startServerListeningTurn(); return; }
     setVoiceModeState("listening");
     setVoiceModeTranscript("");
     voiceModeTranscriptRef.current = "";
@@ -6180,10 +6161,15 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
     };
     rec.onerror = (e: any) => {
       if (e.error === "no-speech") return; // onend fires right after — handled there
-      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+      if (e.error === "not-allowed") {
         toast("Microphone access denied — Voice Mode needs it to listen.", "red");
         closeVoiceMode();
+        return;
       }
+      // The browser's recognizer can't work here — it used to restart forever
+      // hearing nothing. onend (right after this) restarts the turn, which now
+      // records and transcribes on the server instead.
+      if (RECOGNIZER_FATAL.has(e.error)) markBrowserRecognizerBroken(e.error);
       // Other transient errors (network/aborted): onend still fires below and restarts the turn.
     };
     rec.onend = () => {
@@ -6257,7 +6243,7 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
     }
   };
   const startInterruptListener = (speakingText: string) => {
-    if (!VoiceRecognitionCtor || voiceMutedRef.current) return;
+    if (!VoiceRecognitionCtor || !browserRecognizerUsable() || voiceMutedRef.current) return;
     const listenerTurnId = voiceTurnIdRef.current;
     const spokenWords = new Set(normalizeWords(speakingText));
     const looksLikeEcho = (said: string): boolean => {
@@ -6395,7 +6381,7 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
     onSpotlight?.(step);
   };
   const openVoiceMode = () => {
-    if (!VoiceRecognitionCtor) { toast("Voice input isn't supported in this browser — try Chrome or Edge.", "red"); return; }
+    if (!browserRecognizerUsable() && !canRecordAudio()) { toast("This browser can't use the microphone — update it, or try Chrome, Edge or Safari.", "red"); return; }
     // BUG FIX — "don't make it a new conversation each call. It should be
     // one sandbox conversation inside the call, so it slowly grows, learns,
     // and gets more memory." Every voice call now switches into the SAME

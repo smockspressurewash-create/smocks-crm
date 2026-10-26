@@ -14,6 +14,7 @@ import { Modal } from "./Modal";
 import { GBtn } from "./GBtn";
 import { GInput } from "./GInput";
 import { parseDelimited, splitHeader, autoMapColumns, applyMapping, sniffColumns, CUSTOM, SKIP, type ImportFieldMap, type ColumnTarget } from "../../lib/customerImport";
+import { fetchGoogleSheetCsv } from "../../lib/googleSheet";
 import { readImportFile, IMPORT_FILE_ACCEPT } from "../../lib/spreadsheetFile";
 
 export type { ImportFieldMap };
@@ -49,7 +50,7 @@ const smartParseFreeform = (text: string): { headers: string[]; data: string[][]
 };
 
 // Turns a normal Google Sheets share URL into its CSV export endpoint.
-// Requires the sheet be shared as "Anyone with the link can view".
+// Only used to check the link; /api/sheet-fetch does the fetching.
 const sheetsUrlToCsvExport = (url: string): string | null => {
   const m = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
   if (!m) return null;
@@ -133,13 +134,13 @@ export function ImportDataModal({ open, onClose, title = "Import Data", fieldMap
   };
 
   const handleSheetsImport = async () => {
-    const csvUrl = sheetsUrlToCsvExport(sheetsUrl.trim());
-    if (!csvUrl) { toast("That doesn't look like a Google Sheets link", "red"); return; }
+    if (!sheetsUrlToCsvExport(sheetsUrl.trim())) { toast("That doesn't look like a Google Sheets link", "red"); return; }
     setBusy(true);
     try {
-      const res = await fetch(csvUrl);
-      if (!res.ok) throw new Error("Sheet isn't shared publicly (\"Anyone with the link can view\") or the link is wrong");
-      startReview(await res.text());
+      // Fetched by the server (/api/sheet-fetch): works for private sheets
+      // through the connected Google account, and avoids the browser
+      // blocking Google's cross-site redirect.
+      startReview(await fetchGoogleSheetCsv(sheetsUrl.trim()));
     } catch (e: any) {
       toast(e?.message || "Failed to fetch that sheet", "red");
     } finally {
@@ -197,7 +198,7 @@ export function ImportDataModal({ open, onClose, title = "Import Data", fieldMap
 
           {tab === "sheets" && (
             <div className="space-y-2">
-              <div className="text-xs text-white/50">Paste a Google Sheets link. The sheet must be shared as "Anyone with the link can view" (Share → General access).</div>
+              <div className="text-xs text-white/50">Paste a Google Sheets link (copy it from the address bar; the tab you're on is the one imported). Works for sheets shared "Anyone with the link", and for private sheets owned by the Google account connected in Settings.</div>
               <GInput value={sheetsUrl} onChange={(e: any) => setSheetsUrl(e.target.value)} placeholder="https://docs.google.com/spreadsheets/d/..." />
               <GBtn onClick={handleSheetsImport} disabled={busy || !sheetsUrl.trim()} className="w-full">{busy ? "Reading…" : "Read Sheet"}</GBtn>
             </div>

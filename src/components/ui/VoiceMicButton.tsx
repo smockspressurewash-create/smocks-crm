@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Mic, Play, Pause, Send, Trash2, Square } from "lucide-react";
-import { supabase } from "../../lib/supabase";
-import { withTimeout } from "../../lib/utils";
+import { browserRecognizerUsable, markBrowserRecognizerBroken, RECOGNIZER_FATAL, recordVoice, transcribeAudio, canRecordAudio } from "../../lib/voiceCapture";
 
 // Records and transcribes voice input — Whisper API when an OpenAI key is
 // configured (more accurate, works on any browser), otherwise the browser's
@@ -100,8 +99,43 @@ export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate", holdToR
     setWaveLevels([4, 4, 4, 4, 4]);
   };
 
+  // Dictation without the browser's recognizer (see lib/voiceCapture.ts):
+  // record, and when the owner presses stop, the server turns it into text,
+  // which lands in the text box like normal dictation.
+  const serverDictRef = useRef<ReturnType<typeof recordVoice> | null>(null);
+  const dictPrefixRef = useRef("");
+  const startServerDictation = (keepText = "") => {
+    if (!canRecordAudio()) { alert("This browser can't use the microphone. Update it, or use your keyboard's mic button."); setRecording(false); onDone?.(); return; }
+    dictPrefixRef.current = keepText;
+    setLiveText(keepText ? keepText + " …" : "");
+    const h = recordVoice({ maxMs: 300000, onLevel: lv => setWaveLevels(Array.from({ length: 5 }, (_, i) => Math.max(4, Math.min(24, Math.round(lv * 24 * (0.6 + 0.4 * Math.abs(Math.sin(Date.now() / 120 + i)))))))) });
+    serverDictRef.current = h;
+    setRecording(true);
+    h.result.catch((e: any) => { serverDictRef.current = null; setRecording(false); alert(e?.message || "Couldn't use the microphone"); onDone?.(); });
+  };
+  const finishServerDictation = async () => {
+    const h = serverDictRef.current;
+    serverDictRef.current = null;
+    if (!h) return;
+    h.stop();
+    setRecording(false);
+    setProcessing(true);
+    try {
+      const blob = await h.result.catch(() => null);
+      const heard = blob ? await transcribeAudio(blob) : "";
+      const text = [dictPrefixRef.current, heard].filter(Boolean).join(" ").trim();
+      if (text) onTranscript?.(text, false);
+      else if (!dictPrefixRef.current) alert("Didn't catch anything — try again a little closer to the microphone.");
+    } catch (e: any) {
+      if (dictPrefixRef.current) onTranscript?.(dictPrefixRef.current, false);
+      alert(e?.message || "Couldn't turn that into text.");
+    } finally {
+      setProcessing(false); setLiveText(""); dictPrefixRef.current = ""; onDone?.();
+    }
+  };
+
   const startDictateRecognition = () => {
-    if (!SpeechRecognitionCtor) { alert("Typing by voice isn't supported in this browser — use Voice Note instead (works everywhere), or your keyboard's mic button."); onDone?.(); return; }
+    if (!browserRecognizerUsable()) { startServerDictation(); return; }
     finalTextRef.current = "";
     setLiveText("");
     keepListeningRef.current = true;
@@ -120,7 +154,19 @@ export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate", holdToR
         }
         setLiveText((finalTextRef.current + interim).trim());
       };
-      rec.onerror = (e: any) => { if (e.error === "not-allowed" || e.error === "service-not-allowed") { keepListeningRef.current = false; alert("Microphone access denied"); } };
+      rec.onerror = (e: any) => {
+        if (e.error === "not-allowed") { keepListeningRef.current = false; alert("Microphone access denied"); return; }
+        // The browser's recognizer can't work here (no connection to its
+        // speech service, etc.) — it used to restart forever and hear
+        // nothing. Keep what it already heard and record the rest instead.
+        if (RECOGNIZER_FATAL.has(e.error)) {
+          markBrowserRecognizerBroken(e.error);
+          keepListeningRef.current = false;
+          try { rec.abort(); } catch { /* stopped */ }
+          stopWaveVisualizer();
+          startServerDictation(finalTextRef.current.trim());
+        }
+      };
       // BLOCKER 6 (mobile round 9) — root cause of "dictation cuts off the
       // message": the browser recognizer times out after a few seconds of
       // silence even in continuous mode, and this restart-on-end WAS the
@@ -180,15 +226,9 @@ export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate", holdToR
   const blobRef = useRef<Blob | null>(null);
 
   const transcribeOnServer = async (blob: Blob): Promise<string> => {
-    const { data } = await (supabase as any).auth.getSession();
-    const token = data?.session?.access_token;
-    if (!token) throw new Error("Sign in again to send voice notes.");
-    const fd = new FormData();
-    fd.append("audio", blob, "voice." + ((blob.type.split("/")[1] || "webm").split(";")[0]));
-    const res = await withTimeout(fetch("/api/alfred-transcribe", { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: fd }), 60000, "Transcribing");
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok || !body?.text) throw new Error(body?.error || `Transcription failed (${res.status})`);
-    return String(body.text);
+    const text = await transcribeAudio(blob);
+    if (!text) throw new Error("Didn't catch any words in that — try again a little closer to the microphone.");
+    return text;
   };
   const transcribeNote = async (blob: Blob) => {
     setNoteStatus("transcribing"); setNoteError("");
@@ -247,6 +287,7 @@ export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate", holdToR
       try { if (mediaRef.current && mediaRef.current.state !== "inactive") mediaRef.current.stop(); } catch { /* already stopped */ }
       setRecording(false);
     } else {
+      if (serverDictRef.current) { finishServerDictation(); return; }
       keepListeningRef.current = false;
       recognitionRef.current?.stop();
       setRecording(false);
@@ -268,6 +309,10 @@ export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate", holdToR
   const autoStarted = useRef(false);
   useEffect(() => { if (autoStart && !autoStarted.current) { autoStarted.current = true; toggleRecording(); } }, [autoStart]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => { try { if (mediaRef.current?.state === "recording") mediaRef.current.stop(); } catch { } streamRef.current?.getTracks().forEach(t => t.stop()); stopTimer(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Stop a dictation recording only when this button really goes away — a
+  // quick remount (React dev mode, a parent re-render) must not end it.
+  const mountedRef = useRef(false);
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; setTimeout(() => { if (!mountedRef.current) serverDictRef.current?.cancel(); }, 0); }; }, []);
 
   // Press-and-hold (only where holdToRecord is set): press starts, release stops.
   const holdStartedRef = useRef(false);
@@ -354,7 +399,7 @@ export function VoiceMicButton({ onTranscript, apiKey, mode = "dictate", holdToR
             <div key={i} className="w-0.5 bg-red-400 rounded-full transition-[height] duration-75" style={{ height: h }} />
           ))}
         </div>
-        <span className="text-[11px] text-red-100/80 truncate flex-1">{liveText || "Listening…"}</span>
+        <span className="text-[11px] text-red-100/80 truncate flex-1">{liveText || (serverDictRef.current ? "Listening… (text appears when you stop)" : "Listening…")}</span>
         <button onClick={toggleRecording} title="Stop listening" className="p-1 rounded-lg text-red-300 hover:bg-red-900/40 flex-shrink-0"><Square size={12} /></button>
       </div>
     );

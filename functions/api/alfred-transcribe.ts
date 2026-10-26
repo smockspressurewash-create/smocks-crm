@@ -1,8 +1,8 @@
 // alfred-transcribe.ts — turns a voice note recorded in the Alfred chat into
-// text. Tries Cloudflare Workers AI Whisper first (free, the same "AI"
-// binding text-Alfred uses for voice memos), then the owner's own OpenAI or
-// Groq key from owner_secrets. Works for any recording format the browser
-// makes (webm on Chrome/Android, mp4/aac on iPhone).
+// text (also dictation and Voice Mode when the browser's own recognizer
+// can't be used — see src/lib/voiceCapture.ts). The engines are in
+// _lib/transcribe.ts. Works for any recording format the browser makes
+// (webm on Chrome/Android, mp4/aac on iPhone).
 //
 // BUG FIX — "I record, press stop, and it does nothing." The chat's voice
 // note relied on an OpenAI key typed into the browser or on the browser's
@@ -11,8 +11,15 @@
 // transcript to send.
 // POST multipart: audio=<file>; owner's Supabase access token as Bearer.
 import { getOwnerSecrets, resolveCallerOwnerId } from "./_lib/ownerSecrets";
+import { transcribeAudioBuffer, TRANSCRIBE_SETUP_HELP } from "./_lib/transcribe";
 
 const json = (b: any, status = 200) => new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } });
+
+// GET — is the free Cloudflare speech-to-text set up on this deployment?
+// No secrets, no owner data: just whether the "AI" binding exists, so the
+// health check (and support) can tell why voice isn't working.
+export const onRequestGet = async (context: { env: Record<string, any> }) => json({ cloudflareAI: !!context.env.AI });
+
 
 export const onRequestPost = async (context: { request: Request; env: Record<string, any> }) => {
   try {
@@ -25,36 +32,11 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     if (file.size < 800) return json({ error: "That recording was empty — check the microphone permission and try again." }, 400);
     if (file.size > 24 * 1024 * 1024) return json({ error: "That recording is too long — keep voice notes under about 10 minutes." }, 400);
     const buf = await file.arrayBuffer();
-    const errors: string[] = [];
-
-    const ai = context.env.AI;
-    if (ai) {
-      try {
-        const r: any = await ai.run("@cf/openai/whisper", { audio: Array.from(new Uint8Array(buf)) });
-        const text = String(r?.text || "").trim();
-        if (text) return json({ text, via: "Cloudflare Whisper" });
-        errors.push("Cloudflare Whisper heard nothing");
-      } catch (e: any) { errors.push("Cloudflare Whisper: " + (e?.message || "failed")); }
-    } else errors.push("Cloudflare AI binding not set up");
-
     const secrets = context.env.SUPABASE_SERVICE_ROLE_KEY ? await getOwnerSecrets(ownerId, context.env.SUPABASE_SERVICE_ROLE_KEY).catch(() => null) : null;
-    const keys = secrets?.modelKeys || {};
-    const ext = (file.type.split("/")[1] || "webm").split(";")[0].replace("x-m4a", "m4a").replace("mpeg", "mp3");
-    const tries: [string, string, string, string][] = [];
-    if (keys.openai) tries.push(["OpenAI Whisper", "https://api.openai.com/v1/audio/transcriptions", "whisper-1", keys.openai]);
-    if (keys.groq) tries.push(["Groq Whisper", "https://api.groq.com/openai/v1/audio/transcriptions", "whisper-large-v3-turbo", keys.groq]);
-    for (const [name, url, model, key] of tries) {
-      try {
-        const fd = new FormData();
-        fd.append("file", new Blob([buf], { type: file.type || "audio/webm" }), `voice.${ext}`);
-        fd.append("model", model);
-        const res = await fetch(url, { method: "POST", headers: { Authorization: `Bearer ${key}` }, body: fd });
-        const data: any = await res.json().catch(() => null);
-        if (res.ok && String(data?.text || "").trim()) return json({ text: String(data.text).trim(), via: name });
-        errors.push(`${name}: ${data?.error?.message || "HTTP " + res.status}`);
-      } catch (e: any) { errors.push(`${name}: ${e?.message || "failed"}`); }
-    }
-    return json({ error: "Couldn't turn that into text. " + (tries.length || ai ? errors.join("; ") : "Add the Cloudflare \"AI\" binding (free) or an OpenAI/Groq key in Settings → AI Models."), details: errors }, 502);
+    const r = await transcribeAudioBuffer(context.env.AI, secrets?.modelKeys || {}, buf, file.type || "audio/webm");
+    if (r.text) return json({ text: r.text, via: r.via });
+    if (r.heardNothing) return json({ text: "", via: "none", note: "No words heard" });
+    return json({ error: "Couldn't turn that into text. " + (r.configured ? r.errors.join("; ") : TRANSCRIBE_SETUP_HELP), details: r.errors }, 502);
   } catch (e: any) {
     return json({ error: e?.message || "Transcription failed" }, 500);
   }
