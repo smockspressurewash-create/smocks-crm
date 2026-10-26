@@ -36,7 +36,7 @@ import {
 // this string every time the sizzle-reel video files are replaced so the
 // query string forces a fresh fetch (see also public/_headers, which
 // caps how long any cache can go without revalidating going forward).
-const SIZZLE_REEL_VERSION = "9";
+const SIZZLE_REEL_VERSION = "10";
 
 // Minimal video player for the sizzle reel — play/pause only, no native
 // scrubber/duration/mute/skip chrome (those read as a media player, not
@@ -109,12 +109,15 @@ const FEATURE_GROUPS: Record<FeatureGroup, string> = {
   field: "Run the field",
   growth: "Grow the business",
 };
-const FEATURES: Array<{ icon: React.ElementType; title: string; desc: string; group: FeatureGroup }> = [
+// `shot` = a real app screenshot shown inside the card; those cards span two
+// columns on wide screens (13 cards + 2 extra columns = 5 full rows of 3).
+const FEATURES: Array<{ icon: React.ElementType; title: string; desc: string; group: FeatureGroup; shot?: string }> = [
   {
     icon: Calendar,
     title: "Scheduling & Crew Assignment",
     desc: "Drag jobs onto the calendar, assign crew members, and track every job from Unscheduled to Done — synced live to the field.",
     group: "office",
+    shot: "/media/feature-schedule.webp",
   },
   {
     icon: FileText,
@@ -143,8 +146,9 @@ const FEATURES: Array<{ icon: React.ElementType; title: string; desc: string; gr
   {
     icon: Bot,
     title: "Alfred, Your AI Assistant",
-    desc: "Alfred acts directly on your CRM — schedules jobs, sends estimates, checks stock, pulls your numbers — from inside the app or by texting it like an employee. Set vacation mode and it can run the front desk while you're out.",
+    desc: "Alfred acts directly on your CRM — schedules jobs, sends estimates, checks stock, pulls your numbers — from inside the app or by texting it like an employee. Set vacation mode and it can run the front desk while you're out. Hand it a spreadsheet and it imports the whole client list.",
     group: "office",
+    shot: "/media/feature-alfred.webp",
   },
   {
     icon: Smartphone,
@@ -305,8 +309,8 @@ export function LandingPage({
 
         <Reveal delay={160}>
           <p className="text-base md:text-xl text-white/60 max-w-2xl mx-auto mb-10 leading-relaxed">
-            Scheduling, estimates, invoicing, payments, crew tracking, and an AI assistant that texts your customers for you —
-            CrewBoss is the CRM built specifically for pressure-washing businesses, not adapted from something else.
+            Schedule jobs, send estimates, get paid, and see your crew live, with an AI assistant that texts customers for you.
+            Built for pressure washing, not adapted from something else.
           </p>
         </Reveal>
 
@@ -427,7 +431,7 @@ export function LandingPage({
             <h2 className="lp-text-hover text-2xl md:text-3xl font-extrabold tracking-tight mb-2">
               See it <span className="gradient-text">in motion.</span>
             </h2>
-            <p className="text-white/50 text-sm md:text-base">A 43-second look at scheduling, texting Alfred, getting paid, and the field portal.</p>
+            <p className="text-white/50 text-sm md:text-base">A 37-second look at scheduling, Alfred importing a client list, getting paid, and crew hours.</p>
           </div>
           <div className="rounded-2xl overflow-hidden border border-white/10 bg-black shadow-2xl shadow-red-950/40 max-w-sm sm:max-w-none mx-auto">
             <SizzleReelPlayer
@@ -463,20 +467,31 @@ export function LandingPage({
             orphan at most, at the very end of the whole list, not one per
             group) with a small uniform badge per card carrying the same
             group label instead of three separately-styled section headers. */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-5">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 lg:grid-flow-dense gap-4 md:gap-5">
           {FEATURES.map((f, i) => (
-            <Reveal key={f.title} variant={i % 3 === 0 ? "left" : i % 3 === 1 ? "scale" : "right"} delay={(i % 3) * 90}>
-              <div className="lp-card-hover glass p-5 md:p-6 h-full">
-                <div className="flex items-start justify-between gap-3 mb-4">
-                  <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-red-600/20 to-red-900/20 border border-red-700/30 flex items-center justify-center">
-                    <f.icon size={20} className="text-red-400" />
+            <Reveal key={f.title} className={f.shot ? "sm:col-span-2" : ""} variant={i % 3 === 0 ? "left" : i % 3 === 1 ? "scale" : "right"} delay={(i % 3) * 90}>
+              <div className={"lp-card-hover glass p-5 md:p-6 h-full" + (f.shot ? " flex flex-col" : "")}>
+                <div className="flex items-center gap-3 mb-3 md:mb-4">
+                  <div className="w-10 h-10 md:w-11 md:h-11 flex-shrink-0 rounded-xl bg-gradient-to-br from-red-600/20 to-red-900/20 border border-red-700/30 flex items-center justify-center">
+                    <f.icon size={20} className="text-red-400" aria-hidden="true" />
                   </div>
-                  <span className="text-[9px] font-bold uppercase tracking-widest text-red-400/80 mt-1.5">
-                    {FEATURE_GROUPS[f.group]}
-                  </span>
+                  <div className="min-w-0">
+                    <h3 className="font-bold text-white text-[15px] md:text-base leading-snug"><span className="lp-text-hover">{f.title}</span></h3>
+                    <span className="text-xs text-white/40">{FEATURE_GROUPS[f.group]}</span>
+                  </div>
                 </div>
-                <h3 className="font-bold text-white mb-1.5 text-sm md:text-base"><span className="lp-text-hover">{f.title}</span></h3>
-                <p className="text-white/50 text-xs md:text-sm leading-relaxed">{f.desc}</p>
+                <p className="text-white/55 text-sm leading-relaxed">{f.desc}</p>
+                {f.shot && (
+                  <div className="mt-auto pt-5">
+                    <img
+                      src={f.shot}
+                      alt={f.title + " in CrewBoss"}
+                      loading="lazy"
+                      decoding="async"
+                      className="w-full rounded-xl border border-white/10 shadow-xl shadow-red-950/30"
+                    />
+                  </div>
+                )}
               </div>
             </Reveal>
           ))}
@@ -671,7 +686,7 @@ export function LandingPage({
                       : "bg-white/5 hover:bg-white/10 border border-white/10")
                   }
                 >
-                  {choosingPlan ? "Redirecting to checkout…" : <>Get Started<ChevronRight size={15} /></>}
+                  {choosingPlan ? "Redirecting to checkout…" : <>Choose {plan.name}<ChevronRight size={15} /></>}
                 </button>
               </div>
             </Reveal>
