@@ -5,6 +5,7 @@ import { fmt, uid, today, mediaSrc, withTimeout } from "../../lib/utils";
 import type { Customer, Estimate, Job, AppSettings } from "../../types";
 import { Glass } from "../ui/Glass";
 import { CrewBossMark } from "../ui/CrewBossMark";
+import { AuthHeader, AuthRoleTabs } from "../ui/AuthRoleTabs";
 import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
 import { Badge } from "../ui/Badge";
@@ -503,18 +504,11 @@ export function ClientAuthPortal({
     return (
       <div className="min-h-screen bg-black flex items-center justify-center p-4">
         <div className="w-full max-w-sm space-y-5">
-          <div className="text-center space-y-2">
-            {/* BRANDING FIX — showed CrewBoss's own generic product mark
-                instead of the actual business's logo, even though the
-                business name right below it already used companyName. */}
-            {(settings as any)?.logoUrl ? (
-              <img src={(settings as any).logoUrl} alt={companyName} className="w-14 h-14 rounded-2xl object-contain mx-auto shadow-lg bg-white/5" />
-            ) : (
-              <CrewBossMark className="w-14 h-14 mx-auto shadow-lg" />
-            )}
-            <div className="text-lg font-bold text-white">{invite?.companyName || companyName} — Client Portal</div>
-            <div className="text-xs text-white/40">Pay invoices, track jobs, see your coupons and referral rewards</div>
-          </div>
+          {/* One portal for customers of every business (they pick or are
+              matched to theirs after signing in), so no business name here;
+              an invite link still names the business that sent it. */}
+          <AuthHeader subtitle="General Client Portal" />
+          {!invite && <AuthRoleTabs active="customer" />}
           {invite && !invite.error && !invite.claimed && (
             <Glass className="p-3 text-xs text-white/70 !border-green-700/40">
               <span className="font-semibold text-white">{invite.companyName || "Your service company"} set up your account{invite.firstName ? `, ${invite.firstName}` : ""}.</span> Your details are filled in — just choose a password.
@@ -559,7 +553,6 @@ export function ClientAuthPortal({
               )
             )}
           </Glass>
-          <button type="button" onClick={() => { window.location.hash = "/login"; }} className="mt-4 w-full text-center text-xs text-white/40 hover:text-white/70 transition">Business owner or crew member? Sign in here →</button>
         </div>
       </div>
     );
