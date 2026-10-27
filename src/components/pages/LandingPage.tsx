@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import {
   Calendar, Users2, FileText, CreditCard, MessageSquare,
   Bot, Smartphone, Trash2, Gift, Star, MapPin, Camera, CheckCircle,
-  ArrowRight, ChevronRight, Workflow, Play, Pause,
+  ArrowRight, ChevronRight, Workflow, Play, Pause, Volume2, VolumeX,
 } from "lucide-react";
 import {
   Reveal, MarketingStyles, BackgroundBlobs, MarketingNav, MarketingFooter,
@@ -36,16 +36,19 @@ import {
 // this string every time the sizzle-reel video files are replaced so the
 // query string forces a fresh fetch (see also public/_headers, which
 // caps how long any cache can go without revalidating going forward).
-const SIZZLE_REEL_VERSION = "10";
+const SIZZLE_REEL_VERSION = "11";
 
-// Minimal video player for the sizzle reel — play/pause only, no native
-// scrubber/duration/mute/skip chrome (those read as a media player, not
-// a promo clip). Tapping the video itself also toggles play/pause.
+// Minimal video player for the sizzle reel — play/pause plus a sound on/off
+// button, no native scrubber/duration/skip chrome (those read as a media
+// player, not a promo clip). Tapping the video itself toggles play/pause.
+// The reel has a soundtrack; it plays with sound because it only starts
+// on a tap.
 // Plays the vertical (9:16) cut on phones and the widescreen (16:9) cut
 // everywhere else.
 function SizzleReelPlayer({ src, srcVertical, poster, posterVertical }: { src: string; srcVertical?: string; poster?: string; posterVertical?: string }) {
   const videoRef = React.useRef<HTMLVideoElement>(null);
   const [playing, setPlaying] = useState(false);
+  const [muted, setMuted] = useState(false);
   const [vertical, setVertical] = useState(() => typeof window !== "undefined" && !!srcVertical && window.matchMedia("(max-width: 640px)").matches);
   React.useEffect(() => {
     if (!srcVertical) return;
@@ -71,6 +74,7 @@ function SizzleReelPlayer({ src, srcVertical, poster, posterVertical }: { src: s
         src={vertical && srcVertical ? srcVertical : src}
         poster={vertical && posterVertical ? posterVertical : poster}
         key={vertical ? "v" : "h"}
+        muted={muted}
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
         onEnded={() => setPlaying(false)}
@@ -89,6 +93,15 @@ function SizzleReelPlayer({ src, srcVertical, poster, posterVertical }: { src: s
             : <Play size={24} className="text-black translate-x-0.5" fill="currentColor" />}
         </div>
       </div>
+      <button
+        type="button"
+        aria-label={muted ? "Turn sound on" : "Turn sound off"}
+        title={muted ? "Turn sound on" : "Turn sound off"}
+        onClick={e => { e.stopPropagation(); setMuted(m => !m); }}
+        className="absolute bottom-3 right-3 w-10 h-10 rounded-full bg-black/60 backdrop-blur border border-white/15 flex items-center justify-center text-white hover:bg-black/80 transition-colors"
+      >
+        {muted ? <VolumeX size={18} /> : <Volume2 size={18} />}
+      </button>
     </div>
   );
 }
@@ -419,12 +432,9 @@ export function LandingPage({
         </div>
       </section>
 
-      {/* FEATURE — sizzle reel: a real, downloadable demo video (not just
-          a screenshot mockup). Rendered offline via a headless-browser
-          capture of the artifact's own animation + its actual Web Audio
-          SFX (captured live off the audio graph, not a separate track),
-          then muxed to h264/aac — so this <video> plays with real sound
-          and the download link hands back a genuine .mp4, not a stub. */}
+      {/* FEATURE — sizzle reel: a real demo video built from the app's own
+          screens (HyperFrames), with an original synthesized soundtrack and
+          sound effects muxed in as AAC (video kit: make_audio.py). */}
       <section className="px-4 md:px-6 py-14 md:py-20 max-w-4xl mx-auto">
         <Reveal variant="scale">
           <div className="text-center mb-6">
