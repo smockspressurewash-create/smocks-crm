@@ -36,7 +36,7 @@ import {
 // this string every time the sizzle-reel video files are replaced so the
 // query string forces a fresh fetch (see also public/_headers, which
 // caps how long any cache can go without revalidating going forward).
-const SIZZLE_REEL_VERSION = "11";
+const SIZZLE_REEL_VERSION = "12";
 
 // Minimal video player for the sizzle reel — play/pause plus a sound on/off
 // button, no native scrubber/duration/skip chrome (those read as a media
@@ -433,8 +433,10 @@ export function LandingPage({
       </section>
 
       {/* FEATURE — sizzle reel: a real demo video built from the app's own
-          screens (HyperFrames), with an original synthesized soundtrack and
-          sound effects muxed in as AAC (video kit: make_audio.py). */}
+          screens (HyperFrames). Music: "Motivating Mornings" from Mixkit (free
+          license, commercial use, no credit required), slowed 1% to 120 BPM so
+          its drop lands as the dashboard appears (4 s) and every scene cut sits
+          on a beat; -14 LUFS, muxed as AAC. */}
       <section className="px-4 md:px-6 py-14 md:py-20 max-w-4xl mx-auto">
         <Reveal variant="scale">
           <div className="text-center mb-6">
