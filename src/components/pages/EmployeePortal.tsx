@@ -5045,6 +5045,8 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       // organizationId/org_id key from before that bug was reverted; a bare
       // spread would carry it into this brand-new row and fail the insert.
       ...stripLegacyJobFields(sourceJob), id: uid(), status: "scheduled", scheduledDate: nextDate,
+      // Its own calendar events, not the finished job's (see lib/calendarSync.ts).
+      googleEventId: null, crewGoogleEventIds: {},
       loggedHours: 0, clockInAt: null, arrivedAt: null, completedAt: null,
       checklist: (sourceJob.checklist || []).map((ck: any) => ({ ...ck, done: false })),
       preChecklist: (sourceJob.preChecklist || []).map((ck: any) => ({ ...ck, done: false })),

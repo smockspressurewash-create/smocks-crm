@@ -20,7 +20,8 @@ import { useIsMobile } from "./hooks/useIsMobile";
 import { supabase, clearLocalAuthSession, isPublicCustomerHash } from "./lib/supabase";
 import { IS_PREVIEW, LIVE_COCKPIT_URL } from "./lib/preview";
 import { saveCustomersTolerant } from "./lib/customerImport";
-import { fetchAllRows } from "./lib/dbBulk";
+import { fetchAllRows, deleteByIds } from "./lib/dbBulk";
+import { rememberJobEvents, removeJobsFromGoogle, ensureJobsOnGoogle } from "./lib/calendarSync";
 import { getPlanLimits, hasPlanFeature, FEATURE_MIN_TIER_LABEL, PLAN_TIER_LABEL, type PlatformSubscription } from "./lib/planLimits";
 import { GBtn } from "./components/ui/GBtn";
 import { SafePage } from "./components/ui/ErrorBoundary";
@@ -1194,14 +1195,49 @@ export function App() {
     for (const [id, ts] of m) { if (now - ts > RECENTLY_DELETED_TTL_MS) m.delete(id); }
     ids.forEach(id => m.set(id, now));
     if (table === "estimates" || table === "customers" || table === "jobs") persistTombstones(table, ids);
-  }, [persistTombstones]);
+    // BUG FIX — deleted jobs stayed on the owner's Google Calendar, and a
+    // deleted customer's upcoming jobs stayed in the CRM (and on the
+    // calendar). Every delete in the app records itself here, so this is
+    // the one place that catches them all. See lib/calendarSync.ts.
+    if (table === "jobs" && crmRoleRef.current === "owner") {
+      removeJobsFromGoogle(ids, settingsRef.current).then(n => { if (n) console.log("[calendarSync] removed", n, "Google Calendar event(s)"); });
+    }
+    if (table === "customers") removeCustomersOpenJobs(ids);
+  }, [persistTombstones]); // eslint-disable-line react-hooks/exhaustive-deps
   // Undoing a delete restores the row — it must stop being treated as
   // "recently deleted" or the next refetch would just filter the restore
   // right back out for the rest of the TTL window.
   const unmarkRecentlyDeleted = useCallback((table: "jobs" | "customers" | "estimates" | "chemicals", ids: string[]) => {
     const m = recentlyDeletedRef.current[table];
     ids.forEach(id => m.delete(id));
-  }, []);
+    if (table === "customers") restoreCustomersOpenJobs(ids);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Deleting a customer also deletes their upcoming jobs (finished and
+  // cancelled ones stay as history). Undo brings the jobs back with them.
+  const removedWithCustomerRef = useRef<Map<string, any[]>>(new Map());
+  const removeCustomersOpenJobs = (customerIds: string[]) => {
+    const ids = new Set(customerIds);
+    const doomed = (jobsRef.current || []).filter((j: any) => ids.has(j.customerId) && j.status !== "completed" && j.status !== "cancelled");
+    if (doomed.length === 0) return;
+    for (const cid of customerIds) removedWithCustomerRef.current.set(cid, doomed.filter((j: any) => j.customerId === cid));
+    const jobIds = doomed.map((j: any) => j.id);
+    setJobs((prev: any[]) => prev.filter((j: any) => !jobIds.includes(j.id)));
+    markRecentlyDeleted("jobs", jobIds);
+    deleteByIds("jobs", jobIds).then(r => {
+      if (r.failed) toast(`Customer deleted, but ${jobIds.length - r.deleted.length} of their upcoming jobs weren't — ${r.error || "the server didn't confirm it"}`, "red");
+    });
+  };
+  const restoreCustomersOpenJobs = (customerIds: string[]) => {
+    const back = customerIds.flatMap(cid => removedWithCustomerRef.current.get(cid) || []).map((j: any) => ({ ...j, googleEventId: null }));
+    customerIds.forEach(cid => removedWithCustomerRef.current.delete(cid));
+    if (back.length === 0) return;
+    const backIds = back.map((j: any) => j.id);
+    unmarkRecentlyDeleted("jobs", backIds);
+    setJobs((prev: any[]) => [...prev.filter((j: any) => !backIds.includes(j.id)), ...back]);
+    (supabase as any).from("jobs").upsert(back.map((j: any) => stripLegacyJobFields(j))).then((r: any) => {
+      if (r?.error) toast("Customer restored, but their jobs didn't come back on the server — " + r.error.message, "red");
+    });
+  };
   // BUG FIX — "delete an invoice, it comes back." Root cause: the 30s bulk
   // auto-save interval further below blindly re-upserts this ENTIRE
   // in-memory `estimates`/`customers` array to Supabase every cycle, with
@@ -1387,6 +1423,29 @@ export function App() {
   // changes.
   const settingsRef = useRef(settings);
   useEffect(() => { settingsRef.current = settings; }, [settings]);
+  const crmRoleRef = useRef(crmRole);
+  crmRoleRef.current = crmRole;
+  // Puts upcoming jobs on the owner's Google Calendar a few seconds after
+  // jobs change (new job, import, next repeat, Undo). Not a debounce: the
+  // jobs poll changes `jobs` every few seconds and would keep resetting it.
+  const calendarSyncTimerRef = useRef<number | null>(null);
+  const customersForCalRef = useRef(customers);
+  customersForCalRef.current = customers;
+  const employeesForCalRef = useRef(employees);
+  employeesForCalRef.current = employees;
+  useEffect(() => {
+    rememberJobEvents(jobs);
+    if (calendarSyncTimerRef.current || !hasCrmSession || !crmUserId || crmRole !== "owner" || !settings?.googleConnected) return;
+    calendarSyncTimerRef.current = window.setTimeout(() => {
+      calendarSyncTimerRef.current = null;
+      ensureJobsOnGoogle({
+        jobs: jobsRef.current, customers: customersForCalRef.current, employees: employeesForCalRef.current, settings: settingsRef.current,
+        onLinked: (jobId, eventId) => setJobs((prev: any[]) => prev.map((j: any) => j.id === jobId ? { ...j, googleEventId: eventId } : j)),
+      }).then(n => { if (n) console.log("[calendarSync] added", n, "job(s) to Google Calendar"); })
+        .catch((e: any) => console.warn("[calendarSync] sync failed:", e?.message || e));
+    }, 4000);
+  }, [jobs, hasCrmSession, crmUserId, crmRole, settings?.googleConnected]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => { if (calendarSyncTimerRef.current) window.clearTimeout(calendarSyncTimerRef.current); calendarSyncTimerRef.current = null; }, []);
   // AUDIT FIX ("I'm not seeing any [automations] for owners") — root cause:
   // the owner/employee/client report templates (seed.ts AUTOMATION_TEMPLATES
   // tpl_owner_*/tpl_employee_*/tpl_client_*) were only ever reachable through
@@ -3377,6 +3436,11 @@ export function App() {
           // this field directly (it's calendar-sync-derived), so it's safe
           // to strip like crew/crewAssignedAt above rather than normalize.
           "crewGoogleEventIds",
+          // Written straight to the database by lib/calendarSync.ts (which
+          // claims a job before creating its event). An older copy in this
+          // tab's memory must never overwrite it, or the job would be put
+          // on the calendar twice.
+          "googleEventId",
         ] as const;
         // BUG FIX — "deleted work orders come back." This pushed EVERY job
         // in this tab's memory every 30s, so a tab (or phone) that still had

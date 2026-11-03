@@ -1202,41 +1202,8 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
               // lib/messaging.ts) so this create silently never fired; every
               // job created here should already have shown up on the owner's
               // Google Calendar and never did.
-              if (((settings as any)?.autoSyncCalendar ?? true) && settings?.googleConnected && job.scheduledDate) {
-                const c = customers.find(x => x.id === job.customerId);
-                const startDt = new Date(job.scheduledDate + "T" + (job.scheduledTime || "09:00") + ":00");
-                const endDt = new Date(startDt.getTime() + 2 * 60 * 60 * 1000);
-                // FEATURE — "clickable link to the employee portal, or if
-                // it's an owner working, to the owner job." Same crew-based
-                // pick as JobDetailModal's handleGoogleSync.
-                const hasEmployeeCrewNew = directAssignEmps.some((e: any) => e.role !== "owner");
-                const calDescription = hasEmployeeCrewNew
-                  ? buildJobCalendarDescription(job, c, `${window.location.origin}${window.location.pathname}#/portal?job=${encodeURIComponent(job.id)}`, "View job in Crew Portal")
-                  : buildJobCalendarDescription(job, c, `${window.location.origin}${window.location.pathname}#/jobs?open=${encodeURIComponent(job.id)}`);
-                getFreshOwnerGoogleToken(settings as any).then(token => {
-                  if (!token) return null;
-                  return createGCalEvent(token, {
-                    title: (c ? c.firstName + " " + c.lastName + " — " : "") + "Pressure Washing",
-                    start: startDt.toISOString(),
-                    end: endDt.toISOString(),
-                    location: job.address || "",
-                    description: calDescription,
-                  });
-                }).then(eventId => {
-                  if (eventId) setJobs(prev => prev.map(j => j.id === job.id ? { ...j, googleEventId: eventId } : j));
-                  else console.warn("[Calendar] auto-sync on new job produced no event id — token refresh or the create call likely failed silently upstream");
-                }).catch((e: any) => {
-                  // BUG FIX — "jobs still aren't automatically syncing to
-                  // Google Calendar." This swallowed every failure with no
-                  // trace at all — a stale/revoked Google token, a Calendar
-                  // API error, anything — so the job just silently never
-                  // showed up on the calendar with no way to tell why. Now
-                  // logs the real reason and tells the owner, instead of
-                  // failing invisibly forever.
-                  console.error("[Calendar] auto-sync failed on new job:", e?.message || e);
-                  toast?.("Job saved, but Google Calendar sync failed — " + (e?.message || "check your Google connection in Settings"), "red");
-                });
-              }
+              // Google Calendar: lib/calendarSync.ts (run from App.tsx) puts this job on
+              // the calendar within a few seconds. Creating the event here too made two.
               // Notify each selected crew member — assigned (no response needed) or requested (accept/decline).
               // BLOCKER — split into the two per-employee lists computed above
               // instead of branching a single shared `directAssign` inside the
@@ -1763,7 +1730,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                     // from before that bug was reverted (see lib/utils.ts); a
                     // bare {...j} spread would carry it into this brand-new
                     // row and fail the insert below.
-                    const nextJob: any = { ...stripLegacyJobFields(j), id: uid(), status: "scheduled", scheduledDate: nextDate, loggedHours: 0, clockInAt: null, arrivedAt: null, completedAt: null, checklist: (j.checklist || []).map(ck => ({ ...ck, done: false })), preChecklist: (j.preChecklist || []).map((ck: any) => ({ ...ck, done: false })), duringChecklist: (j.duringChecklist || []).map((ck: any) => ({ ...ck, done: false })), postChecklist: (j.postChecklist || []).map((ck: any) => ({ ...ck, done: false })), commLog: [], photos: [], videos: [], chemicalsUsed: [], paymentStatus: undefined, amountCollected: undefined, owner_id: ownerId };
+                    const nextJob: any = { ...stripLegacyJobFields(j), id: uid(), googleEventId: null, status: "scheduled", scheduledDate: nextDate, loggedHours: 0, clockInAt: null, arrivedAt: null, completedAt: null, checklist: (j.checklist || []).map(ck => ({ ...ck, done: false })), preChecklist: (j.preChecklist || []).map((ck: any) => ({ ...ck, done: false })), duringChecklist: (j.duringChecklist || []).map((ck: any) => ({ ...ck, done: false })), postChecklist: (j.postChecklist || []).map((ck: any) => ({ ...ck, done: false })), commLog: [], photos: [], videos: [], chemicalsUsed: [], paymentStatus: undefined, amountCollected: undefined, owner_id: ownerId };
                     console.log("[Recurring] auto-scheduling next occurrence for", nextDate, "— crew:", nextJob.crew);
                     setJobs(prev => [...prev.map(x => x.id === j.id ? { ...x, status: "completed" } : x), nextJob]);
                     (supabase as any).from("jobs").insert(nextJob)

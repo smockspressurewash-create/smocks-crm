@@ -9,7 +9,7 @@ import React, { useState } from "react";
 import { Sparkles, Trash2, Loader2, UserPlus, Check } from "lucide-react";
 import { uid, today, pickLeastLoadedEmployee } from "../../lib/utils";
 import { MODELS } from "../../lib/api";
-import { readAsTable, recordsFromTable, extractRecordsWithAI, parseFrequency, parseWeekday, matchEmployee, insertJobsTolerant } from "../../lib/bulkImport";
+import { readAsTable, recordsFromTable, extractRecordsWithAI, parseFrequency, parseWeekday, parseTime, recurrenceFor, weekdayInWeek, matchEmployee, insertJobsTolerant } from "../../lib/bulkImport";
 import { parseDateLoose } from "../../lib/customerImport";
 import { supabase } from "../../lib/supabase";
 import { Modal } from "./Modal";
@@ -51,6 +51,15 @@ export function BulkJobImportModal({
   const [rows, setRows] = useState<ParsedJobRow[] | null>(null);
   const [serviceCategory, setServiceCategory] = useState<"trash_can" | "wash">(defaultServiceCategory);
   const [creating, setCreating] = useState(false);
+  // BUG FIX (user report: a trash-can route sheet with a Day and Time per
+  // stop, to start in a given week and then repeat quarterly) — every stop
+  // lost its time ("9:30:00 AM" wasn't read), a list with no "how often"
+  // column made one-time jobs, and the first visit was always the next
+  // matching weekday from today. The owner now picks the week the first
+  // visits go in and how often they repeat when the list doesn't say.
+  const [defaultFreq, setDefaultFreq] = useState("");
+  const [firstWeek, setFirstWeek] = useState("");
+  const FREQ_CHOICES: [string, string][] = [["weekly", "Weekly"], ["biweekly", "Every 2 weeks"], ["monthly", "Monthly"], ["quarterly", "Quarterly"], ["biannual", "Twice a year"], ["annual", "Yearly"], ["one_time", "One time"]];
 
   const findMatch = (name: string, phone: string): string | null => {
     const np = normalizePhone(phone);
@@ -99,7 +108,7 @@ export function BulkJobImportModal({
         const phone = String(p.phone || "").trim();
         const wd = parseWeekday(p.weekday);
         const parsedDate = p.scheduledDate ? parseDateLoose(String(p.scheduledDate)) : "";
-        const date = /^\d{4}-\d{2}-\d{2}$/.test(parsedDate) ? parsedDate : wd != null ? (() => { const d = new Date(); d.setDate(d.getDate() + ((wd - d.getDay() + 7) % 7)); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; })() : defaultDate;
+        const date = /^\d{4}-\d{2}-\d{2}$/.test(parsedDate) ? parsedDate : wd != null ? (firstWeek ? weekdayInWeek(wd, firstWeek) : (() => { const d = new Date(); d.setDate(d.getDate() + ((wd - d.getDay() + 7) % 7)); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; })()) : (firstWeek || defaultDate);
         const named = matchEmployee(p.worker, employees);
         const empId = named?.id || pickLeastLoadedEmployee(simulatedJobs, employees, date) || "";
         if (empId) simulatedJobs.push({ scheduledDate: date, crew: [empId], status: "scheduled" });
@@ -107,8 +116,8 @@ export function BulkJobImportModal({
           _key: uid(), customerName: name, phone, email: String(p.email || "").trim(),
           address: [p.address, p.city, [p.state, p.zip].filter(Boolean).join(" ")].map((x: any) => String(x || "").trim()).filter(Boolean).join(", "), scheduledDate: date,
           amount: String(p.amount || "").replace(/[^0-9.]/g, ""), notes: [p.service ? `Service: ${p.service}` : "", String(p.notes || "").trim()].filter(Boolean).join("\n"),
-          scheduledTime: /^\d{1,2}:\d{2}$/.test(String(p.scheduledTime || "")) ? String(p.scheduledTime).padStart(5, "0") : "",
-          frequency: parseFrequency(p.frequency), weekday: wd, cans: Math.max(0, Math.round(Number(String(p.cans || "").replace(/[^0-9.]/g, "")) || 0)),
+          scheduledTime: parseTime(p.scheduledTime),
+          frequency: parseFrequency(p.frequency) || defaultFreq || (serviceCategory === "trash_can" ? "weekly" : null), weekday: wd, cans: Math.max(0, Math.round(Number(String(p.cans || "").replace(/[^0-9.]/g, "")) || 0)),
           matchedCustomerId: findMatch(name, phone), assignedEmployeeId: empId, skip: false,
         };
       });
@@ -143,7 +152,7 @@ export function BulkJobImportModal({
           const lastName = parts.slice(1).join(" ");
           const custRecord = {
             id: uid(), firstName, lastName, email: row.email || "", phone: row.phone || "", address: row.address || "",
-            tags: [], totalSpent: 0, createdAt: today(), owner_id: ownerId,
+            tags: serviceCategory === "trash_can" ? ["Trash Cans"] : [], notes: row.notes || "", totalSpent: 0, createdAt: today(), owner_id: ownerId,
           };
           const { data, error } = await (supabase as any).from("customers").insert(custRecord).select().single();
           if (error || !data) throw new Error(error?.message || "Customer save failed");
@@ -156,11 +165,8 @@ export function BulkJobImportModal({
           id: uid(), customerId, address: row.address || "", amount: parseFloat(row.amount) || 0,
           status: "scheduled", scheduledDate: row.scheduledDate || today(), scheduledTime: row.scheduledTime || "",
           ...(serviceCategory === "trash_can" ? { cansCount: Math.max(1, row.cans || 1) } : {}),
-          ...(row.frequency && row.frequency !== "one_time"
-            ? (row.weekday != null && row.frequency === "weekly"
-              ? { isRecurring: true, recurringMode: "weekdays", recurringFreq: "weekly", recurringWeekdays: [row.weekday], recurringInterval: 1 }
-              : { isRecurring: true, recurringMode: "preset", recurringFreq: row.frequency })
-            : {}),
+          // The date's own weekday, so a stop moved to another day repeats there.
+          ...recurrenceFor(row.frequency, row.scheduledDate ? new Date(row.scheduledDate + "T12:00:00").getDay() : row.weekday),
           priority: "normal", serviceCategory, crew: empId ? [empId] : [],
           ...(empId ? { crewAssignedAt: { [empId]: Date.now() } } : {}),
           checklist: [], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
@@ -199,6 +205,19 @@ export function BulkJobImportModal({
                   </button>
                 ))}
               </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <label className="text-xs text-white/60 space-y-1 block">
+                <span>First visits go in the week of <span className="text-white/35">(optional)</span></span>
+                <GDate value={firstWeek} onChange={e => setFirstWeek(e.target.value)} className="!text-xs !py-1.5" />
+              </label>
+              <label className="text-xs text-white/60 space-y-1 block">
+                <span>Repeats, when the list doesn't say</span>
+                <GSel value={defaultFreq} onChange={e => setDefaultFreq(e.target.value)} className="!text-xs !py-1.5">
+                  <option value="" className="bg-black">{serviceCategory === "trash_can" ? "Weekly (default)" : "Don't repeat (default)"}</option>
+                  {FREQ_CHOICES.map(([k, l]) => <option key={k} value={k} className="bg-black">{l}</option>)}
+                </GSel>
+              </label>
             </div>
             <GTxt
               rows={12}
@@ -240,6 +259,10 @@ export function BulkJobImportModal({
                     <GInput placeholder="Phone" value={row.phone} onChange={e => patchRow(row._key, { phone: e.target.value, matchedCustomerId: findMatch(row.customerName, e.target.value) })} className="!text-xs !py-1.5" />
                     <GInput placeholder="Address" value={row.address} onChange={e => patchRow(row._key, { address: e.target.value })} className="!text-xs !py-1.5 md:col-span-2" />
                     <GDate value={row.scheduledDate} onChange={e => patchRow(row._key, { scheduledDate: e.target.value })} className="!text-xs !py-1.5" />
+                    <GInput type="time" value={row.scheduledTime} onChange={e => patchRow(row._key, { scheduledTime: e.target.value })} className="!text-xs !py-1.5" />
+                    <GSel value={row.frequency || "one_time"} onChange={e => patchRow(row._key, { frequency: e.target.value })} className="!text-xs !py-1.5">
+                      {FREQ_CHOICES.map(([k, l]) => <option key={k} value={k} className="bg-black">{l}</option>)}
+                    </GSel>
                     <GInput placeholder="$ amount" type="number" value={row.amount} onChange={e => patchRow(row._key, { amount: e.target.value })} className="!text-xs !py-1.5" />
                     <GSel value={row.assignedEmployeeId} onChange={e => patchRow(row._key, { assignedEmployeeId: e.target.value })} className="!text-xs !py-1.5">
                       <option value="" className="bg-black">Unassigned</option>

@@ -22,6 +22,7 @@ import { Stat } from "../ui/Stat";
 import { Modal } from "../ui/Modal";
 import { AddressAutocomplete } from "../ui/AddressAutocomplete";
 import { BulkJobImportModal } from "../ui/BulkJobImportModal";
+import { recurrenceFor } from "../../lib/bulkImportCore";
 import { useIsMobile } from "../../hooks/useIsMobile";
 
 const FREQ_OPTIONS = [
@@ -32,9 +33,12 @@ const FREQ_OPTIONS = [
   { key: "quarterly", label: "Quarterly" },
 ];
 const freqLabel = (j: any) => j?.isRecurring ? (FREQ_OPTIONS.find(f => f.key === j.recurringFreq)?.label || "Recurring") : "One-time";
-const freqPatch = (freq: string) => freq === "one_time"
+// Repeats are counted from the visit's own weekday, so a quarterly stop
+// stays on its route day (the old 90-day preset drifted a day or two every
+// time, and saving an edit turned an imported 13-week repeat back into it).
+const freqPatch = (freq: string, date?: string) => freq === "one_time"
   ? { isRecurring: false, recurringFreq: null }
-  : { isRecurring: true, recurringMode: "preset", recurringFreq: freq };
+  : recurrenceFor(freq, date ? new Date(date + "T12:00:00").getDay() : null);
 
 export function TrashCanPage({ jobs = [], customers = [], setCustomers, employees = [], settings = {} as AppSettings, setSettings, setJobs, toast, ownerId, markRecentlyDeleted }: { jobs?: Job[]; customers?: Customer[]; setCustomers?: any; employees?: any[]; settings?: AppSettings; setSettings?: any; setJobs?: any; toast?: any; ownerId?: string; markRecentlyDeleted?: (table: "jobs" | "customers" | "estimates" | "chemicals", ids: string[]) => void }) {
   const trashJobs = jobs.filter((j: any) => j.serviceCategory === "trash_can");
@@ -74,7 +78,7 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
         serviceCategory: "trash_can", cansCount: Math.max(1, newCustForm.cansCount),
         crew: [], checklist: [], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
         loggedHours: 0, createdAt: today(),
-        ...freqPatch(newCustForm.freq),
+        ...freqPatch(newCustForm.freq, mode === "dated" ? newCustForm.firstDate : today()),
         dayAssignmentConfirmed: mode === "manual" ? false : mode === "dated" ? true : undefined,
       };
       if (mode === "auto") {
@@ -446,7 +450,7 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
     const reactivating = editingJob.status === "cancelled" || editingJob.status === "completed";
     const patch: any = {
       scheduledDate: editForm.scheduledDate, cansCount: Number(editForm.cansCount) || 1,
-      ...freqPatch(editForm.recurringFreq),
+      ...freqPatch(editForm.recurringFreq, editForm.scheduledDate),
       ...(reactivating ? { status: "scheduled", dayAssignmentConfirmed: true, completedAt: null } : {}),
     };
     const ok = await patchJobs([editingJob.id], patch);

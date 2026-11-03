@@ -54,6 +54,9 @@ const mapColumns = (headers: string[]): string[] => {
   const generic = new Set(["__custom__", "__skip__", "tags", "notes", "status", "totalSpent", "createdAt"]);
   return headers.map((h, i) => {
     const nh = normalizeHeader(h);
+    // A tally written into the header row ("Total: 35", "Smock: 8") is not a
+    // column. "Total: 35" used to be read as a second price column.
+    if (/:\s*\$?\d/.test(h)) return "__skip__";
     if (job[i] && !job[i].startsWith("__") && (generic.has(cust[i]) || (job[i] === "scheduledDate" && cust[i] === "createdAt") || (job[i] === "amount" && cust[i] === "totalSpent"))) return job[i];
     if (nh === "day") return "weekday";
     return cust[i];
@@ -152,21 +155,43 @@ export const parseFrequency = (s?: string): string | null => {
   if (/bi ?weekly|every (other|2|two) weeks?|fortnight/.test(v)) return "biweekly";
   if (/semi ?monthly|twice a month|2x month/.test(v)) return "biweekly";
   if (/weekly|every week|each week|per week|1x week/.test(v)) return "weekly";
-  if (/quarter|every 3 months|every three months/.test(v)) return "quarterly";
+  if (/quart|qtr|every 3 months|every three months/.test(v)) return "quarterly"; // also catches typos like "Quartlery"
   if (/bi ?annual|semi ?annual|twice a year|every 6 months|every six months/.test(v)) return "biannual";
   if (/annual|yearly|every year|once a year/.test(v)) return "annual";
   if (/monthly|every month|per month|each month|1x month|a month/.test(v)) return "monthly";
   return recurringFreqs.some(f => f.key === v.trim()) ? v.trim() : null;
 };
-const parseTime = (s?: string): string => {
-  const v = String(s || "").trim().toLowerCase();
-  const m = v.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm|a|p)?$/);
+// "9:30 AM", "9:30:00 AM" (how Excel and Google Sheets copy times), "14:05".
+// Seconds used to make the whole time unreadable, so every stop lost its time.
+export const parseTime = (s?: string): string => {
+  const v = String(s || "").trim().toLowerCase().replace(/\./g, "");
+  const m = v.match(/^(\d{1,2})(?::(\d{2}))?(?::\d{2})?\s*(am|pm|a|p)?$/);
   if (!m) return "";
   let h = Number(m[1]); const min = m[2] || "00";
   if (m[3]?.startsWith("p") && h < 12) h += 12;
   if (m[3]?.startsWith("a") && h === 12) h = 0;
   return h < 24 ? `${String(h).padStart(2, "0")}:${min}` : "";
 };
+// The date of weekday `wd` (0 = Sunday) in the Monday-to-Sunday week that
+// contains `anyDayInWeek` (YYYY-MM-DD).
+export const weekdayInWeek = (wd: number, anyDayInWeek: string): string => {
+  const d = new Date(anyDayInWeek + "T12:00:00");
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7) + ((wd + 6) % 7));
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+
+// How a repeating job is stored. With a fixed weekday, quarterly and longer
+// repeats count whole weeks (13 = a quarter) so the job stays on its route
+// day. The "quarterly" preset is 90 days, which drifts to a different
+// weekday every time.
+export const recurrenceFor = (freq: string | null | undefined, wd: number | null | undefined): Record<string, any> => {
+  if (!freq || freq === "one_time") return {};
+  if (wd != null && freq === "weekly") return { isRecurring: true, recurringMode: "weekdays", recurringFreq: "weekly", recurringWeekdays: [wd], recurringInterval: 1 };
+  const weeks: Record<string, number> = { biweekly: 2, quarterly: 13, biannual: 26, annual: 52 };
+  if (wd != null && weeks[freq]) return { isRecurring: true, recurringMode: "weeks", recurringFreq: freq, recurringInterval: weeks[freq] };
+  return { isRecurring: true, recurringMode: "preset", recurringFreq: freq };
+};
+
 const money = (s?: string) => { const n = Number(String(s || "").replace(/[^0-9.]/g, "")); return Number.isFinite(n) ? n : 0; };
 
 const nameOf = (e: any) => `${e.firstName || ""} ${e.lastName || ""}`.trim() || e.name || "";
@@ -190,7 +215,10 @@ export type ImportPlan = {
   totalRecords: number;
 };
 
-export function buildImportPlan(records: ImportRecord[], ctx: { customers: any[]; employees: any[]; serviceCategory?: string; costPerCan?: number; createJobs?: boolean; limit?: number | null }): ImportPlan {
+// defaultFrequency: used when a line doesn't say how often (trash cans
+// otherwise default to weekly). firstWeek: any date in the week the first
+// visits go in; a line's weekday is placed in that week.
+export function buildImportPlan(records: ImportRecord[], ctx: { customers: any[]; employees: any[]; serviceCategory?: string; costPerCan?: number; createJobs?: boolean; limit?: number | null; defaultFrequency?: string; firstWeek?: string }): ImportPlan {
   const serviceCategory = ctx.serviceCategory || "general";
   const asCustomers: any[] = [];
   const jobSpecs: { cust: any; rec: ImportRecord }[] = [];
@@ -221,10 +249,10 @@ export function buildImportPlan(records: ImportRecord[], ctx: { customers: any[]
   for (const { cust, rec } of jobSpecs) {
     const target = finalFor(cust);
     if (!target) continue;
-    const freq = parseFrequency(rec.frequency) || (serviceCategory === "trash_can" && !rec.scheduledDate ? "weekly" : null);
-    const wd = parseWeekday(rec.weekday);
+    const freq = parseFrequency(rec.frequency) || parseFrequency(ctx.defaultFrequency) || (serviceCategory === "trash_can" && !rec.scheduledDate ? "weekly" : null);
     let date = rec.scheduledDate ? parseDateLoose(rec.scheduledDate) : "";
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) date = wd != null ? nextWeekdayDate(wd) : today();
+    const wd = parseWeekday(rec.weekday) ?? (/^\d{4}-\d{2}-\d{2}$/.test(date) ? new Date(date + "T12:00:00").getDay() : null);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) date = wd != null ? (ctx.firstWeek ? weekdayInWeek(wd, ctx.firstWeek) : nextWeekdayDate(wd)) : (ctx.firstWeek || today());
     const emp = matchEmployee(rec.worker, ctx.employees);
     if (rec.worker && !emp) unmatched.add(String(rec.worker).trim());
     const cans = Math.max(0, Math.round(money(rec.cans)));
@@ -237,11 +265,7 @@ export function buildImportPlan(records: ImportRecord[], ctx: { customers: any[]
       loggedHours: 0, createdAt: today(), notes: [rec.service ? `Service: ${rec.service}` : "", rec.notes || ""].filter(Boolean).join("\n"),
       ...(serviceCategory === "trash_can" ? { cansCount: Math.max(1, cans || 1) } : {}),
     };
-    if (freq && freq !== "one_time") {
-      Object.assign(job, wd != null
-        ? { isRecurring: true, recurringMode: freq === "weekly" ? "weekdays" : "preset", recurringFreq: freq, ...(freq === "weekly" ? { recurringWeekdays: [wd], recurringInterval: 1 } : {}) }
-        : { isRecurring: true, recurringMode: "preset", recurringFreq: freq });
-    }
+    Object.assign(job, recurrenceFor(freq, wd));
     jobs.push(job);
   }
   const warnings: string[] = [];

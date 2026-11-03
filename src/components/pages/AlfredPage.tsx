@@ -2891,29 +2891,8 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           // it. Fire-and-forget after the tool's own success response is
           // built — calendar sync failing must never make Alfred report the
           // job itself as not scheduled, since it verifiably was.
-          if (((settings as any)?.autoSyncCalendar ?? true) && settings?.googleConnected && newJ.scheduledDate) {
-            const startDt = new Date(newJ.scheduledDate + "T" + (newJ.scheduledTime || "09:00") + ":00");
-            const endDt = new Date(startDt.getTime() + (Number(newJ.duration) || 2) * 60 * 60 * 1000);
-            const hasEmployeeCrew = !!assignedEmployee && employees.find((e: any) => (e.firstName + " " + e.lastName) === assignedEmployee)?.role !== "owner";
-            const calDescription = hasEmployeeCrew
-              ? buildJobCalendarDescription(newJ, c, `${window.location.origin}${window.location.pathname}#/portal?job=${encodeURIComponent(newJ.id)}`, "View job in Crew Portal")
-              : buildJobCalendarDescription(newJ, c, `${window.location.origin}${window.location.pathname}#/jobs?open=${encodeURIComponent(newJ.id)}`);
-            getFreshOwnerGoogleToken(settings as any).then((token: string | null) => {
-              if (!token) return null;
-              return createGCalEvent(token, {
-                title: c.firstName + " " + c.lastName + " — Pressure Washing",
-                start: startDt.toISOString(), end: endDt.toISOString(),
-                location: newJ.address || "", description: calDescription,
-              });
-            }).then((eventId: string | null) => {
-              if (eventId) {
-                setJobs((prev: any[]) => prev.map((x: any) => x.id === newJ.id ? { ...x, googleEventId: eventId } : x));
-                (supabase as any).from("jobs").update({ googleEventId: eventId }).eq("id", newJ.id).then(() => {});
-              } else {
-                console.warn("[AlfredTool schedule_job] Calendar sync produced no event id — token refresh or the create call likely failed silently upstream");
-              }
-            }).catch((e: any) => console.error("[AlfredTool schedule_job] Calendar sync failed:", e?.message || e));
-          }
+          // Google Calendar: lib/calendarSync.ts (run from App.tsx) puts this job on
+          // the calendar within a few seconds. Creating the event here too made two.
 
           // success stays true — the job itself was confirmed saved above,
           // and a failed/ambiguous ASSIGNMENT must never be reported as the
@@ -4316,7 +4295,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             how = `read with AI in ${out.pieces} piece(s)` + (failedPieces ? ` — ${failedPieces} piece(s) couldn't be read` : "");
           }
           if (!records.length) return { error: "Couldn't find any customers in that list.", how };
-          const plan = buildImportPlan(records, { customers, employees, serviceCategory: category, createJobs: inputs.createJobs !== false, costPerCan: Number((settings as any)?.trashCanCostPerCan) || 5 });
+          const plan = buildImportPlan(records, { customers, employees, serviceCategory: category, createJobs: inputs.createJobs !== false, costPerCan: Number((settings as any)?.trashCanCostPerCan) || 5, defaultFrequency: inputs.defaultFrequency || undefined, firstWeek: /^\d{4}-\d{2}-\d{2}$/.test(String(inputs.firstWeek || "")) ? inputs.firstWeek : undefined });
           importPlansRef.current.set(plan.id, plan);
           return {
             success: true, ...planSummary(plan), how, columns,
@@ -5064,6 +5043,8 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
         text: { type: "string", description: "Only when there's no batch id: the list itself" },
         serviceCategory: { type: "string", enum: ["trash_can", "general"], description: "trash_can for trash-can cleaning clients (jobs go on the Trash Cans page/route), otherwise general" },
         createJobs: { type: "boolean", description: "Create jobs from the schedule/price info (default true). false = customers only" },
+        firstWeek: { type: "string", description: "YYYY-MM-DD, any day in the week the first visits should go in, when the owner names a start week. Each line's weekday is placed in that week. Leave out to use the next matching day from today." },
+        defaultFrequency: { type: "string", enum: ["weekly", "biweekly", "monthly", "quarterly", "biannual", "annual", "one_time"], description: "How often jobs repeat when the list doesn't say (e.g. the owner said 'then every quarter'). Trash cans default to weekly without it." },
         columnOverrides: { type: "object", description: "Only for tables, only if the summary shows a column read wrong: { \"Column header\": \"field\" } — fields: fullName firstName lastName phone email address city state zip notes gateCode company amount frequency weekday scheduledDate scheduledTime cans worker service __skip__" },
       } }
     },
