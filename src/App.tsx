@@ -53,6 +53,7 @@ import { WorkOrdersPage } from "./components/pages/WorkOrdersPage";
 import { TrashCanSignupPage } from "./components/pages/TrashCanSignupPage";
 import { AlfredPage } from "./components/pages/AlfredPage";
 import { GoogleWorkspacePage } from "./components/pages/GoogleWorkspacePage";
+import { GSel } from "./components/ui/GSel";
 import { EmployeesPage } from "./components/pages/EmployeesPage";
 import { FleetPage } from "./components/pages/FleetPage";
 import { ExpensesPage } from "./components/pages/ExpensesPage";
@@ -3030,6 +3031,23 @@ export function App() {
           return;
         }
       }
+      // BUG FIX (user report: "sometimes when I log in it looks like I have
+      // a new account") — "already set up" was only remembered on this
+      // device (smocks.setupDone), so every new browser, profile or cleared
+      // cache showed the brand-new-account wizard to an owner with years of
+      // data. An account that already has its company details, or any
+      // customers or jobs, is not new.
+      const s: any = settingsRef.current || settings;
+      const hasDetails = !!s.companyState || s.setupComplete || s.onboardingComplete || (!!s.companyName && s.companyName !== "Crew Boss" && s.companyName !== "My Company");
+      let hasData = false;
+      if (!hasDetails) {
+        const [c, j] = await Promise.all([
+          (supabase as any).from("customers").select("id", { count: "exact", head: true }),
+          (supabase as any).from("jobs").select("id", { count: "exact", head: true }),
+        ]).catch(() => [null, null]);
+        hasData = (c?.count || 0) > 0 || (j?.count || 0) > 0;
+      }
+      if (hasDetails || hasData) { setSetupDone("1"); return; }
       setCompanySetupName((settings as any).companyName || "");
       setCompanySetupOpen(true);
     })();
@@ -6557,14 +6575,13 @@ export function App() {
                 </div>
                 <div>
                   <label className="text-xs text-white/50 mb-1.5 block">State <span className="text-white/30 font-normal">(sets your sales tax rate)</span></label>
-                  <select
-                    value={companySetupState}
-                    onChange={e => setCompanySetupState(e.target.value)}
-                    className="w-full bg-white/5 border border-white/20 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-red-500/50"
-                  >
+                  {/* The app's own dropdown (8 rows, then it scrolls), not the
+                      browser's: the native list of 50+ states ran the full
+                      height of the screen and didn't match the app. */}
+                  <GSel value={companySetupState} onChange={(e: any) => setCompanySetupState(e.target.value)} className="!text-sm">
                     <option value="" className="bg-black">Select your state…</option>
                     {Object.keys(US_STATE_BASE_TAX_RATES).sort().map(code => <option key={code} value={code} className="bg-black">{code}</option>)}
-                  </select>
+                  </GSel>
                 </div>
                 <button
                   onClick={() => setSetupStep(2)}
