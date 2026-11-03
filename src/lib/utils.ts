@@ -1525,7 +1525,9 @@ export function haversineMiles(lat1: number, lng1: number, lat2: number, lng2: n
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-export interface RouteStop { jobId: string; kind: "job" }
+// startMinutes: minutes after the first stop starts. driveMinutes: estimated
+// drive from the stop before (straight-line miles x 1.3 for roads, at 30 mph).
+export interface RouteStop { jobId: string; kind: "job"; startMinutes?: number; driveMinutes?: number }
 export interface RouteLunchStop { kind: "lunch"; afterMinutes: number; durationMinutes: number }
 export type RouteEntry = (RouteStop & { estMinutes: number }) | RouteLunchStop;
 
@@ -1561,14 +1563,19 @@ export function buildOptimizedRoute(
   const entries: RouteEntry[] = [];
   let elapsed = 0;
   let lunchInserted = lunchMinutes <= 0;
+  let prev: (typeof jobs)[number] | null = null;
   for (const j of fullOrder) {
     if (!lunchInserted && elapsed >= lunchEarliest) {
       entries.push({ kind: "lunch", afterMinutes: elapsed, durationMinutes: lunchMinutes });
       elapsed += lunchMinutes;
       lunchInserted = true;
     }
-    entries.push({ kind: "job", jobId: j.id, estMinutes: j.estMinutes });
+    const canMeasure = prev && typeof prev.lat === "number" && typeof j.lat === "number";
+    const driveMinutes = !prev ? 0 : canMeasure ? Math.max(3, Math.round(haversineMiles(prev.lat!, prev.lng!, j.lat!, j.lng!) * 1.3 / 30 * 60)) : 10;
+    elapsed += driveMinutes;
+    entries.push({ kind: "job", jobId: j.id, estMinutes: j.estMinutes, startMinutes: elapsed, driveMinutes });
     elapsed += j.estMinutes;
+    prev = j;
   }
   return entries;
 }

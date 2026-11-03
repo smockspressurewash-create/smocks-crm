@@ -23,6 +23,7 @@ import { Modal } from "../ui/Modal";
 import { AddressAutocomplete } from "../ui/AddressAutocomplete";
 import { BulkJobImportModal } from "../ui/BulkJobImportModal";
 import { recurrenceFor } from "../../lib/bulkImportCore";
+import { geocodeAddresses } from "../../lib/geocode";
 import { useIsMobile } from "../../hooks/useIsMobile";
 
 const FREQ_OPTIONS = [
@@ -194,13 +195,65 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
     }
   };
 
-  const buildRoute = () => {
+  // BUG FIX (audit) — both route optimizers read the map location from the
+  // JOB, but it's saved on the CUSTOMER (New Customer's address picker) and
+  // imported jobs have none at all, so every route came back in plain
+  // time order, never by distance. Now: the job's location, else the
+  // customer's, else the address is looked up once and saved on the
+  // customer for next time.
+  const coordsForJobs = async (list: Job[]): Promise<{ coords: Record<string, { lat: number; lng: number }>; missing: number; error?: string }> => {
+    const coords: Record<string, { lat: number; lng: number }> = {};
+    const addrOf = (j: any) => (j.address || cf(j.customerId)?.address || "").trim();
+    const need: any[] = [];
+    for (const j of list as any[]) {
+      const c: any = cf(j.customerId);
+      if (typeof j.lat === "number" && typeof j.lng === "number") coords[j.id] = { lat: j.lat, lng: j.lng };
+      else if (typeof c?.lat === "number" && typeof c?.lng === "number") coords[j.id] = { lat: c.lat, lng: c.lng };
+      else if (addrOf(j)) need.push(j);
+    }
+    let error: string | undefined;
+    if (need.length) {
+      const key = (settings as any)?.googleGeocodingKey || (settings as any)?.googleMapsKey || (settings as any)?.mapsKey || "";
+      const res = await geocodeAddresses(need.map(addrOf), key);
+      error = res.error;
+      const saved: Record<string, { lat: number; lng: number }> = {};
+      for (const j of need) {
+        const hit = res.found[addrOf(j)];
+        if (!hit) continue;
+        coords[j.id] = hit;
+        if (j.customerId) saved[j.customerId] = hit;
+      }
+      const custIds = Object.keys(saved);
+      if (custIds.length) {
+        setCustomers?.((prev: any[]) => prev.map((c: any) => saved[c.id] ? { ...c, ...saved[c.id] } : c));
+        for (const id of custIds) (supabase as any).from("customers").update(saved[id]).eq("id", id).then((r: any) => { if (r?.error) console.warn("[TrashCanPage] couldn't save map location:", r.error.message); });
+      }
+    }
+    return { coords, missing: list.length - Object.keys(coords).length, error };
+  };
+  const hhmmToMin = (t?: string) => { const m = /^(\d{1,2}):(\d{2})/.exec(t || ""); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
+  const minToHhmm = (n: number) => `${String(Math.floor(n / 60) % 24).padStart(2, "0")}:${String(n % 60).padStart(2, "0")}`;
+  const clock = (n: number) => { const h = Math.floor(n / 60) % 24, m = n % 60; return `${((h + 11) % 12) + 1}:${String(m).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`; };
+  const [routeStart, setRouteStart] = useState(540);
+  const [routeBuilding, setRouteBuilding] = useState(false);
+  const [routeNote, setRouteNote] = useState("");
+  const [savingRouteTimes, setSavingRouteTimes] = useState(false);
+  const buildRoute = async () => {
     const dayJobs = trashJobs.filter(j => j.scheduledDate === routeDate && j.status !== "cancelled" && j.status !== "completed");
     if (dayJobs.length === 0) { toast?.("No trash-can jobs scheduled that day", "yellow"); return; }
+    setRouteBuilding(true);
+    const { coords, missing, error } = await coordsForJobs(dayJobs);
+    setRouteBuilding(false);
     const entries = buildOptimizedRoute(
-      dayJobs.map(j => ({ id: j.id, lat: (j as any).lat, lng: (j as any).lng, scheduledTime: j.scheduledTime, estMinutes: ((j as any).cansCount || 1) * minutesPerCan })),
+      dayJobs.map(j => ({ id: j.id, ...(coords[j.id] || {}), scheduledTime: j.scheduledTime, estMinutes: ((j as any).cansCount || 1) * minutesPerCan })),
       { lunchMinutes: Number((settings as any)?.routeLunchMinutes) || 0, lunchEarliestMinutes: 240 }
     );
+    // The day starts at the earliest time already on that day's stops (the
+    // owner's own start), else 9:00.
+    const times = dayJobs.map(j => hhmmToMin(j.scheduledTime)).filter((n): n is number => n != null);
+    setRouteStart(times.length ? Math.min(...times) : 540);
+    setRouteNote(missing ? `${missing} stop${missing !== 1 ? "s" : ""} couldn't be placed on the map${error ? " (" + error + ")" : ""} — they're at the end.` : "");
+    if (missing) toast?.(`${missing} address${missing !== 1 ? "es" : ""} couldn't be found on the map${error ? " — " + error : ""}`, "yellow");
     setRoute(entries);
     toast?.(`Route built — ${dayJobs.length} stop${dayJobs.length !== 1 ? "s" : ""}`, "green");
   };
@@ -321,15 +374,12 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
   // buildOptimizedRoute is generic over whatever id you hand it.
   const optimizeRoute = async (route: any) => {
     const ids: string[] = route.customer_ids || [];
-    const stops = ids
-      .map(cid => {
-        const j = trashJobs.find(x => x.customerId === cid);
-        if (!j) return null;
-        return { id: cid, lat: (j as any).lat, lng: (j as any).lng, scheduledTime: j.scheduledTime, estMinutes: ((j as any).cansCount || 1) * minutesPerCan };
-      })
-      .filter(Boolean) as { id: string; lat?: number; lng?: number; scheduledTime?: string; estMinutes: number }[];
-    if (stops.length === 0) { toast?.("No assigned customers with a trash-can job to optimize", "yellow"); return; }
+    const routeJobs = ids.map(cid => trashJobs.find(x => x.customerId === cid)).filter(Boolean) as Job[];
+    if (routeJobs.length === 0) { toast?.("No assigned customers with a trash-can job to optimize", "yellow"); return; }
     setOptimizingRouteId(route.id);
+    const { coords, missing, error } = await coordsForJobs(routeJobs);
+    if (missing) toast?.(`${missing} address${missing !== 1 ? "es" : ""} couldn't be found on the map${error ? " — " + error : ""}`, "yellow");
+    const stops = routeJobs.map(j => ({ id: j.customerId as string, ...(coords[j.id] || {}), scheduledTime: j.scheduledTime, estMinutes: ((j as any).cansCount || 1) * minutesPerCan }));
     const entries = buildOptimizedRoute(stops, { lunchMinutes: Number(route.lunch_minutes) || 0, lunchEarliestMinutes: 240 });
     const newOrder = entries.filter((e: any) => e.kind === "job").map((e: any) => e.jobId as string);
     const ok = await persistRouteCustomerIds(route.id, newOrder);
@@ -721,9 +771,10 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
         <div className="font-semibold text-sm flex items-center gap-2"><RouteIcon size={14} className="text-blue-400" />Build a Route</div>
         <div className="flex gap-2 items-end flex-wrap">
           <div><label className="text-xs text-white/60 mb-1 block">Date</label><GInput type="date" value={routeDate} onChange={(e: any) => { setRoute(null); setRouteDate(e.target.value); }} className="!text-xs" /></div>
-          <GBtn onClick={buildRoute} className="!text-xs">Build Optimized Route</GBtn>
+          <GBtn onClick={buildRoute} disabled={routeBuilding} className="!text-xs">{routeBuilding ? "Finding addresses…" : "Build Optimized Route"}</GBtn>
         </div>
-        <div className="text-[10px] text-white/40">Nearest-neighbor ordering by property location (jobs without a geocoded address are appended in scheduled-time order). Includes a lunch break if configured above.</div>
+        <div className="text-[10px] text-white/40">Closest stop next, by address. Times count your minutes per can plus an estimated drive between stops, starting at that day's earliest time (9:00 AM if none). Includes a lunch break if configured above.</div>
+        {routeNote && <div className="text-[10px] text-yellow-300/80">{routeNote}</div>}
         {route && (
           <div className="space-y-1.5 pt-2 border-t border-white/10">
             {route.map((entry: any, i: number) => entry.kind === "lunch" ? (
@@ -732,10 +783,23 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
               const j = trashJobs.find(x => x.id === entry.jobId);
               const c = j ? cf(j.customerId) : null;
               return <div key={entry.jobId} className="p-2 rounded-lg bg-black/40 border border-white/10 text-xs flex items-center justify-between gap-2">
-                <span className="flex items-center gap-2"><span className="text-white/40 w-5">{i + 1}.</span>{c ? `${c.firstName} ${c.lastName}` : "Customer"} — {j?.address}</span>
-                <span className="text-white/40">{(j as any)?.cansCount || 1} cans · ~{entry.estMinutes}m</span>
+                <span className="flex items-center gap-2"><span className="text-white/70 w-16 shrink-0">{clock(routeStart + (entry.startMinutes || 0))}</span>{c ? `${c.firstName} ${c.lastName}` : "Customer"} — {j?.address}</span>
+                <span className="text-white/40 shrink-0">{entry.driveMinutes ? `${entry.driveMinutes}m drive · ` : ""}{(j as any)?.cansCount || 1} cans · ~{entry.estMinutes}m</span>
               </div>;
             })())}
+            <GBtn variant="ghost" disabled={savingRouteTimes} className="!text-xs w-full !justify-center" onClick={async () => {
+              const stops = route.filter((e: any) => e.kind === "job");
+              setSavingRouteTimes(true);
+              let saved = 0;
+              for (const e of stops) {
+                const t = minToHhmm(routeStart + (e.startMinutes || 0));
+                const j = trashJobs.find(x => x.id === e.jobId);
+                if (!j || j.scheduledTime === t) { saved++; continue; }
+                if (await patchJobs([e.jobId], { scheduledTime: t })) saved++;
+              }
+              setSavingRouteTimes(false);
+              toast?.(saved === stops.length ? `Saved ${saved} stop time${saved !== 1 ? "s" : ""} — Google Calendar updates in a few seconds ✓` : `Saved ${saved} of ${stops.length} stop times`, saved === stops.length ? "green" : "yellow");
+            }}><Clock size={11} className="inline mr-1" />{savingRouteTimes ? "Saving…" : "Use these times for the day"}</GBtn>
           </div>
         )}
       </Glass>
