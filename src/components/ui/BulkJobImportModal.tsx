@@ -167,6 +167,10 @@ export function BulkJobImportModal({
           ...(serviceCategory === "trash_can" ? { cansCount: Math.max(1, row.cans || 1) } : {}),
           // The date's own weekday, so a stop moved to another day repeats there.
           ...recurrenceFor(row.frequency, row.scheduledDate ? new Date(row.scheduledDate + "T12:00:00").getDay() : row.weekday),
+          // The owner reviewed every date above, so these are already on
+          // their day: without this, Trash Cans' Planning board listed them
+          // all as "Unassigned" even though they had dates.
+          ...(serviceCategory === "trash_can" ? { dayAssignmentConfirmed: true } : {}),
           priority: "normal", serviceCategory, crew: empId ? [empId] : [],
           ...(empId ? { crewAssignedAt: { [empId]: Date.now() } } : {}),
           checklist: [], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],

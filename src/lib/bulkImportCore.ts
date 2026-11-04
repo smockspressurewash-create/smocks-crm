@@ -263,7 +263,9 @@ export function buildImportPlan(records: ImportRecord[], ctx: { customers: any[]
       ...(serviceCategory !== "general" ? { serviceCategory } : {}), crew: emp ? [emp.id] : [], ...(emp ? { crewAssignedAt: { [emp.id]: Date.now() } } : {}),
       checklist: [], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
       loggedHours: 0, createdAt: today(), notes: [rec.service ? `Service: ${rec.service}` : "", rec.notes || ""].filter(Boolean).join("\n"),
-      ...(serviceCategory === "trash_can" ? { cansCount: Math.max(1, cans || 1) } : {}),
+      // A day from the list counts as assigned (Trash Cans' Planning board
+      // otherwise lists it as "Unassigned").
+      ...(serviceCategory === "trash_can" ? { cansCount: Math.max(1, cans || 1), ...(wd != null ? { dayAssignmentConfirmed: true } : {}) } : {}),
     };
     Object.assign(job, recurrenceFor(freq, wd));
     jobs.push(job);
