@@ -69,7 +69,6 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
       const customerPayload = {
         id: uid(), firstName: newCustForm.firstName.trim(), lastName: newCustForm.lastName.trim(),
         phone: newCustForm.phone.trim(), email: newCustForm.email.trim(), address: newCustForm.address.trim(),
-        ...(newCustForm.lat != null ? { lat: newCustForm.lat, lng: newCustForm.lng } : {}),
         totalSpent: 0, createdAt: today(), notes: "", gateCode: "", hasDog: false, dogName: "", sensitivePlants: "",
       };
       const jobPayload = {
@@ -79,6 +78,11 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
         serviceCategory: "trash_can", cansCount: Math.max(1, newCustForm.cansCount),
         crew: [], checklist: [], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
         loggedHours: 0, createdAt: today(),
+        // BUG FIX — the picked map location went on the customer, but the
+        // customers table has no lat/lng columns, so adding a customer with
+        // an address picked from the suggestions failed to save. It belongs
+        // on the job, which the route builder reads first.
+        ...(newCustForm.lat != null ? { lat: newCustForm.lat, lng: newCustForm.lng } : {}),
         ...freqPatch(newCustForm.freq, mode === "dated" ? newCustForm.firstDate : today()),
         dayAssignmentConfirmed: mode === "manual" ? false : mode === "dated" ? true : undefined,
       };
@@ -216,17 +220,20 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
       const key = (settings as any)?.googleGeocodingKey || (settings as any)?.googleMapsKey || (settings as any)?.mapsKey || "";
       const res = await geocodeAddresses(need.map(addrOf), key);
       error = res.error;
+      // Saved on the job: the customers table has no lat/lng columns, so
+      // saving it on the customer failed every time and each browser had to
+      // look the address up again.
       const saved: Record<string, { lat: number; lng: number }> = {};
       for (const j of need) {
         const hit = res.found[addrOf(j)];
         if (!hit) continue;
         coords[j.id] = hit;
-        if (j.customerId) saved[j.customerId] = hit;
+        saved[j.id] = hit;
       }
-      const custIds = Object.keys(saved);
-      if (custIds.length) {
-        setCustomers?.((prev: any[]) => prev.map((c: any) => saved[c.id] ? { ...c, ...saved[c.id] } : c));
-        for (const id of custIds) (supabase as any).from("customers").update(saved[id]).eq("id", id).then((r: any) => { if (r?.error) console.warn("[TrashCanPage] couldn't save map location:", r.error.message); });
+      const jobIds = Object.keys(saved);
+      if (jobIds.length) {
+        setJobs?.((prev: any[]) => prev.map((x: any) => saved[x.id] ? { ...x, ...saved[x.id] } : x));
+        for (const id of jobIds) (supabase as any).from("jobs").update(saved[id]).eq("id", id).then((r: any) => { if (r?.error) console.warn("[TrashCanPage] couldn't save map location:", r.error.message); });
       }
     }
     return { coords, missing: list.length - Object.keys(coords).length, error };
