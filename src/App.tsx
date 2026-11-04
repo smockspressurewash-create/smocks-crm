@@ -1330,10 +1330,22 @@ export function App() {
 
   // ── Toasts ────────────────────────────────────────────────────────────────
   const [toasts, setToasts] = useState<Toast[]>([]);
+  // BUG FIX (user report) — an error pop-up ("Duplicated locally, but
+  // failed to sync") disappeared after 3.5s and never showed in the
+  // notification bell, so there was no way to read it again. Errors now
+  // also land in the bell (the same text once a minute at most).
+  const lastErrorNoticeRef = useRef<Record<string, number>>({});
   const toast = (msg: string, tone?: "green" | "red" | "yellow") => {
     const id = uid();
     setToasts(prev => [...prev.slice(-4), { id, msg, tone: tone ?? "green" }]);
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3500);
+    if (tone === "red") {
+      const now = Date.now();
+      if (now - (lastErrorNoticeRef.current[msg] || 0) > 60000) {
+        lastErrorNoticeRef.current[msg] = now;
+        setNotifications((prev: AppNotification[]) => [{ id, text: "⚠️ " + msg, at: now, read: false, category: "issue" as const, page }, ...prev].slice(0, NOTIFICATIONS_CAP));
+      }
+    }
   };
 
   // ── Persistent state ─────────────────────────────────────────────────────

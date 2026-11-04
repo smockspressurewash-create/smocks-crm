@@ -44,7 +44,7 @@ import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 import { ChemicalCostCalc } from "./ChemicalCostCalc";
 
-export function EstimateBuilder({ open, onClose, customers = [], services = [], settings = {}, onSave, estimateTemplates = [], setEstimateTemplates = (..._args: any[]) => {}, initialCustomerId = "", initialDraft = null }: { open: boolean; onClose: any; customers?: any[]; services?: any[]; settings?: any; onSave: any; estimateTemplates?: any[]; setEstimateTemplates?: any; initialCustomerId?: string; initialDraft?: { customerId?: string; lineItems?: any[]; notes?: string; discount?: number; depositRequired?: number } | null }) {
+export function EstimateBuilder({ open, onClose, customers = [], services = [], settings = {}, onSave, estimateTemplates = [], setEstimateTemplates = (..._args: any[]) => {}, initialCustomerId = "", initialDraft = null, editing = null }: { open: boolean; onClose: any; customers?: any[]; services?: any[]; settings?: any; onSave: any; estimateTemplates?: any[]; setEstimateTemplates?: any; initialCustomerId?: string; initialDraft?: { customerId?: string; lineItems?: any[]; notes?: string; discount?: number; depositRequired?: number } | null; editing?: any }) {
   const [cid, setCid] = useState("");
   const [items, setItems] = useState([]);
   const [vu, setVu] = useState(daysFromNow(30));
@@ -93,12 +93,40 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
   const openKeyRef = useRef("");
   useEffect(() => {
     if (!open) { openedRef.current = false; return; }
-    const key = `${initialCustomerId || ""}|${initialDraft ? JSON.stringify(initialDraft).length + ":" + (initialDraft.customerId || "") : ""}`;
+    const key = `${initialCustomerId || ""}|${initialDraft ? JSON.stringify(initialDraft).length + ":" + (initialDraft.customerId || "") : ""}|${editing?.id || ""}`;
     if (openedRef.current && openKeyRef.current === key) return;
     openedRef.current = true;
     openKeyRef.current = key;
     setSaveError("");
-    {
+    if (editing) {
+      // Editing a quote that's already saved (and maybe sent): load every
+      // field as it is, keeping line-item ids so nothing else shifts.
+      const e = editing;
+      setCid(e.customerId || "");
+      setItems(Array.isArray(e.lineItems) && e.lineItems.length ? e.lineItems.map((li: any) => ({ ...li, id: li.id || uid() })) : [{ id: uid(), description: "", quantity: 1, unitPrice: 0 }]);
+      setVu(e.validUntil || daysFromNow(30));
+      setDiscount(Number(e.discount) || 0);
+      setDiscounts(Array.isArray(e.discounts) ? e.discounts : []);
+      setDepositRequired(Number(e.depositRequired) || 0);
+      setDepositType(e.depositType === "percent" ? "percent" : "amount");
+      setDepositMandatory(!!e.depositMandatory);
+      setIsRecurring(!!e.isRecurring);
+      setRecurringMode(e.recurringMode || "preset");
+      setRecurringFreq(e.recurringFreq || "monthly");
+      setRecurringInterval(Number(e.recurringInterval) || 1);
+      setRecurringWeekdays(Array.isArray(e.recurringWeekdays) ? e.recurringWeekdays : []);
+      setTerms(e.terms || "");
+      setNotes(e.notes || "");
+      setInternalNote(e.internalNote || "");
+      setSavingTemplate(false);
+      setTemplateName("");
+      setEstimateType(e.estimateType === "package" || e.estimateType === "options" ? e.estimateType : "standard");
+      setSelectedAddressId("primary");
+      setPackages(Array.isArray(e.packages) && e.packages.length ? e.packages : [
+        { id: uid(), name: "Basic", description: "", lineItems: [{ id: uid(), description: "", quantity: 1, unitPrice: 0 }] },
+        { id: uid(), name: "Premium", description: "", lineItems: [{ id: uid(), description: "", quantity: 1, unitPrice: 0 }] },
+      ]);
+    } else {
       // Lead Intake's "Convert to Estimate" (LeadIntakePage.tsx) opens this
       // builder pre-targeted at a specific customer via initialCustomerId,
       // same one-shot pattern as the FAB's autoOpenNew — falls back to the
@@ -138,7 +166,7 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
         { id: uid(), name: "Premium", description: "", lineItems: [{ id: uid(), description: "", quantity: 1, unitPrice: 0 }] },
       ]);
     }
-  }, [open, initialCustomerId, initialDraft]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, initialCustomerId, initialDraft, editing]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const sub = items.reduce((s, i) => s + Number(i.quantity) * Number(i.unitPrice), 0);
   // FEATURE 7 — combined total of every stacked discount + the legacy flat field.
@@ -262,13 +290,13 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
     })) : undefined;
     const usedItems = estimateType === "package" ? [] : items;
     onSave({
-      id: uid(), customerId: cid, estimateType, lineItems: usedItems, packages: pkgData, subtotal: sub, discount: Number(discount), discounts, depositRequired: Number(depositRequired), depositType, depositMandatory, tax, total: tot, status: "pending", createdAt: today(), validUntil: vu, viewed: false, viewedAt: null, terms, notes, internalNote,
+      id: editing?.id || uid(), customerId: cid, estimateType, lineItems: usedItems, packages: pkgData, subtotal: sub, discount: Number(discount), discounts, depositRequired: Number(depositRequired), depositType, depositMandatory, tax, total: tot, status: "pending", createdAt: today(), validUntil: vu, viewed: false, viewedAt: null, terms, notes, internalNote,
       ...(isRecurring ? { isRecurring, recurringMode, recurringFreq, recurringInterval, recurringWeekdays } : {}),
     });
   };
 
   return (
-    <Modal open={open} onClose={onClose} title="Build Estimate" maxW="max-w-3xl">
+    <Modal open={open} onClose={onClose} title={editing ? "Edit Quote" : "Build Estimate"} maxW="max-w-3xl">
       <div className="space-y-4">
         <div className="grid md:grid-cols-2 gap-3">
           <div><label className="text-xs text-white/60 mb-1 block">Customer</label><CustomerPicker customers={customers} value={cid} onChange={id => { setCid(id); setSelectedAddressId("primary"); setSaveError(""); }} /></div>
@@ -628,7 +656,7 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
         </Glass>
 
         {saveError && <div className="text-xs text-red-300 text-right" role="alert">{saveError}</div>}
-        <div className="flex gap-2 justify-end"><GBtn variant="ghost" onClick={onClose}>Cancel</GBtn><GBtn onClick={submit} data-builder-save>Create</GBtn></div>
+        <div className="flex gap-2 justify-end"><GBtn variant="ghost" onClick={onClose}>Cancel</GBtn><GBtn onClick={submit} data-builder-save>{editing ? "Save changes" : "Create"}</GBtn></div>
       </div>
     </Modal>
   );

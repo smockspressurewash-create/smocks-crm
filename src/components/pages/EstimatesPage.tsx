@@ -108,6 +108,50 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
     setBuilderOpen(true);
     if ((e as any).declineReasonCategory === "price") toast?.("Declined for price — this starts from their old quote so you can lower it before sending.", "yellow");
   };
+  // FEATURE (user report) — "edit estimates after creating them and
+  // sending them." Opens the builder on this quote and saves over it (same
+  // id, so the customer's link shows the new version). A paid one can't be
+  // changed; an approved one goes back to waiting for their approval.
+  const [editingEst, setEditingEst] = useState<any>(null);
+  const openEdit = (e: any) => {
+    if (e.paidAt) { toast?.("This one's already paid, so it can't be changed. Duplicate it to start a new quote.", "yellow"); return; }
+    setEditingEst(e);
+    setBuilderOpen(true);
+  };
+  const saveEdit = async (est: any) => {
+    const orig = editingEst;
+    if (!orig) return;
+    const fields = ["customerId", "estimateType", "lineItems", "packages", "subtotal", "discount", "discounts", "depositRequired", "depositType", "depositMandatory", "tax", "total", "validUntil", "terms", "notes", "internalNote", "isRecurring", "recurringMode", "recurringFreq", "recurringInterval", "recurringWeekdays"];
+    const patch: any = {};
+    for (const f of fields) if (f in est && (f in orig || est[f] != null)) patch[f] = est[f] ?? null;
+    if (!est.isRecurring && orig.isRecurring) patch.isRecurring = false;
+    const signed = orig.status === "approved" || !!orig.signedAt;
+    const priceChanged = Number(orig.total) !== Number(est.total) || JSON.stringify(orig.lineItems || []) !== JSON.stringify(est.lineItems || []);
+    if (signed && priceChanged) {
+      const ok = await confirmAsync({ title: "Customer already approved this quote", message: "Saving these changes takes their approval off, so they'll need to approve the new version. Send it to them again after saving.", confirmLabel: "Save changes", danger: false });
+      if (!ok) return;
+      Object.assign(patch, { status: "pending", signedAt: null, sigData: null });
+    }
+    if (orig.status === "rejected") Object.assign(patch, { status: "pending", declinedAt: null });
+    setEstimates((prev: any[]) => prev.map(x => x.id === orig.id ? { ...x, ...patch } : x));
+    setBuilderOpen(false);
+    setEditingEst(null);
+    let r: any;
+    try { r = await withTimeout<any>((supabase as any).from("estimates").update(patch).eq("id", orig.id).select("id"), 15000, "Save quote"); }
+    catch (err: any) { r = { error: { message: err?.message || "no connection" } }; }
+    if (r?.error || !Array.isArray(r?.data) || r.data.length === 0) {
+      setEstimates((prev: any[]) => prev.map(x => x.id === orig.id ? orig : x));
+      toast?.("Changes didn't save — " + (r?.error?.message || "the server didn't confirm it") + ". The quote is unchanged; try again.", "red");
+      return;
+    }
+    // A job already made from this quote carries its price.
+    if (orig.jobId && Number(orig.total) !== Number(est.total)) {
+      setJobs((prev: any[]) => prev.map(j => j.id === orig.jobId ? { ...j, amount: est.total } : j));
+      (supabase as any).from("jobs").update({ amount: est.total }).eq("id", orig.jobId).then((jr: any) => { if (jr?.error) console.warn("[EditQuote] job amount not updated:", jr.error.message); });
+    }
+    const wasSent = !!(orig.sentAt || orig.clientViewedAt || orig.status !== "pending");
+    toast?.(wasSent ? "Quote updated ✓ — their link shows the new version. Tap Send to let them know." : "Quote updated ✓", "green");
+  };
   // FEATURE — "the popup should be in the CRM with the CRM's UI" — replaces
   // window.confirm() for delete actions with a real branded modal.
   const { confirmAsync, ConfirmDialog } = useConfirm();
@@ -333,14 +377,37 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
     toast(`Downloaded ${selected.length} quote${selected.length !== 1 ? "s" : ""}`);
   };
 
-  const duplicate = e => {
-    // BUG FIX — local-state-only, no Supabase write — a reload silently
-    // dropped every duplicated estimate.
-    const copy = { ...e, id: uid(), createdAt: today(), validUntil: daysFromNow(30), status: "pending", viewed: false, viewedAt: null };
-    setEstimates([copy, ...estimates]);
-    (supabase as any).from("estimates").insert(copy)
-      .then((r: any) => { if (r?.error) { console.error("[Duplicate] insert failed:", r.error.message); toast("Duplicated locally, but failed to sync — " + r.error.message, "red"); } else toast("Quote duplicated"); })
-      .catch((e2: any) => { console.error("[Duplicate] insert threw:", e2?.message); toast("Duplicated locally, but failed to sync — " + (e2?.message || "unknown error"), "red"); });
+  // A copy is a fresh, unsent quote: nothing about the original's sending,
+  // signing, payment or invoice comes along. BUG FIX — it used to copy all
+  // of that (a copy of a signed quote showed as signed), and on a failed
+  // save it left a copy on screen that vanished on reload.
+  const FRESH_QUOTE_RESET = {
+    status: "pending", viewed: false, viewedAt: null, clientViewedAt: null, sentAt: null,
+    signedAt: null, sigData: null, declinedAt: null, declineReason: null, declineReasonCategory: null,
+    invoiced: false, invoicedAt: null, paidAt: null, paidDeposit: null, paidFull: null, depositPaidAt: null,
+    paymentFailedAt: null, paymentLog: null, refundedAt: null, refundedAmount: null, disputedAt: null,
+    stripeInvoiceId: null, squareInvoiceId: null, stripePaymentIntentId: null, stripePaymentStatus: null, jobId: null,
+  };
+  const duplicate = async e => {
+    const copy: any = { ...e, ...FRESH_QUOTE_RESET, id: uid(), createdAt: today(), validUntil: daysFromNow(30), owner_id: e.owner_id || ownerId };
+    if ("created_at" in e) copy.created_at = new Date().toISOString();
+    // Only reset fields this quote has, so a copy never names a column the
+    // database doesn't have.
+    for (const k of Object.keys(FRESH_QUOTE_RESET)) if (!(k in e) && k !== "status") delete copy[k];
+    setEstimates((prev: any[]) => [copy, ...prev]);
+    let r: any = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try { r = await withTimeout<any>((supabase as any).from("estimates").insert(copy).select("id"), 15000, "Duplicate quote"); }
+      catch (err: any) { r = { error: { message: err?.message || "no connection" } }; }
+      if (!r?.error && Array.isArray(r?.data) && r.data.length > 0) break;
+    }
+    if (r?.error || !Array.isArray(r?.data) || r.data.length === 0) {
+      console.error("[Duplicate] insert failed:", r?.error?.message || "matched 0 rows");
+      setEstimates((prev: any[]) => prev.filter(x => x.id !== copy.id));
+      toast("Couldn't duplicate the quote — " + (r?.error?.message || "the server didn't save it") + ". Nothing was copied; try again.", "red");
+      return;
+    }
+    toast("Quote duplicated");
   };
 
   const exportPDF = e => {
@@ -564,14 +631,16 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
                 <button onClick={() => openPreview(e)} className="flex-1 p-1.5 rounded-lg hover:bg-white/10 text-white/60 hover:text-white text-[11px] transition flex items-center justify-center gap-1"><Eye size={11} />View</button>
                 <button onClick={() => { setSendModalEst(e); setSendChannel(e.sendChannel || "email"); setSendTemplateId(e.templateId || ""); setSendPreviewOn(false); }} title="Send quote to customer" className="flex-1 p-1.5 rounded-lg hover:bg-green-900/30 text-white/60 hover:text-green-400 text-[11px] transition flex items-center justify-center gap-1"><Send size={11} />Send</button>
                 <button onClick={() => onPortal(e.id)} className="flex-1 p-1.5 rounded-lg hover:bg-purple-900/30 text-white/60 hover:text-purple-400 text-[11px] transition flex items-center justify-center gap-1" title="Preview exactly what the customer sees — sign, pay, and account history"><Globe size={11} />Preview as Customer</button>
-                <button onClick={() => duplicate(e)} className="p-1.5 rounded-lg hover:bg-white/10 text-white/60 hover:text-white text-[11px] transition flex items-center justify-center"><Copy size={11} /></button>
+                <button onClick={() => openEdit(e)} title="Edit quote" aria-label="Edit quote" className="p-1.5 rounded-lg hover:bg-white/10 text-white/60 hover:text-white text-[11px] transition flex items-center justify-center"><Edit size={11} /></button>
+                <button onClick={() => duplicate(e)} title="Duplicate quote" aria-label="Duplicate quote" className="p-1.5 rounded-lg hover:bg-white/10 text-white/60 hover:text-white text-[11px] transition flex items-center justify-center"><Copy size={11} /></button>
               </div>
             </Glass>
           );
         })}
       </div>
 
-      <EstimateBuilder open={builderOpen} onClose={() => { setBuilderOpen(false); setResendDraft(null); setBuilderFor(""); }} customers={customers} services={services} settings={settings} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} initialCustomerId={builderFor} initialDraft={resendDraft} onSave={est => {
+      <EstimateBuilder open={builderOpen} onClose={() => { setBuilderOpen(false); setResendDraft(null); setBuilderFor(""); setEditingEst(null); }} customers={customers} services={services} settings={settings} estimateTemplates={estimateTemplates} setEstimateTemplates={setEstimateTemplates} initialCustomerId={builderFor} initialDraft={resendDraft} editing={editingEst} onSave={est => {
+        if (editingEst) { saveEdit(est); return; }
         // BUG FIX — missing owner_id violated the owner_id-scoped RLS policy
         // added by the multi-tenant migration (WITH CHECK owner_id =
         // current_owner_id()), so this insert was silently rejected.
