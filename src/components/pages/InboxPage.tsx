@@ -317,7 +317,14 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
         const { data, error } = await (supabase as any).from("inbox_threads").select("*").eq("channel", "sms");
         if (error) { console.warn("[Inbox] inbox_threads fetch failed — run the inbox_threads SQL:", error.message); return; }
         if (cancelled || !Array.isArray(data)) return;
-        const fromServer = data.map(normalizeInboxThread);
+        // Alfred Cockpit status texts ("Alfred Cockpit #9ee7 · Ready to
+        // try…") are app-building notes to the owner and developer, not
+        // customer conversations. They used to be copied into the Inbox;
+        // older copies are hidden here (cockpitBridge.ts no longer adds them).
+        const isCockpitNote = (m: any) => m?.dir === "out" && /^Alfred Cockpit #[0-9a-f]{4}/.test(String(m?.body || ""));
+        const fromServer = data.map(normalizeInboxThread)
+          .map((t: any) => Array.isArray(t.messages) && t.messages.some(isCockpitNote) ? { ...t, messages: t.messages.filter((m: any) => !isCockpitNote(m)) } : t)
+          .filter((t: any) => !Array.isArray(t.messages) || t.messages.length > 0);
         setThreads((prev: any[]) => {
           const byId = new Map(fromServer.map(t => [t.id, t]));
           // ISSUE 1 (round 8) — this used to wholesale-replace an EXISTING

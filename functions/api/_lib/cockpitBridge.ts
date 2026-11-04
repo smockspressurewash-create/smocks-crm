@@ -265,7 +265,10 @@ export const textCockpitPhones = async (env: Record<string, string>, ownerId: st
 };
 
 // Put the Cockpit text into that phone's Alfred conversation (so a reply
-// like "yes" or "make it live" has context) and into the Inbox.
+// like "yes" or "make it live" has context). Not into the SMS Inbox: it's
+// a note about building the app, not a customer conversation (user report:
+// "this weird SMS thing inside the SMS inbox"). The Cockpit page keeps the
+// full history.
 const rememberSent = async (env: Record<string, string>, ownerId: string, phone: string, body: string) => {
   const q = `alfred_sms_threads?owner_id=eq.${encodeURIComponent(ownerId)}&phone=eq.${encodeURIComponent(phone)}`;
   const rows: any[] = await (await sb(env, `${q}&select=messages&limit=1`)).json().catch(() => []);
@@ -276,8 +279,4 @@ const rememberSent = async (env: Record<string, string>, ownerId: string, phone:
   } else {
     await sb(env, "alfred_sms_threads", { method: "POST", body: JSON.stringify({ owner_id: ownerId, phone, messages: [msg], updated_at: new Date().toISOString() }) });
   }
-  await sb(env, "rpc/find_or_create_inbox_thread", {
-    method: "POST",
-    body: JSON.stringify({ p_owner_id: ownerId, p_channel: "sms", p_contact_phone: phone, p_contact_name: COCKPIT_PHONES[digits10(phone)]?.isOwner ? "You" : "Developer", p_customer_id: null, p_message: { id: crypto.randomUUID(), dir: "out", body, ts: Date.now(), via: "alfred" }, p_unread: false }),
-  });
 };

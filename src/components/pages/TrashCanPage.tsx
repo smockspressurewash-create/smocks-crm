@@ -98,7 +98,7 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
         if (jobErr || !savedJob) throw new Error(jobErr?.message || "Couldn't save job");
         setCustomers?.((prev: any[]) => [...prev, savedCust]);
         setJobs?.((prev: any[]) => [...prev, savedJob]);
-        toast?.(mode === "dated" ? `Added ✓ — scheduled ${newCustForm.firstDate}` : "Added ✓ — drag them onto a day in Planning below", "green");
+        toast?.(mode === "dated" ? `Added ✓ — scheduled ${newCustForm.firstDate}` : "Added ✓ — drag them onto a day on the Planning tab", "green");
       }
       setNewCustOpen(false);
       setNewCustForm(emptyNewCustForm());
@@ -546,7 +546,8 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
   // ── Upcoming trash can days — real scheduled stops plus projected repeats
   // of recurring customers, grouped by date. ───────────────────────────────
   const [expandedDay, setExpandedDay] = useState<string | null>(null);
-  const HORIZON_DAYS = 56;
+  // Far enough ahead to show the next round of quarterly (13-week) visits.
+  const HORIZON_DAYS = 112;
   const upcomingDays = (() => {
     const start = today();
     const end = daysFromNow(HORIZON_DAYS);
@@ -572,6 +573,45 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
     });
   })();
 
+  // ── Page layout: one tab at a time ──────────────────────────────────────
+  const [tab, setTab] = useState<"schedule" | "customers" | "routes" | "planning" | "settings">("schedule");
+  const [selectedDay, setSelectedDay] = useState<string | null>(null);
+  const [custSearch, setCustSearch] = useState("");
+  const selected = upcomingDays.find(d => d.date === selectedDay) || upcomingDays[0] || null;
+  useEffect(() => {
+    if (selected && selected.date !== selectedDay) { setSelectedDay(selected.date); setRouteDate(selected.date); }
+  }, [selected?.date]); // eslint-disable-line react-hooks/exhaustive-deps
+  const weekStart = (date: string) => { const d = new Date(date + "T12:00:00"); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d; };
+  const scheduleWeeks = (() => {
+    const out: { key: string; label: string; days: typeof upcomingDays }[] = [];
+    for (const day of upcomingDays) {
+      const ws = weekStart(day.date);
+      const key = ws.toISOString().slice(0, 10);
+      let w = out.find(x => x.key === key);
+      if (!w) { w = { key, label: "Week of " + ws.toLocaleDateString(undefined, { month: "short", day: "numeric" }), days: [] }; out.push(w); }
+      w.days.push(day);
+    }
+    return out;
+  })();
+  const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const dayLabel = (date: string) => date ? new Date(date + "T12:00:00").toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) : "";
+  const customerGroups = (() => {
+    const q = custSearch.trim().toLowerCase();
+    const groups: Record<string, any[]> = {};
+    for (const c of trashCanCustomers as any[]) {
+      if (q && !`${c.firstName} ${c.lastName} ${c.address}`.toLowerCase().includes(q)) continue;
+      const j = customerTrashJob(c.id);
+      const active = j && j.status !== "cancelled" && j.status !== "completed";
+      const label = !active ? "Off schedule" : (j as any).dayAssignmentConfirmed === false || !j?.scheduledDate ? "Unassigned" : WEEKDAY_NAMES[new Date(j.scheduledDate + "T12:00:00").getDay()];
+      (groups[label] = groups[label] || []).push(c);
+    }
+    const order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday", "Unassigned", "Off schedule"];
+    return order.filter(l => groups[l]).map(label => ({
+      label,
+      customers: groups[label].sort((a, b) => (customerTrashJob(a.id)?.scheduledTime || "99").localeCompare(customerTrashJob(b.id)?.scheduledTime || "99")),
+    }));
+  })();
+
   return (
     // Extra bottom padding (beyond <main>'s own pb-16) so the last row of
     // "Upcoming Trash Can Jobs" — this page's longest, most-variable-length
@@ -580,200 +620,111 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
     // reservation) with no more scroll room to reveal it.
     <div className="space-y-4 pb-10 md:pb-0">
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <Stat icon={Trash2} label="Active Routes" value={String(upcoming.length)} />
+        <Stat icon={Trash2} label="Upcoming Visits" value={String(upcoming.length)} />
         <Stat icon={DollarSign} label="Cost / Can" value={fmt(costPerCan)} />
         <Stat icon={Clock} label="Est. Min / Can" value={String(minutesPerCan)} />
         <Stat icon={Users} label="Customers" value={String(trashCanCustomers.length)} />
       </div>
 
-      <Glass className="p-4 space-y-3">
-        <div className="flex items-center justify-between flex-wrap gap-2">
-          <div className="font-semibold text-sm flex items-center gap-2"><Users size={14} className="text-red-400" />Trash Can Customers</div>
-          <div className="flex items-center gap-2">
-            <GBtn variant="ghost" onClick={() => setBulkImportOpen(true)} className="!text-xs">📋 Bulk Import</GBtn>
-            <GBtn onClick={() => setNewCustOpen(true)} className="!text-xs"><Plus size={12} className="inline mr-1" />New Customer</GBtn>
-          </div>
-        </div>
-        <div className="text-[10px] text-white/40">Only customers with a trash-can service on file — they also appear in the normal Customers page like anyone else.</div>
-        {trashCanCustomers.length === 0 ? (
-          <div className="text-center py-6 text-white/30 text-xs">No trash-can customers yet.</div>
-        ) : (
-          <div className="grid sm:grid-cols-2 gap-2 max-h-72 overflow-y-auto">
-            {trashCanCustomers.map(c => {
-              const custJob = customerTrashJob(c.id);
-              const active = custJob && custJob.status !== "cancelled" && custJob.status !== "completed";
+      {pendingFeeJobs.length > 0 && (
+        <Glass className="p-4 space-y-2 !bg-yellow-950/15 !border-yellow-700/30">
+          <div className="font-semibold text-sm flex items-center gap-2 text-yellow-300"><AlertTriangle size={14} />Inconvenience Fees Needing Collection ({pendingFeeJobs.length})</div>
+          <div className="text-[10px] text-white/40">The crew couldn't auto-charge these — no card on file, or the charge failed. Collect them here.</div>
+          <div className="space-y-1.5">
+            {pendingFeeJobs.map((j: any) => {
+              const c = cf(j.customerId);
+              const canCharge = !!(c?.stripeCustomerId && c?.savedPaymentMethodId);
               return (
-                <div key={c.id} className={"p-2.5 rounded-lg border text-xs flex items-start gap-2 " + (active ? "bg-black/30 border-white/10" : "bg-black/20 border-white/5 opacity-70")}>
-                  <button onClick={() => custJob && openEditJob(custJob)} className="flex-1 min-w-0 text-left" title="Edit schedule">
-                    <div className="font-medium text-white/80 truncate flex items-center gap-1.5">
-                      {c.firstName} {c.lastName}
-                      <span className={"text-[9px] px-1.5 py-0.5 rounded-full border flex-shrink-0 " + (!active ? "text-white/40 border-white/10" : custJob?.isRecurring ? "text-blue-300 border-blue-800/40 bg-blue-950/30" : "text-amber-300 border-amber-800/40 bg-amber-950/30")}>
-                        {!active ? "Off schedule" : freqLabel(custJob)}
-                      </span>
-                    </div>
-                    <div className="text-[10px] text-white/40 flex items-center gap-1 truncate"><MapPin size={9} className="flex-shrink-0" />{c.address || "No address"}</div>
-                    {custJob && <div className="text-[10px] text-white/30 mt-0.5">{!active ? "Tap to put back on the schedule" : (custJob as any).dayAssignmentConfirmed === false ? "Unassigned — see Planning below" : `Next: ${custJob.scheduledDate}`}</div>}
-                  </button>
-                  <div className="flex gap-1 flex-shrink-0">
-                    {custJob && <button onClick={() => openEditJob(custJob)} className="p-1.5 rounded bg-white/5 text-white/50 hover:text-white" title="Edit"><Edit2 size={11} /></button>}
-                    <button onClick={() => deleteTrashCustomer(c.id)} className="p-1.5 rounded bg-white/5 text-white/40 hover:text-red-300" title="Delete"><Trash2 size={11} /></button>
+                <div key={j.id} className="p-2.5 rounded-lg bg-black/40 border border-yellow-800/20 flex flex-col sm:flex-row sm:items-center gap-2">
+                  <div className="flex-1 min-w-0 text-xs">
+                    <div className="font-medium truncate">{c ? `${c.firstName} ${c.lastName}` : "Customer"}</div>
+                    <div className="text-white/40 truncate">{j.address} · {fmt(Number((settings as any)?.trashCanInconvenienceFeeAmount) || 15)} fee</div>
+                  </div>
+                  <div className="flex gap-1.5 flex-shrink-0 flex-wrap">
+                    <GBtn disabled={!canCharge || chargingPendingId === j.id} onClick={() => chargePendingFee(j)} className="!text-[10px] !py-1.5 !px-2.5" title={!canCharge ? "No card on file" : undefined}>
+                      <CreditCard size={11} className="inline mr-1" />{chargingPendingId === j.id ? "Charging…" : "Charge Now"}
+                    </GBtn>
+                    <GBtn variant="ghost" disabled={addingToInvoiceId === j.id} onClick={() => addFeeToInvoice(j)} className="!text-[10px] !py-1.5 !px-2.5">
+                      <FileText size={11} className="inline mr-1" />{addingToInvoiceId === j.id ? "Adding…" : "Add to Next Invoice"}
+                    </GBtn>
                   </div>
                 </div>
               );
             })}
           </div>
-        )}
-      </Glass>
+        </Glass>
+      )}
 
+      {/* One area at a time (user report: "so much going on … it doesn't
+          sort them or organize them into separate days"). */}
+      <div className="flex gap-1 p-1 rounded-xl bg-black/40 border border-white/10 overflow-x-auto">
+        {([
+          ["schedule", "Schedule", null],
+          ["customers", "Customers", trashCanCustomers.length],
+          ["routes", "Routes", routes.length],
+          ["planning", "Planning", unassigned.length || null],
+          ["settings", "Settings", null],
+        ] as const).map(([k, label, n]) => (
+          <button key={k} onClick={() => setTab(k)} className={"px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition " + (tab === k ? "bg-red-600/30 border border-red-500/40 text-white" : "text-white/50 hover:text-white/80 border border-transparent")}>
+            {label}{n ? <span className={"ml-1.5 text-[10px] " + (k === "planning" ? "text-yellow-300" : "text-white/40")}>{n}</span> : null}
+          </button>
+        ))}
+      </div>
+
+      {tab === "schedule" && <>
       <Glass className="p-4 space-y-3">
-        <div className="font-semibold text-sm flex items-center gap-2"><Calendar size={14} className="text-green-400" />Upcoming Trash Can Days</div>
-        <div className="text-[10px] text-white/40">Next 8 weeks. Recurring customers' future cleanings are projected from their schedule (marked "repeat").</div>
+        <div className="font-semibold text-sm flex items-center gap-2"><Calendar size={14} className="text-green-400" />Schedule</div>
         {upcomingDays.length === 0 ? (
-          <div className="text-center py-6 text-white/30 text-xs">No trash can days scheduled yet.</div>
+          <div className="text-center py-6 text-white/30 text-xs">No trash can days scheduled yet — add customers on the Customers tab.</div>
         ) : (
-          <div className="space-y-1.5 max-h-96 overflow-y-auto">
-            {upcomingDays.map(({ date, stops }) => {
-              const d = new Date(date + "T12:00:00");
+          <div className="grid md:grid-cols-[230px_1fr] gap-4">
+            <div className="space-y-3 md:max-h-[560px] md:overflow-y-auto md:pr-1">
+              {scheduleWeeks.map(w => (
+                <div key={w.key} className="space-y-1.5">
+                  <div className="text-[10px] uppercase tracking-wider text-white/40">{w.label}</div>
+                  <div className="grid grid-cols-2 md:grid-cols-1 gap-1.5">
+                    {w.days.map(({ date, stops }) => {
+                      const d = new Date(date + "T12:00:00");
+                      const sel = date === selectedDay;
+                      const projected = stops.every(s => s.projected);
+                      return (
+                        <button key={date} onClick={() => { setSelectedDay(date); setRouteDate(date); setRoute(null); setRouteNote(""); if (isMobile) setTimeout(() => document.getElementById("trash-day-detail")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50); }}
+                          className={"p-2 rounded-lg border text-left transition flex items-center gap-2 " + (sel ? "bg-red-900/30 border-red-500/50" : "bg-black/30 border-white/10 hover:border-white/25")}>
+                          <div className="w-10 text-center flex-shrink-0">
+                            <div className="text-[9px] uppercase text-white/40">{d.toLocaleDateString(undefined, { weekday: "short" })}</div>
+                            <div className="text-sm font-semibold">{d.getDate()}</div>
+                          </div>
+                          <div className="min-w-0 text-[11px]">
+                            <div className="text-white/80">{stops.length} stop{stops.length !== 1 ? "s" : ""}</div>
+                            <div className="text-white/40 truncate">{date === today() ? "Today" : projected ? "Repeat" : d.toLocaleDateString(undefined, { month: "short" })}</div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+            {selected ? (() => {
+              const { date, stops } = selected;
+              const projected = stops.every(s => s.projected);
               const cans = stops.reduce((n, s) => n + ((s.job as any).cansCount || 1), 0);
               const revenue = stops.reduce((n, s) => n + (Number(s.job.amount) || 0), 0);
-              const open = expandedDay === date;
-              const isToday = date === today();
+              const ordered = [...stops].sort((a, b) => (a.job.scheduledTime || "99").localeCompare(b.job.scheduledTime || "99"));
+              const showRoute = route && routeDate === date;
               return (
-                <div key={date} className={"rounded-lg border " + (isToday ? "border-green-700/40 bg-green-950/15" : "border-white/10 bg-black/30")}>
-                  <button onClick={() => setExpandedDay(open ? null : date)} className="w-full p-2.5 flex items-center gap-3 text-left">
-                    <div className="w-12 text-center flex-shrink-0">
-                      <div className="text-[9px] uppercase tracking-wider text-white/40">{d.toLocaleDateString(undefined, { weekday: "short" })}</div>
-                      <div className="text-sm font-semibold">{d.toLocaleDateString(undefined, { month: "short", day: "numeric" })}</div>
+                <div id="trash-day-detail" className="space-y-3 min-w-0 scroll-mt-20">
+                  <div className="flex items-start justify-between gap-2 flex-wrap">
+                    <div>
+                      <div className="text-base font-semibold">{new Date(date + "T12:00:00").toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}</div>
+                      <div className="text-[11px] text-white/50">{stops.length} stop{stops.length !== 1 ? "s" : ""} · {cans} can{cans !== 1 ? "s" : ""} · {fmt(revenue)} · ~{cans * minutesPerCan} min on site</div>
                     </div>
-                    <div className="flex-1 min-w-0 text-xs">
-                      <div className="text-white/80">{stops.length} stop{stops.length !== 1 ? "s" : ""} · {cans} can{cans !== 1 ? "s" : ""}{isToday ? " · Today" : ""}</div>
-                      <div className="text-[10px] text-white/40 truncate">{stops.map(s => { const c = cf(s.job.customerId); return c ? `${c.firstName} ${c.lastName}`.trim() : "Customer"; }).join(", ")}</div>
-                    </div>
-                    <div className="text-right flex-shrink-0 text-[10px] text-white/50">
-                      <div>{fmt(revenue)}</div>
-                      <div>~{cans * minutesPerCan}m</div>
-                    </div>
-                    {open ? <ChevronUp size={12} className="text-white/40" /> : <ChevronDown size={12} className="text-white/40" />}
-                  </button>
-                  {open && (
-                    <div className="border-t border-white/10 p-2 space-y-1">
-                      {stops.map(({ job, projected }) => {
-                        const c = cf(job.customerId);
-                        return (
-                          <div key={job.id + date} className="flex items-center gap-2 p-1.5 rounded bg-black/30 text-[11px]">
-                            <span className="flex-1 min-w-0 truncate">{c ? `${c.firstName} ${c.lastName}` : "Customer"} <span className="text-white/30">· {job.address}</span></span>
-                            <span className="text-white/40 flex-shrink-0">{(job as any).cansCount || 1} can{((job as any).cansCount || 1) !== 1 ? "s" : ""}</span>
-                            {projected && <span className="text-[9px] px-1.5 rounded-full border border-blue-800/40 text-blue-300 flex-shrink-0">repeat</span>}
-                            <button onClick={() => openEditJob(job)} className="p-1 rounded bg-white/5 text-white/50 hover:text-white flex-shrink-0" title="Edit"><Edit2 size={10} /></button>
-                          </div>
-                        );
-                      })}
-                      {!stops.some(s => s.projected) && (
-                        <GBtn variant="ghost" onClick={() => { setRouteDate(date); setRoute(null); toast?.(`Route date set to ${date} — hit Build Optimized Route below`); }} className="!text-[10px] !py-1 w-full !justify-center"><RouteIcon size={10} className="inline mr-1" />Plan this day's route</GBtn>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </Glass>
-
-      <Modal open={newCustOpen} onClose={() => setNewCustOpen(false)} title="New Trash Can Customer" maxW="max-w-md">
-        <div className="space-y-3">
-          <div className="grid grid-cols-2 gap-2">
-            <GInput placeholder="First name" value={newCustForm.firstName} onChange={e => setNewCustForm(f => ({ ...f, firstName: e.target.value }))} />
-            <GInput placeholder="Last name" value={newCustForm.lastName} onChange={e => setNewCustForm(f => ({ ...f, lastName: e.target.value }))} />
-          </div>
-          <GInput placeholder="Phone" value={newCustForm.phone} onChange={e => setNewCustForm(f => ({ ...f, phone: e.target.value }))} />
-          <GInput placeholder="Email (optional)" value={newCustForm.email} onChange={e => setNewCustForm(f => ({ ...f, email: e.target.value }))} />
-          <div>
-            <label className="text-[10px] text-white/50 mb-1 block flex items-center gap-1"><MapPin size={10} />Current location</label>
-            <AddressAutocomplete
-              value={newCustForm.address}
-              onChange={v => setNewCustForm(f => ({ ...f, address: v }))}
-              onPlaceSelect={p => setNewCustForm(f => ({ ...f, lat: p.lat, lng: p.lng }))}
-              mapsKey={(settings as any)?.googleMapsKey || (settings as any)?.mapsKey || ""}
-              placeholder="123 Main St, York PA"
-              knownAddresses={customers.map((c: any) => c.address).filter(Boolean)}
-            />
-          </div>
-          <div className="grid grid-cols-3 gap-2">
-            <div>
-              <label className="text-[10px] text-white/50 mb-1 block">Cans</label>
-              <GInput type="number" min="1" value={newCustForm.cansCount} onChange={e => setNewCustForm(f => ({ ...f, cansCount: Math.max(1, Number(e.target.value) || 1) }))} />
-            </div>
-            <div className="col-span-2">
-              <label className="text-[10px] text-white/50 mb-1 block">Service</label>
-              <GSel value={newCustForm.freq} onChange={(e: any) => setNewCustForm(f => ({ ...f, freq: e.target.value }))}>
-                {FREQ_OPTIONS.map(o => <option key={o.key} value={o.key} className="bg-black">{o.label}</option>)}
-              </GSel>
-            </div>
-          </div>
-          <div>
-            <label className="text-[10px] text-white/50 mb-1 block">{newCustForm.freq === "one_time" ? "Cleaning date" : "First service date"} <span className="text-white/30">(optional)</span></label>
-            <GInput type="date" value={newCustForm.firstDate} onChange={e => setNewCustForm(f => ({ ...f, firstDate: e.target.value }))} />
-          </div>
-          {newCustForm.firstDate ? (
-            <GBtn onClick={() => addTrashCanCustomer("dated")} disabled={addingCustomer} className="w-full !justify-center">{addingCustomer ? "Adding…" : `Add & Schedule ${newCustForm.firstDate}`}</GBtn>
-          ) : (
-            <>
-              <div className="flex gap-2 pt-1">
-                <GBtn onClick={() => addTrashCanCustomer("auto")} disabled={addingCustomer} className="flex-1 !justify-center">{addingCustomer ? "Adding…" : "Add to Route (Auto)"}</GBtn>
-                <GBtn variant="ghost" onClick={() => addTrashCanCustomer("manual")} disabled={addingCustomer}>Add Manually</GBtn>
-              </div>
-              <div className="text-[10px] text-white/30">Auto finds the least-loaded existing service day and skips holiday weeks. Manual leaves them unassigned in Planning below for you to drag onto a day yourself. Or pick a date above to schedule them directly.</div>
-            </>
-          )}
-        </div>
-      </Modal>
-
-      <BulkJobImportModal
-        open={bulkImportOpen}
-        onClose={() => setBulkImportOpen(false)}
-        customers={customers}
-        setCustomers={setCustomers}
-        jobs={jobs}
-        setJobs={setJobs}
-        employees={employees}
-        settings={settings}
-        toast={toast}
-        ownerId={ownerId}
-        defaultServiceCategory="trash_can"
-      />
-
-      <Glass className="p-4 space-y-3">
-        <div className="font-semibold text-sm flex items-center gap-2"><Trash2 size={14} className="text-red-400" />Pricing & Scheduling</div>
-        <div className="grid sm:grid-cols-2 gap-3">
-          <div><label className="text-xs text-white/60 mb-1 block">Cost per can</label><GInput type="number" step="0.5" value={(settings as any)?.trashCanCostPerCan ?? 5} onChange={(e: any) => setSettings((s: any) => ({ ...s, trashCanCostPerCan: Number(e.target.value) || 0 }))} className="!text-xs" /></div>
-          <div><label className="text-xs text-white/60 mb-1 block">Estimated minutes per can</label><GInput type="number" value={(settings as any)?.trashCanMinutesPerCan ?? 5} onChange={(e: any) => setSettings((s: any) => ({ ...s, trashCanMinutesPerCan: Number(e.target.value) || 0 }))} className="!text-xs" /></div>
-          <div>
-            <label className="text-xs text-white/60 mb-1 block">Default frequency</label>
-            <GSel value={(settings as any)?.trashCanDefaultFrequency || "weekly"} onChange={(e: any) => setSettings((s: any) => ({ ...s, trashCanDefaultFrequency: e.target.value }))} className="!text-xs">
-              {FREQ_OPTIONS.filter(o => o.key !== "one_time").map(o => <option key={o.key} value={o.key} className="bg-black">{o.label}</option>)}
-            </GSel>
-          </div>
-          <div><label className="text-xs text-white/60 mb-1 block">Inconvenience fee name</label><GInput value={(settings as any)?.trashCanInconvenienceFeeName || "Cans Not Out Fee"} onChange={(e: any) => setSettings((s: any) => ({ ...s, trashCanInconvenienceFeeName: e.target.value }))} className="!text-xs" /></div>
-          <div><label className="text-xs text-white/60 mb-1 block">Inconvenience fee amount</label><GInput type="number" step="0.5" value={(settings as any)?.trashCanInconvenienceFeeAmount ?? 15} onChange={(e: any) => setSettings((s: any) => ({ ...s, trashCanInconvenienceFeeAmount: Number(e.target.value) || 0 }))} className="!text-xs" /></div>
-          <div><label className="text-xs text-white/60 mb-1 block">Route lunch break (minutes) <span className="text-white/30">(0 = none)</span></label><GInput type="number" value={(settings as any)?.routeLunchMinutes ?? 30} onChange={(e: any) => setSettings((s: any) => ({ ...s, routeLunchMinutes: Number(e.target.value) || 0 }))} className="!text-xs" /></div>
-        </div>
-        <div className="pt-2 border-t border-white/10">
-          <label className="text-xs text-white/60 mb-1 block">Public signup link — customers enter can count, see price, choose schedule, put a card on file</label>
-          <div className="flex gap-2">
-            <GInput readOnly value={signupLink} className="!text-xs flex-1" />
-            <GBtn variant="ghost" onClick={() => { navigator.clipboard?.writeText(signupLink); toast?.("Link copied ✓"); }} className="!text-xs"><Copy size={12} className="inline mr-1" />Copy</GBtn>
-          </div>
-        </div>
-      </Glass>
-
-      <Glass className="p-4 space-y-3">
-        <div className="font-semibold text-sm flex items-center gap-2"><RouteIcon size={14} className="text-blue-400" />Build a Route</div>
-        <div className="flex gap-2 items-end flex-wrap">
-          <div><label className="text-xs text-white/60 mb-1 block">Date</label><GInput type="date" value={routeDate} onChange={(e: any) => { setRoute(null); setRouteDate(e.target.value); }} className="!text-xs" /></div>
-          <GBtn onClick={buildRoute} disabled={routeBuilding} className="!text-xs">{routeBuilding ? "Finding addresses…" : "Build Optimized Route"}</GBtn>
-        </div>
-        <div className="text-[10px] text-white/40">Closest stop next, by address. Times count your minutes per can plus an estimated drive between stops, starting at that day's earliest time (9:00 AM if none). Includes a lunch break if configured above.</div>
+                    {!projected && <GBtn onClick={buildRoute} disabled={routeBuilding} className="!text-xs"><RouteIcon size={12} className="inline mr-1" />{routeBuilding ? "Finding addresses…" : "Optimize this day"}</GBtn>}
+                  </div>
+                  {projected && <div className="text-[10px] text-white/40">Repeat visits. They become real jobs (and get times) when the visit before them is completed.</div>}
+                  {showRoute ? (
+                    <div className="space-y-2">
+                      <div className="text-[10px] text-white/40">Closest stop next, by address. Times count your minutes per can plus an estimated drive between stops, starting at this day's earliest time. Nothing changes until you tap "Use these times".</div>
         {routeNote && <div className="text-[10px] text-yellow-300/80">{routeNote}</div>}
         {route && (
           <div className="space-y-1.5 pt-2 border-t border-white/10">
@@ -802,8 +753,83 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
             }}><Clock size={11} className="inline mr-1" />{savingRouteTimes ? "Saving…" : "Use these times for the day"}</GBtn>
           </div>
         )}
+                      <button onClick={() => setRoute(null)} className="text-[11px] text-white/40 hover:text-white/70">← Back to the day's list</button>
+                    </div>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {ordered.map(({ job, projected: rep }, i) => {
+                        const c = cf(job.customerId);
+                        return (
+                          <div key={job.id + date} className="flex items-center gap-3 p-2.5 rounded-lg bg-black/30 border border-white/10 text-xs">
+                            <div className="w-16 flex-shrink-0 text-white/70">{job.scheduledTime ? clock(hhmmToMin(job.scheduledTime) ?? 0) : <span className="text-white/30">{i + 1}.</span>}</div>
+                            <div className="flex-1 min-w-0">
+                              <div className="font-medium truncate">{c ? `${c.firstName} ${c.lastName}` : "Customer"}</div>
+                              <div className="text-[10px] text-white/40 truncate">{job.address}</div>
+                            </div>
+                            <div className="text-right flex-shrink-0 text-[10px] text-white/50">
+                              <div>{fmt(Number(job.amount) || 0)}</div>
+                              <div>{(job as any).cansCount || 1} can{((job as any).cansCount || 1) !== 1 ? "s" : ""}{rep ? " · repeat" : ""}</div>
+                            </div>
+                            <button onClick={() => openEditJob(job)} className="p-1.5 rounded bg-white/5 text-white/50 hover:text-white flex-shrink-0" title="Edit"><Edit2 size={11} /></button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })() : <div className="text-xs text-white/40">Pick a day.</div>}
+          </div>
+        )}
       </Glass>
+      </>}
 
+      {tab === "customers" && <>
+      <Glass className="p-4 space-y-3">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div className="font-semibold text-sm flex items-center gap-2"><Users size={14} className="text-red-400" />Trash Can Customers</div>
+          <div className="flex items-center gap-2">
+            <GBtn variant="ghost" onClick={() => setBulkImportOpen(true)} className="!text-xs">📋 Bulk Import</GBtn>
+            <GBtn onClick={() => setNewCustOpen(true)} className="!text-xs"><Plus size={12} className="inline mr-1" />New Customer</GBtn>
+          </div>
+        </div>
+        <div className="text-[10px] text-white/40">Only customers with a trash-can service on file — they also appear in the normal Customers page like anyone else.</div>
+        {trashCanCustomers.length > 0 && <GInput placeholder="Search name or address" value={custSearch} onChange={(e: any) => setCustSearch(e.target.value)} className="!text-xs" />}
+        {trashCanCustomers.length === 0 ? (
+          <div className="text-center py-6 text-white/30 text-xs">No trash-can customers yet.</div>
+        ) : customerGroups.map(group => (
+          <div key={group.label} className="space-y-1.5">
+            <div className="text-[10px] uppercase tracking-wider text-white/40 pt-1">{group.label} · {group.customers.length}</div>
+          <div className="grid sm:grid-cols-2 gap-2">
+            {group.customers.map(c => {
+              const custJob = customerTrashJob(c.id);
+              const active = custJob && custJob.status !== "cancelled" && custJob.status !== "completed";
+              return (
+                <div key={c.id} className={"p-2.5 rounded-lg border text-xs flex items-start gap-2 " + (active ? "bg-black/30 border-white/10" : "bg-black/20 border-white/5 opacity-70")}>
+                  <button onClick={() => custJob && openEditJob(custJob)} className="flex-1 min-w-0 text-left" title="Edit schedule">
+                    <div className="font-medium text-white/80 truncate flex items-center gap-1.5">
+                      {c.firstName} {c.lastName}
+                      <span className={"text-[9px] px-1.5 py-0.5 rounded-full border flex-shrink-0 " + (!active ? "text-white/40 border-white/10" : custJob?.isRecurring ? "text-blue-300 border-blue-800/40 bg-blue-950/30" : "text-amber-300 border-amber-800/40 bg-amber-950/30")}>
+                        {!active ? "Off schedule" : freqLabel(custJob)}
+                      </span>
+                    </div>
+                    <div className="text-[10px] text-white/40 flex items-center gap-1 truncate"><MapPin size={9} className="flex-shrink-0" />{c.address || "No address"}</div>
+                    {custJob && <div className="text-[10px] text-white/30 mt-0.5">{!active ? "Tap to put back on the schedule" : (custJob as any).dayAssignmentConfirmed === false ? "Unassigned — see Planning" : `Next: ${dayLabel(custJob.scheduledDate || "")}${custJob.scheduledTime ? " · " + clock(hhmmToMin(custJob.scheduledTime) ?? 0) : ""}`}</div>}
+                  </button>
+                  <div className="flex gap-1 flex-shrink-0">
+                    {custJob && <button onClick={() => openEditJob(custJob)} className="p-1.5 rounded bg-white/5 text-white/50 hover:text-white" title="Edit"><Edit2 size={11} /></button>}
+                    <button onClick={() => deleteTrashCustomer(c.id)} className="p-1.5 rounded bg-white/5 text-white/40 hover:text-red-300" title="Delete"><Trash2 size={11} /></button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          </div>
+        ))}
+      </Glass>
+      </>}
+
+      {tab === "routes" && <>
       <Glass className="p-4 space-y-3">
         <div className="font-semibold text-sm flex items-center gap-2"><RouteIcon size={14} className="text-purple-400" />Saved Routes</div>
         <div className="text-[10px] text-white/40">Named, reusable routes (e.g. "Tuesday West Side") — unlike the same-day builder above, these persist and can be edited any time.</div>
@@ -913,7 +939,9 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
           </div>
         )}
       </Glass>
+      </>}
 
+      {tab === "planning" && <>
       <Glass className="p-4 space-y-3">
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div className="font-semibold text-sm flex items-center gap-2"><Calendar size={14} className="text-yellow-400" />Planning — Assign Customers to Days</div>
@@ -1040,64 +1068,104 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
           </div>
         )}
       </Glass>
+      </>}
 
-      {pendingFeeJobs.length > 0 && (
-        <Glass className="p-4 space-y-2 !bg-yellow-950/15 !border-yellow-700/30">
-          <div className="font-semibold text-sm flex items-center gap-2 text-yellow-300"><AlertTriangle size={14} />Inconvenience Fees Needing Collection ({pendingFeeJobs.length})</div>
-          <div className="text-[10px] text-white/40">The crew couldn't auto-charge these — no card on file, or the charge failed. Collect them here.</div>
-          <div className="space-y-1.5">
-            {pendingFeeJobs.map((j: any) => {
-              const c = cf(j.customerId);
-              const canCharge = !!(c?.stripeCustomerId && c?.savedPaymentMethodId);
-              return (
-                <div key={j.id} className="p-2.5 rounded-lg bg-black/40 border border-yellow-800/20 flex flex-col sm:flex-row sm:items-center gap-2">
-                  <div className="flex-1 min-w-0 text-xs">
-                    <div className="font-medium truncate">{c ? `${c.firstName} ${c.lastName}` : "Customer"}</div>
-                    <div className="text-white/40 truncate">{j.address} · {fmt(Number((settings as any)?.trashCanInconvenienceFeeAmount) || 15)} fee</div>
-                  </div>
-                  <div className="flex gap-1.5 flex-shrink-0 flex-wrap">
-                    <GBtn disabled={!canCharge || chargingPendingId === j.id} onClick={() => chargePendingFee(j)} className="!text-[10px] !py-1.5 !px-2.5" title={!canCharge ? "No card on file" : undefined}>
-                      <CreditCard size={11} className="inline mr-1" />{chargingPendingId === j.id ? "Charging…" : "Charge Now"}
-                    </GBtn>
-                    <GBtn variant="ghost" disabled={addingToInvoiceId === j.id} onClick={() => addFeeToInvoice(j)} className="!text-[10px] !py-1.5 !px-2.5">
-                      <FileText size={11} className="inline mr-1" />{addingToInvoiceId === j.id ? "Adding…" : "Add to Next Invoice"}
-                    </GBtn>
-                  </div>
-                </div>
-              );
-            })}
+      {tab === "settings" && <>
+      <Glass className="p-4 space-y-3">
+        <div className="font-semibold text-sm flex items-center gap-2"><Trash2 size={14} className="text-red-400" />Pricing & Scheduling</div>
+        <div className="grid sm:grid-cols-2 gap-3">
+          <div><label className="text-xs text-white/60 mb-1 block">Cost per can</label><GInput type="number" step="0.5" value={(settings as any)?.trashCanCostPerCan ?? 5} onChange={(e: any) => setSettings((s: any) => ({ ...s, trashCanCostPerCan: Number(e.target.value) || 0 }))} className="!text-xs" /></div>
+          <div><label className="text-xs text-white/60 mb-1 block">Estimated minutes per can</label><GInput type="number" value={(settings as any)?.trashCanMinutesPerCan ?? 5} onChange={(e: any) => setSettings((s: any) => ({ ...s, trashCanMinutesPerCan: Number(e.target.value) || 0 }))} className="!text-xs" /></div>
+          <div>
+            <label className="text-xs text-white/60 mb-1 block">Default frequency</label>
+            <GSel value={(settings as any)?.trashCanDefaultFrequency || "weekly"} onChange={(e: any) => setSettings((s: any) => ({ ...s, trashCanDefaultFrequency: e.target.value }))} className="!text-xs">
+              {FREQ_OPTIONS.filter(o => o.key !== "one_time").map(o => <option key={o.key} value={o.key} className="bg-black">{o.label}</option>)}
+            </GSel>
           </div>
-        </Glass>
-      )}
-
-      <Glass className="overflow-hidden">
-        <div className="px-4 py-3 border-b border-red-900/20 font-semibold text-sm">Upcoming Trash Can Jobs ({upcoming.length})</div>
-        {upcoming.length === 0 ? (
-          <div className="p-8 text-center text-white/40 text-sm">No trash-can jobs yet — share the signup link above to get customers enrolled.</div>
-        ) : (
-          <div className="divide-y divide-red-900/10">
-            {upcoming.map(j => {
-              const c = cf(j.customerId);
-              return (
-                <div key={j.id} className="flex items-center gap-3 p-3">
-                  <div className="w-9 h-9 rounded-xl bg-black/40 border border-red-900/30 flex items-center justify-center flex-shrink-0">🗑️</div>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium truncate">{c ? `${c.firstName} ${c.lastName}` : "Customer"}</div>
-                    <div className="text-xs text-white/40 truncate">{j.address} · {(j as any).cansCount || 1} can{((j as any).cansCount || 1) !== 1 ? "s" : ""} · {freqLabel(j)}</div>
-                  </div>
-                  <div className="text-right flex-shrink-0">
-                    <div className="text-xs text-white/50">{j.scheduledDate}</div>
-                    <Badge tone={j.status === "scheduled" ? "blue" : j.status === "in_progress" ? "yellow" : "gray"}>{j.status}</Badge>
-                  </div>
-                  <button onClick={() => openEditJob(j)} className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 hover:text-white flex-shrink-0" title="Edit schedule/frequency/cans">
-                    <Edit2 size={13} />
-                  </button>
-                </div>
-              );
-            })}
+          <div><label className="text-xs text-white/60 mb-1 block">Inconvenience fee name</label><GInput value={(settings as any)?.trashCanInconvenienceFeeName || "Cans Not Out Fee"} onChange={(e: any) => setSettings((s: any) => ({ ...s, trashCanInconvenienceFeeName: e.target.value }))} className="!text-xs" /></div>
+          <div><label className="text-xs text-white/60 mb-1 block">Inconvenience fee amount</label><GInput type="number" step="0.5" value={(settings as any)?.trashCanInconvenienceFeeAmount ?? 15} onChange={(e: any) => setSettings((s: any) => ({ ...s, trashCanInconvenienceFeeAmount: Number(e.target.value) || 0 }))} className="!text-xs" /></div>
+          <div><label className="text-xs text-white/60 mb-1 block">Route lunch break (minutes) <span className="text-white/30">(0 = none)</span></label><GInput type="number" value={(settings as any)?.routeLunchMinutes ?? 30} onChange={(e: any) => setSettings((s: any) => ({ ...s, routeLunchMinutes: Number(e.target.value) || 0 }))} className="!text-xs" /></div>
+        </div>
+        <div className="pt-2 border-t border-white/10">
+          <label className="text-xs text-white/60 mb-1 block">Public signup link — customers enter can count, see price, choose schedule, put a card on file</label>
+          <div className="flex gap-2">
+            <GInput readOnly value={signupLink} className="!text-xs flex-1" />
+            <GBtn variant="ghost" onClick={() => { navigator.clipboard?.writeText(signupLink); toast?.("Link copied ✓"); }} className="!text-xs"><Copy size={12} className="inline mr-1" />Copy</GBtn>
           </div>
-        )}
+        </div>
       </Glass>
+      </>}
+
+
+
+      <Modal open={newCustOpen} onClose={() => setNewCustOpen(false)} title="New Trash Can Customer" maxW="max-w-md">
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-2">
+            <GInput placeholder="First name" value={newCustForm.firstName} onChange={e => setNewCustForm(f => ({ ...f, firstName: e.target.value }))} />
+            <GInput placeholder="Last name" value={newCustForm.lastName} onChange={e => setNewCustForm(f => ({ ...f, lastName: e.target.value }))} />
+          </div>
+          <GInput placeholder="Phone" value={newCustForm.phone} onChange={e => setNewCustForm(f => ({ ...f, phone: e.target.value }))} />
+          <GInput placeholder="Email (optional)" value={newCustForm.email} onChange={e => setNewCustForm(f => ({ ...f, email: e.target.value }))} />
+          <div>
+            <label className="text-[10px] text-white/50 mb-1 block flex items-center gap-1"><MapPin size={10} />Current location</label>
+            <AddressAutocomplete
+              value={newCustForm.address}
+              onChange={v => setNewCustForm(f => ({ ...f, address: v }))}
+              onPlaceSelect={p => setNewCustForm(f => ({ ...f, lat: p.lat, lng: p.lng }))}
+              mapsKey={(settings as any)?.googleMapsKey || (settings as any)?.mapsKey || ""}
+              placeholder="123 Main St, York PA"
+              knownAddresses={customers.map((c: any) => c.address).filter(Boolean)}
+            />
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <div>
+              <label className="text-[10px] text-white/50 mb-1 block">Cans</label>
+              <GInput type="number" min="1" value={newCustForm.cansCount} onChange={e => setNewCustForm(f => ({ ...f, cansCount: Math.max(1, Number(e.target.value) || 1) }))} />
+            </div>
+            <div className="col-span-2">
+              <label className="text-[10px] text-white/50 mb-1 block">Service</label>
+              <GSel value={newCustForm.freq} onChange={(e: any) => setNewCustForm(f => ({ ...f, freq: e.target.value }))}>
+                {FREQ_OPTIONS.map(o => <option key={o.key} value={o.key} className="bg-black">{o.label}</option>)}
+              </GSel>
+            </div>
+          </div>
+          <div>
+            <label className="text-[10px] text-white/50 mb-1 block">{newCustForm.freq === "one_time" ? "Cleaning date" : "First service date"} <span className="text-white/30">(optional)</span></label>
+            <GInput type="date" value={newCustForm.firstDate} onChange={e => setNewCustForm(f => ({ ...f, firstDate: e.target.value }))} />
+          </div>
+          {newCustForm.firstDate ? (
+            <GBtn onClick={() => addTrashCanCustomer("dated")} disabled={addingCustomer} className="w-full !justify-center">{addingCustomer ? "Adding…" : `Add & Schedule ${newCustForm.firstDate}`}</GBtn>
+          ) : (
+            <>
+              <div className="flex gap-2 pt-1">
+                <GBtn onClick={() => addTrashCanCustomer("auto")} disabled={addingCustomer} className="flex-1 !justify-center">{addingCustomer ? "Adding…" : "Add to Route (Auto)"}</GBtn>
+                <GBtn variant="ghost" onClick={() => addTrashCanCustomer("manual")} disabled={addingCustomer}>Add Manually</GBtn>
+              </div>
+              <div className="text-[10px] text-white/30">Auto finds the least-loaded existing service day and skips holiday weeks. Manual leaves them unassigned in Planning below for you to drag onto a day yourself. Or pick a date above to schedule them directly.</div>
+            </>
+          )}
+        </div>
+      </Modal>
+
+      <BulkJobImportModal
+        open={bulkImportOpen}
+        onClose={() => setBulkImportOpen(false)}
+        customers={customers}
+        setCustomers={setCustomers}
+        jobs={jobs}
+        setJobs={setJobs}
+        employees={employees}
+        settings={settings}
+        toast={toast}
+        ownerId={ownerId}
+        defaultServiceCategory="trash_can"
+      />
+
+
+
+
+
+
 
       {/* Edit an already-confirmed schedule (round 15) — the planning board
           above only ever manages `unassigned` jobs; once dayAssignmentConfirmed
