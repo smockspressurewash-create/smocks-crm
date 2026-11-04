@@ -44,7 +44,7 @@ import { PageFade } from "./PageFade";
 import { TimeframeSelector } from "./TimeframeSelector";
 import { ChemicalCostCalc } from "./ChemicalCostCalc";
 
-export function EstimateBuilder({ open, onClose, customers = [], services = [], settings = {}, onSave, estimateTemplates = [], setEstimateTemplates = (..._args: any[]) => {}, initialCustomerId = "", initialDraft = null, editing = null }: { open: boolean; onClose: any; customers?: any[]; services?: any[]; settings?: any; onSave: any; estimateTemplates?: any[]; setEstimateTemplates?: any; initialCustomerId?: string; initialDraft?: { customerId?: string; lineItems?: any[]; notes?: string; discount?: number; depositRequired?: number } | null; editing?: any }) {
+export function EstimateBuilder({ open, onClose, customers = [], services = [], settings = {}, onSave, estimateTemplates = [], setEstimateTemplates = (..._args: any[]) => {}, initialCustomerId = "", initialDraft = null, editing = null, setServices = null }: { open: boolean; onClose: any; customers?: any[]; services?: any[]; settings?: any; onSave: any; estimateTemplates?: any[]; setEstimateTemplates?: any; initialCustomerId?: string; initialDraft?: { customerId?: string; lineItems?: any[]; notes?: string; discount?: number; depositRequired?: number } | null; editing?: any; setServices?: any }) {
   const [cid, setCid] = useState("");
   const [items, setItems] = useState([]);
   const [vu, setVu] = useState(daysFromNow(30));
@@ -142,7 +142,7 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
       // No silent default to the first customer — pick on purpose.
       setCid(draftCustomerId || "");
       setItems(initialDraft?.lineItems?.length
-        ? initialDraft.lineItems.map((li: any) => ({ id: uid(), description: li.description, quantity: li.quantity, unitPrice: li.unitPrice }))
+        ? initialDraft.lineItems.map((li: any) => ({ id: uid(), description: li.description, quantity: li.quantity, unitPrice: li.unitPrice, notes: li.notes, notesInternal: li.notesInternal, serviceId: li.serviceId }))
         : [{ id: uid(), description: "", quantity: 1, unitPrice: 0 }]);
       setVu(daysFromNow(30));
       setDiscount(Number(initialDraft?.discount) || 0);
@@ -189,6 +189,25 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
   // row with a description or a price, adds to the first package when
   // building packages, and shows "Added ✓" so the tap is confirmed.
   const [justAdded, setJustAdded] = useState("");
+  // FEATURE (user report) — "if I'm creating a line item on the go, give me
+  // the option to save that as a service for the future." Adds the line to
+  // the service catalog (name, price, customer description) and links the
+  // line to it. A service with the same name is linked, not duplicated.
+  const [savedSvcMsg, setSavedSvcMsg] = useState<{ id: string; text: string } | null>(null);
+  const saveLineAsService = (it: any) => {
+    const name = String(it.description || "").trim();
+    if (!name || !setServices) return;
+    const existing = (services as any[]).find((x: any) => String(x.name || "").trim().toLowerCase() === name.toLowerCase());
+    const price = Number(it.unitPrice) || 0;
+    const sid = existing?.id || uid();
+    if (!existing) {
+      const desc = it.notes && !it.notesInternal ? String(it.notes).trim() : "";
+      setServices((prev: any[]) => [...(prev || []), { id: sid, name, description: "", customerDescription: desc, internalNotes: "", price, basePrice: price, unit: "flat", category: "Other", taxable: true, checklistTemplate: [] }]);
+    }
+    setItems((prev: any[]) => prev.map(i => i.id === it.id ? { ...i, serviceId: sid, catalogPrice: existing ? Number(existing.basePrice || existing.price || 0) : price } : i));
+    setSavedSvcMsg({ id: it.id, text: existing ? "Already in your services — linked" : "Saved to your services ✓" });
+    setTimeout(() => setSavedSvcMsg(cur => cur?.id === it.id ? null : cur), 2500);
+  };
   const addSuggestedItem = (description: string, unitPrice: number) => {
     const row = { id: uid(), description, quantity: 1, unitPrice };
     const keep = (li: any) => (li.description || "").trim() || Number(li.unitPrice) > 0;
@@ -428,6 +447,7 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
                       <div className="col-span-4 md:col-span-2"><GInput type="number" placeholder="Qty" value={li.quantity} onChange={e => setPackages(p => p.map((x, i) => i === pi ? { ...x, lineItems: x.lineItems.map((l: any) => l.id === li.id ? { ...l, quantity: e.target.value } : l) } : x))} className="!text-xs" /></div>
                       <div className="col-span-5 md:col-span-2"><GInput type="number" step="0.01" min="0" placeholder="$" value={li.unitPrice} onChange={e => setPackages(p => p.map((x, i) => i === pi ? { ...x, lineItems: x.lineItems.map((l: any) => l.id === li.id ? { ...l, unitPrice: e.target.value } : l) } : x))} className="!text-xs" /></div>
                       <div className="col-span-3 md:col-span-1 text-right">{pkg.lineItems.length > 1 && <button onClick={() => setPackages(p => p.map((x, i) => i === pi ? { ...x, lineItems: x.lineItems.filter((l: any) => l.id !== li.id) } : x))} className="p-1 text-red-400/60 hover:text-red-400"><X size={10} /></button>}</div>
+                      <div className="col-span-12"><GTxt rows={1} data-line-desc value={li.notes || ""} onChange={e => setPackages(p => p.map((x, i) => i === pi ? { ...x, lineItems: x.lineItems.map((l: any) => l.id === li.id ? { ...l, notes: e.target.value, notesInternal: false } : l) } : x))} placeholder="Description the customer sees (optional)" className="!text-xs" /></div>
                     </div>
                   ))}
                 </div>
@@ -466,7 +486,7 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
                 <div key={it.id} className={"rounded-xl border transition " + (isExpanded ? "border-white/15 bg-white/5" : "border-transparent")}>
                   <div className="grid grid-cols-12 gap-2 items-center p-1">
                     <div className="col-span-12 md:col-span-6">
-                      <GInput placeholder="Description" value={it.description} onChange={e => setItems((items as any[]).map(i => i.id === it.id ? { ...i, description: e.target.value } : i))} />
+                      <GInput placeholder="Service or item" value={it.description} onChange={e => setItems((items as any[]).map(i => i.id === it.id ? { ...i, description: e.target.value } : i))} />
                     </div>
                     <div className="col-span-4 md:col-span-2">
                       <GInput type="number" placeholder="Qty" value={it.quantity} onChange={e => setItems((items as any[]).map(i => i.id === it.id ? { ...i, quantity: e.target.value } : i))} />
@@ -493,11 +513,25 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
                           <span className="text-[9px] text-blue-400">req</span>
                         </label>
                       )}
-                      <button onClick={() => toggleExpand(it.id)} title="Notes & photo" className={"p-1.5 rounded-lg transition " + (isExpanded ? "bg-white/10 text-white" : "text-white/30 hover:text-white hover:bg-white/5")}>
+                      <button onClick={() => toggleExpand(it.id)} title="Photo & crew-only option" className={"p-1.5 rounded-lg transition " + (isExpanded ? "bg-white/10 text-white" : "text-white/30 hover:text-white hover:bg-white/5")}>
                         <Paperclip size={12} />
                       </button>
                       {(items as any[]).length > 1 && <button onClick={() => setItems((items as any[]).filter(i => i.id !== it.id))} className="p-1.5 text-red-400/60 hover:text-red-400 hover:bg-red-900/20 rounded-lg"><Trash2 size={12} /></button>}
                     </div>
+                  </div>
+                  {/* FEATURE (user report) — "I can't add a description" to a
+                      saved service or a new line. The box used to hide behind
+                      the paperclip; it now sits under every line, filled from
+                      the service's customer description when one is picked. */}
+                  <div className="px-1 pb-1">
+                    {setServices && String(it.description || "").trim() && (!it.serviceId || savedSvcMsg?.id === it.id) && (
+                      <div className="flex justify-end mb-1">
+                        {savedSvcMsg?.id === it.id
+                          ? <span className="text-[10px] text-green-400">{savedSvcMsg.text}</span>
+                          : <button type="button" data-save-as-service onClick={() => saveLineAsService(it)} className="text-[10px] text-blue-400 hover:text-blue-300 flex items-center gap-1"><Save size={10} />Save as a service for next time</button>}
+                      </div>
+                    )}
+                    <GTxt rows={1} data-line-desc value={it.notes || ""} onChange={e => setItems((items as any[]).map(i => i.id === it.id ? { ...i, notes: e.target.value } : i))} placeholder={it.notesInternal ? "Crew-only description (customer won't see it)" : "Description the customer sees (optional)"} className={"!text-xs" + (it.notesInternal ? " border-yellow-900/40" : "")} />
                   </div>
                   {isExpanded && (
                     <div className="px-2 pb-2 space-y-2">
@@ -516,13 +550,10 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
                         </label>
                         {it.photo && <button onClick={() => setItems((items as any[]).map(i => i.id === it.id ? { ...i, photo: undefined } : i))} className="text-[10px] text-red-400/60 hover:text-red-400 px-1.5 py-1 rounded border border-red-900/30">Remove</button>}
                       </div>
-                      <div className="flex items-center gap-2">
-                        <GTxt rows={1} value={it.notes || ""} onChange={e => setItems((items as any[]).map(i => i.id === it.id ? { ...i, notes: e.target.value } : i))} placeholder={it.notesInternal ? "Internal note (crew only)…" : "Notes (visible on estimate)…"} className="!text-xs flex-1" />
-                        <label className="flex items-center gap-1 text-[10px] text-white/50 whitespace-nowrap cursor-pointer flex-shrink-0">
-                          <input type="checkbox" checked={!!it.notesInternal} onChange={e => setItems((items as any[]).map(i => i.id === it.id ? { ...i, notesInternal: e.target.checked } : i))} className="w-3 h-3 accent-yellow-500" />
-                          <Lock size={8} className="text-yellow-400" />Internal
-                        </label>
-                      </div>
+                      <label className="flex items-center gap-1 text-[10px] text-white/50 whitespace-nowrap cursor-pointer w-fit">
+                        <input type="checkbox" checked={!!it.notesInternal} onChange={e => setItems((items as any[]).map(i => i.id === it.id ? { ...i, notesInternal: e.target.checked } : i))} className="w-3 h-3 accent-yellow-500" />
+                        <Lock size={8} className="text-yellow-400" />Keep this line's description crew-only
+                      </label>
                     </div>
                   )}
                 </div>

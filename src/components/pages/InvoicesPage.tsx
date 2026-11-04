@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout } from "../../lib/utils";
+import { fmt, lineNote, lineNoteHtml, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, emailShell, logOutboundSmsToInbox } from "../../lib/messaging";
 import { sendPushNotification } from "../../lib/push";
@@ -787,7 +787,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
                           <div class="hdr"><div><h1>Crew Boss</h1><div style="font-size:12px;color:#666">York, PA · (717) 555-0100</div></div><div style="text-align:right"><strong>INVOICE #${inv.id.slice(-8).toUpperCase()}</strong><br><span style="font-size:12px;color:#666">${inv.invoicedAt || today()}</span></div></div>
                           <div style="margin-bottom:16px"><strong>Bill To:</strong><br>${c ? c.firstName + " " + c.lastName : ""}<br>${c?.address || ""}</div>
                           <table><thead><tr><th>Service</th><th class="r">Qty</th><th class="r">Unit</th><th class="r">Amount</th></tr></thead><tbody>
-                          ${(inv.lineItems || []).map(li => `<tr><td>${li.description}</td><td class="r">${li.quantity}</td><td class="r">$${Number(li.unitPrice).toFixed(2)}</td><td class="r">$${(li.quantity*li.unitPrice).toFixed(2)}</td></tr>`).join("")}
+                          ${(inv.lineItems || []).map(li => `<tr><td>${li.description}${lineNoteHtml(li)}</td><td class="r">${li.quantity}</td><td class="r">$${Number(li.unitPrice).toFixed(2)}</td><td class="r">$${(li.quantity*li.unitPrice).toFixed(2)}</td></tr>`).join("")}
                           </tbody></table>
                           <div style="text-align:right;margin-top:8px"><div class="total">Total: $${Number(inv.total).toFixed(2)}</div></div>
                           ${inv.paidAt ? `<div class="paid">✓ PAID on ${inv.paidAt}</div>` : ""}
@@ -829,7 +829,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
               <div className="mb-5 text-sm"><div className="text-gray-500 text-xs uppercase tracking-wider mb-1">Bill to</div><div className="font-semibold">{c?.firstName} {c?.lastName}</div><div className="text-gray-600 text-xs">{c?.address}</div></div>
               <table className="w-full text-sm mb-4">
                 <thead><tr className="border-b border-gray-300 text-xs uppercase tracking-wider text-gray-500"><th className="text-left py-2">Description</th><th className="text-right py-2">Qty</th><th className="text-right py-2">Unit</th><th className="text-right py-2">Amount</th></tr></thead>
-                <tbody>{viewing.lineItems.map(li => <tr key={li.id} className="border-b border-gray-100"><td className="py-2">{li.description}</td><td className="text-right py-2">{li.quantity}</td><td className="text-right py-2">{fmt(li.unitPrice)}</td><td className="text-right py-2 font-medium">{fmt(li.quantity * li.unitPrice)}</td></tr>)}</tbody>
+                <tbody>{viewing.lineItems.map(li => <tr key={li.id} className="border-b border-gray-100"><td className="py-2">{li.description}{lineNote(li) && <div className="text-xs text-gray-500 whitespace-pre-line">{lineNote(li)}</div>}</td><td className="text-right py-2">{li.quantity}</td><td className="text-right py-2">{fmt(li.unitPrice)}</td><td className="text-right py-2 font-medium">{fmt(li.quantity * li.unitPrice)}</td></tr>)}</tbody>
               </table>
               <div className="ml-auto w-56 text-sm space-y-1">
                 <div className="flex justify-between"><span className="text-gray-600">Subtotal</span><span>{fmt(viewing.subtotal)}</span></div>
@@ -880,7 +880,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
                   '<div class="hdr"><div><h1>' + (settings?.companyName || 'Crew Boss') + '</h1><div class="sub">Professional Exterior Cleaning · York, PA</div></div><div class="meta"><strong>INVOICE</strong><br>#' + viewing.id.toUpperCase() + '<br><span style="color:#666">Invoiced ' + (viewing.invoicedAt || '—') + '</span></div></div>' +
                   '<div class="bill"><div class="bill-lbl">Bill To</div><div class="bill-name">' + (c?.firstName || '') + ' ' + (c?.lastName || '') + '</div><div class="bill-addr">' + (c?.address || '') + '</div></div>' +
                   '<table><thead><tr><th>Description</th><th class="r">Qty</th><th class="r">Unit</th><th class="r">Amount</th></tr></thead><tbody>' +
-                  viewing.lineItems.map(li => '<tr><td>' + li.description + '</td><td class="r">' + li.quantity + '</td><td class="r">' + fmt(li.unitPrice) + '</td><td class="r"><strong>' + fmt(li.quantity * li.unitPrice) + '</strong></td></tr>').join('') +
+                  viewing.lineItems.map(li => '<tr><td>' + li.description + lineNoteHtml(li) + '</td><td class="r">' + li.quantity + '</td><td class="r">' + fmt(li.unitPrice) + '</td><td class="r"><strong>' + fmt(li.quantity * li.unitPrice) + '</strong></td></tr>').join('') +
                   '</tbody></table>' +
                   '<div class="totals"><div><span>Subtotal</span><span>' + fmt(viewing.subtotal) + '</span></div>' +
                   (viewing.discount > 0 ? '<div style="color:#16a34a"><span>Discount</span><span>− ' + fmt(viewing.discount) + '</span></div>' : '') +

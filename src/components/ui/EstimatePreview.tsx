@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, computeDepositAmount, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import { fmt, lineNote, lineNoteHtml, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, computeDepositAmount, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail } from "../../lib/messaging";
 import { seedWeather } from "../../lib/weather";
@@ -91,7 +91,7 @@ export function EstimatePreview({ estimate: e, customers = [], settings = {} as 
           <div className="rounded-xl border border-gray-200 overflow-hidden mb-5">
             <table className="w-full text-sm">
               <thead><tr className="bg-gray-50 text-[10px] uppercase tracking-wider text-gray-500"><th className="text-left py-2.5 px-4">Description</th><th className="text-right py-2.5 px-3">Qty</th><th className="text-right py-2.5 px-3">Unit</th><th className="text-right py-2.5 px-4">Amount</th></tr></thead>
-              <tbody>{(e.lineItems || []).map((li, i) => <tr key={li.id} className={i % 2 ? "bg-gray-50/60" : ""}><td className="py-2.5 px-4 text-gray-800">{li.description}</td><td className="text-right py-2.5 px-3 text-gray-500">{li.quantity}</td><td className="text-right py-2.5 px-3 text-gray-500">{fmt(li.unitPrice)}</td><td className="text-right py-2.5 px-4 font-medium text-gray-900">{fmt(li.quantity * li.unitPrice)}</td></tr>)}</tbody>
+              <tbody>{(e.lineItems || []).map((li, i) => <tr key={li.id} className={i % 2 ? "bg-gray-50/60" : ""}><td className="py-2.5 px-4 text-gray-800">{li.description}{lineNote(li) && <div className="text-xs text-gray-500 mt-0.5 whitespace-pre-line">{lineNote(li)}</div>}</td><td className="text-right py-2.5 px-3 text-gray-500">{li.quantity}</td><td className="text-right py-2.5 px-3 text-gray-500">{fmt(li.unitPrice)}</td><td className="text-right py-2.5 px-4 font-medium text-gray-900">{fmt(li.quantity * li.unitPrice)}</td></tr>)}</tbody>
             </table>
           </div>
 

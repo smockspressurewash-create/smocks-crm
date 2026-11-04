@@ -21,7 +21,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, computeDepositAmount, computeDiscountsTotal, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
+import { fmt, lineNote, lineNoteHtml, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, computeDepositAmount, computeDiscountsTotal, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, emailShell } from "../../lib/messaging";
 import { supabase } from "../../lib/supabase";
@@ -640,7 +640,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                     </div>
                     {pkg.description && <div className="text-xs text-white/50 ml-6 mb-1">{pkg.description}</div>}
                     <div className="ml-6 space-y-0.5">
-                      {(pkg.lineItems || []).map((li: any) => <div key={li.id} className="text-xs text-white/60 flex justify-between"><span>· {li.description}</span><span>{fmt(li.quantity * li.unitPrice)}</span></div>)}
+                      {(pkg.lineItems || []).map((li: any) => <div key={li.id} className="text-xs text-white/60"><div className="flex justify-between"><span>· {li.description}</span><span>{fmt(li.quantity * li.unitPrice)}</span></div>{lineNote(li) && <div className="text-[11px] text-white/45 ml-2.5 italic whitespace-pre-line">{lineNote(li)}</div>}</div>)}
                     </div>
                   </div>
                 ))}
@@ -678,7 +678,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                               <div className="flex-1 min-w-0">
                                 <div className="font-medium text-sm">{li.description}</div>
                                 {!locked ? <div className="text-[10px] text-blue-400/70 mt-0.5">Optional — tap to toggle</div> : <div className="text-[10px] text-white/30 mt-0.5">Required</div>}
-                                {li.notes && !li.notesInternal && <div className="text-xs text-white/60 mt-1 italic">{li.notes}</div>}
+                                {lineNote(li) && <div className="text-xs text-white/60 mt-1 italic whitespace-pre-line">{lineNote(li)}</div>}
                               </div>
                             </div>
                             <div className="flex items-center gap-2 flex-shrink-0">
@@ -702,7 +702,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                           <div className="flex-1 min-w-0">
                             <div className="font-medium text-sm">{li.description}</div>
                             {li.quantity > 1 && <div className="text-xs text-white/50">× {li.quantity}</div>}
-                            {li.notes && !li.notesInternal && <div className="text-xs text-white/60 mt-1 italic">{li.notes}</div>}
+                            {lineNote(li) && <div className="text-xs text-white/60 mt-1 italic whitespace-pre-line">{lineNote(li)}</div>}
                           </div>
                           <div className="flex items-center gap-2 flex-shrink-0">
                             {li.photo && <img src={li.photo} alt="" className="w-10 h-10 rounded-lg object-cover border border-white/10" />}
@@ -1114,7 +1114,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                 </div>
                 <div style="margin-bottom:16px"><strong>Customer:</strong> ${c.firstName} ${c.lastName}<br><span style="font-size:12px;color:#666">${c.address || ""} · ${c.email || ""} · ${c.phone || ""}</span></div>
                 <table><thead><tr><th>Service</th><th>Qty</th><th>Unit Price</th><th>Total</th></tr></thead><tbody>
-                ${(e.lineItems || []).map(li => `<tr><td>${li.description}</td><td>${li.quantity}</td><td>$${Number(li.unitPrice).toFixed(2)}</td><td>$${(li.quantity * li.unitPrice).toFixed(2)}</td></tr>`).join("")}
+                ${(e.lineItems || []).map(li => `<tr><td>${li.description}${lineNoteHtml(li)}</td><td>${li.quantity}</td><td>$${Number(li.unitPrice).toFixed(2)}</td><td>$${(li.quantity * li.unitPrice).toFixed(2)}</td></tr>`).join("")}
                 </tbody></table>
                 ${e.discount > 0 ? `<div class="row"><span>Discount</span><span>-$${Number(e.discount).toFixed(2)}</span></div>` : ""}
                 <div class="row"><span>Tax (${settings?.taxRate || 6}%)</span><span>$${Number(e.tax || 0).toFixed(2)}</span></div>

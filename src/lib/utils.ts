@@ -184,6 +184,15 @@ export const escapeHtml = (s: string | undefined | null): string => {
     .replace(/'/g, "&#39;");
 };
 
+// A quote/invoice line's description for the customer (the "notes" field on
+// a line item). Crew-only notes never show. lineNoteHtml is for the
+// printable HTML pages, escaped, with line breaks kept.
+export const lineNote = (li: any): string => (li && li.notes && !li.notesInternal ? String(li.notes).trim() : "");
+export const lineNoteHtml = (li: any): string => {
+  const n = lineNote(li);
+  return n ? `<div style="font-size:11px;color:#666;margin-top:2px;white-space:normal">${escapeHtml(n).replace(/\n/g, "<br>")}</div>` : "";
+};
+
 // Generate a real RFC-4122 UUID v4 rather than a short base-36 string. The
 // Supabase tables (jobs, estimates, customers, employees, job_requests) have
 // `id` columns that are frequently typed `uuid` — a short id like "a3f9k2m1"
