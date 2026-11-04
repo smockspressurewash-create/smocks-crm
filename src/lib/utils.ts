@@ -335,10 +335,18 @@ export const formatPhoneInput = (raw: string): string => {
   return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
 };
 
-export const today = (): string => new Date().toISOString().slice(0, 10);
+// BUG FIX — this was UTC (toISOString), so from 7-8 PM US time "today" was
+// already tomorrow: the dashboard's Today/My Work showed tomorrow's jobs
+// and hid tonight's, route builders defaulted to the wrong day, etc. Job
+// dates are local calendar dates, so "today" is the local date.
+export const today = (): string => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
 
-// AUDIT 3 — `today()` is UTC-based (toISOString), which rolls over to the
-// next calendar date at 7-8pm US local time, not local midnight. That's fine
+// AUDIT 3 — `today()` used to be UTC-based (toISOString), which rolled over
+// to the next calendar date at 7-8pm US local time, not local midnight (now
+// fixed above; this stays as the explicit name). That was "fine"
 // for most call sites (scheduling dates set via <input type=date>, which is
 // already local and only ever compared to itself), but the shift-timer's
 // "same calendar day" check (Resume Day vs Start My Day, reset only at
@@ -423,7 +431,8 @@ export const getPayPeriodBounds = (referenceDate: Date = new Date(), periodsAgo 
 export const daysFromNow = (n: number): string => {
   const d = new Date();
   d.setDate(d.getDate() + n);
-  return d.toISOString().slice(0, 10);
+  // Local date, same reason as today() above.
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 };
 
 export const daysSince = (dateStr: string | null | undefined): number => {

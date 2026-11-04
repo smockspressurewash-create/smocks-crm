@@ -12,6 +12,7 @@
 //   - database tables/columns Alfred's features need,
 //   - the reminders scheduler (reminders overdue by 30+ minutes = not running).
 // POST, owner's Supabase access token as Bearer.
+import { twilioAccountSid } from "./_lib/twilioAccount";
 import { getOwnerSecrets, resolveCallerOwnerId } from "./_lib/ownerSecrets";
 import { pingSmsModel, SMS_MODEL_NAMES } from "./_lib/alfredSmsAgent";
 
@@ -49,11 +50,14 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     checks.push({ area: "Texting", name: "Twilio", ok: false, detail: "Twilio isn't fully set up (Account SID, Auth Token and phone number).", fix: "Settings → Integrations → Twilio." });
   } else {
     const auth = { Authorization: "Basic " + btoa(`${sid}:${tok}`) };
-    const acct: any = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}.json`, { headers: auth }).then(async r => ({ ok: r.ok, status: r.status, body: await r.json().catch(() => ({})) })).catch((e: any) => ({ ok: false, status: 0, body: { message: e?.message } }));
+    const acctSid = await twilioAccountSid(sid, tok);
+    const acct: any = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${acctSid}.json`, { headers: auth }).then(async r => ({ ok: r.ok, status: r.status, body: await r.json().catch(() => ({})) })).catch((e: any) => ({ ok: false, status: 0, body: { message: e?.message } }));
     checks.push({ area: "Texting", name: "Twilio account", ok: acct.ok && acct.body?.status === "active", detail: acct.ok ? `Account is ${acct.body?.status}` : `Twilio said ${acct.status}: ${acct.body?.message || "error"}`, fix: acct.ok && acct.body?.status === "active" ? undefined : acct.status === 401 ? "Account SID / Auth Token are wrong — use the ones on the main Twilio Console page (SID starts with AC)." : "Check the account in the Twilio Console." });
-    if (!/^AC[0-9a-f]{32}$/i.test(sid)) checks.push({ area: "Texting", name: "Twilio Account SID", ok: false, detail: `Saved SID starts with "${sid.slice(0, 2)}", not "AC" — that's an API key, so incoming texts can't be verified.`, fix: "Paste the Account SID (starts with AC) from the Twilio Console home page." });
+    // An API Key ("SK…") is fine for texting; account lookups above use the
+    // real Account SID it belongs to (lib/twilioAccount.ts).
+    if (!/^AC[0-9a-f]{32}$/i.test(sid) && acctSid === sid) checks.push({ area: "Texting", name: "Twilio Account SID", ok: false, detail: `Saved SID starts with "${sid.slice(0, 2)}" and Twilio didn't say which account it belongs to.`, fix: "Settings → Integrations → Twilio: use the Account SID (starts with AC) and Auth Token from the Twilio Console." });
     if (acct.ok) {
-      const nums: any = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/IncomingPhoneNumbers.json?PhoneNumber=${encodeURIComponent(from)}`, { headers: auth }).then(r => r.json()).catch(() => ({}));
+      const nums: any = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${acctSid}/IncomingPhoneNumbers.json?PhoneNumber=${encodeURIComponent(from)}`, { headers: auth }).then(r => r.json()).catch(() => ({}));
       const num = nums?.incoming_phone_numbers?.[0];
       const hook = String(num?.sms_url || "");
       if (!num) checks.push({ area: "Texting", name: "Incoming texts", ok: false, detail: `${from} isn't a number on this Twilio account (it may use a Messaging Service).`, fix: "In Twilio, make sure incoming messages go to https://<your app>/api/twilio-sms-webhook." });

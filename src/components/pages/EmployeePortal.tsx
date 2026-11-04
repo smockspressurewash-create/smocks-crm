@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { supabase, getStoredGoogleConnection, fetchOwnerGoogleToken, clearLocalAuthSession } from "../../lib/supabase";
 import { getEmpGoogleToken, isEmpGoogleTokenValid, saveEmpGoogleToken, clearEmpGoogleToken, refreshEmpGoogleToken, getValidEmpGoogleToken, createGCalEvent, updateGCalEvent, onGoogleAuthFailure, verifyGoogleTokenLive } from "../../lib/googleApi";
-import { sendViaGmail, sendEmail, sendOwnerGmailOnly, emailShell, emailButton, twilioSend, logOutboundSmsToInbox } from "../../lib/messaging";
+import { sendViaGmail, sendEmail, sendOwnerGmailOnly, emailShell, emailButton, twilioSend, logOutboundSmsToInbox, textOwner } from "../../lib/messaging";
 import { Glass } from "../ui/Glass";
 import { CrewBossMark } from "../ui/CrewBossMark";
 import { AuthHeader, AuthRoleTabs } from "../ui/AuthRoleTabs";
@@ -654,7 +654,8 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
     onArrived?.();
     const arrivalMsg = `Hi ${customer?.firstName || "there"}, your CrewBoss technician has arrived and is getting started!`;
     try {
-      if (customer?.phone) {
+      if ((settings as any)?.arrivalTextCustomer === false) { /* owner turned customer arrival texts off */ }
+      else if (customer?.phone) {
         await twilioSend(settings as any, customer.phone, arrivalMsg);
         logOutboundSmsToInbox({ contactName: `${customer.firstName} ${customer.lastName}`, contactPhone: customer.phone, customerId: customer.id, body: arrivalMsg }).catch(() => {});
       } else if (customer?.email) {
@@ -664,6 +665,8 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
     } catch (e: any) {
       console.warn("[Arrival] customer notify failed:", e?.message);
     }
+    textOwner(`📍 Crew arrived at ${customer ? customer.firstName + " " + customer.lastName : job.address}${job.scheduledTime ? ` (scheduled ${job.scheduledTime})` : ""}`, "arrival")
+      .catch((e: any) => console.warn("[Arrival] owner text failed:", e?.message));
     const ownerEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail;
     if (ownerEmail) {
       const ownerHtml = emailShell(settings, "Crew Arrived", `<p>${customer ? customer.firstName + " " + customer.lastName : job.address} — technician has arrived on site.</p><p>Address: ${job.address}</p>`);
@@ -6526,6 +6529,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   };
 
   const notifyOwnerArrival = (job: Job, cust: Customer | undefined) => {
+    // Text the owner too (Settings → Notifications → "Text me when the crew
+    // arrives", on by default; needs "My phone" in Settings).
+    textOwner(`📍 ${myEmployee.firstName} arrived at ${cust ? cust.firstName + " " + cust.lastName : job.address}${job.scheduledTime ? ` (scheduled ${job.scheduledTime})` : ""}`, "arrival")
+      .catch((e: any) => console.warn("[Arrival] owner text failed:", e?.message));
     const ownerEmail = (settings as any)?.myEmail || (settings as any)?.companyEmail;
     if (!ownerEmail) return;
     const html = emailShell(settings, "Crew Arrived", `<p>${myEmployee.firstName} ${myEmployee.lastName} has arrived at a job:</p><ul><li><b>Address:</b> ${job.address}</li>${cust ? `<li><b>Customer:</b> ${cust.firstName} ${cust.lastName}</li>` : ""}<li><b>Time:</b> ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</li></ul>`);
@@ -6634,6 +6641,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
       notifyOwnerArrival?.(job, cust);
       startDayShiftIfNeeded();
       const arrivalMsg = `Hi ${cust?.firstName || "there"}, your CrewBoss technician has arrived and is getting started!`;
+      if ((settings as any)?.arrivalTextCustomer === false) return;
       try {
         if (cust?.phone) {
           await twilioSend(settings as any, cust.phone, arrivalMsg);

@@ -22,8 +22,13 @@ const normalizePhoneDigits = (p?: string | null): string => {
 
 export const onRequestPost = async (context: { request: Request; env: Record<string, string> }) => {
   try {
-    let { sid, token, to, from, body, ownerId } = await context.request.json() as {
+    let { sid, token, to, from, body, ownerId, toOwner, kind } = await context.request.json() as {
       sid?: string; token?: string; to?: string; from?: string; body?: string; ownerId?: string;
+      // toOwner: text the business owner's own phone (Settings → Your Mobile #),
+      // looked up here so a crew member's phone never needs it. kind
+      // "arrival" respects Settings → Arrival Texts → "Text me when the crew
+      // arrives".
+      toOwner?: boolean; kind?: string;
     };
     const serviceRoleKey = context.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -46,6 +51,16 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       });
     }
     ownerId = resolvedOwnerId;
+
+    if (toOwner) {
+      if (!serviceRoleKey) return new Response(JSON.stringify({ error: "Server not configured" }), { status: 500, headers: { "Content-Type": "application/json" } });
+      const sr = await fetch(`${SUPABASE_URL}/rest/v1/app_settings?owner_id=eq.${encodeURIComponent(ownerId)}&select=data`, { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } });
+      const s = ((await sr.json().catch(() => []))?.[0]?.data) || {};
+      if (kind === "arrival" && s.arrivalTextOwner === false) return new Response(JSON.stringify({ skipped: "Owner turned arrival texts off" }), { status: 200, headers: { "Content-Type": "application/json" } });
+      const digits = String(s.myPhone || "").replace(/\D/g, "").slice(-10);
+      if (digits.length !== 10) return new Response(JSON.stringify({ skipped: "No owner phone in Settings (Your Mobile #)" }), { status: 200, headers: { "Content-Type": "application/json" } });
+      to = "+1" + digits;
+    }
 
     // SECURITY FIX — sid/token used to always come straight from the
     // client's own request body, meaning the raw Twilio auth token had to

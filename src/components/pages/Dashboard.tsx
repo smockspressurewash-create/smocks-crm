@@ -21,7 +21,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, localDateStr, localDateKey, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, forecastFor, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, totalJobPhotoCount, desktopNotifsSupported, desktopNotifPermission, requestDesktopNotifPermission } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, localDateKey, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, forecastFor, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, totalJobPhotoCount, desktopNotifsSupported, desktopNotifPermission, requestDesktopNotifPermission, computeNextRecurringDate, stripLegacyJobFields } from "../../lib/utils";
 // BLOCKER 5/9 (mobile round 9) — same robust crew-matching helper the
 // employee portal uses (tolerates object-shaped crew entries, stringified
 // JSON, casing, and the employees.id vs employees.user_id mismatch). Live
@@ -614,7 +614,11 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   const ownerOnShift = !!ownerEmp?.dayClockInAt;
   const ownerShiftMs = ownerOnShift ? Math.max(0, Date.now() - Number(ownerEmp.dayClockInAt) - (Number(ownerEmp.dayPausedMinutes) || 0) * 60000) : 0;
   const weekStartLive = (() => { const d = new Date(); d.setDate(d.getDate() - d.getDay()); return d.toISOString().slice(0, 10); })();
-  const ownerJobsToday = ownerEmpId ? jobs.filter((j: any) => crewIncludesEmployee(j.crew, ownerEmpId, ownerEmp?.user_id) && j.scheduledDate === todayStrLive) : [];
+  // Today's jobs nobody is assigned to are the owner's to do (e.g. a
+  // trash-can route imported without a crew) — they used to be invisible
+  // here, so a full route day showed "No job assigned to you today".
+  const unassignedJob = (j: any) => !(Array.isArray(j.crew) && j.crew.length > 0);
+  const ownerJobsToday = ownerEmpId ? jobs.filter((j: any) => (crewIncludesEmployee(j.crew, ownerEmpId, ownerEmp?.user_id) || unassignedJob(j)) && j.scheduledDate === todayStrLive && j.status !== "cancelled") : [];
   const ownerJobsThisWeek = ownerEmpId ? jobs.filter((j: any) => crewIncludesEmployee(j.crew, ownerEmpId, ownerEmp?.user_id) && j.scheduledDate >= weekStartLive) : [];
   const ownerHoursToday = ownerJobsToday.reduce((s: number, j: any) => s + (Number(j.loggedHours) || 0), 0);
   const ownerHoursThisWeek = ownerJobsThisWeek.reduce((s: number, j: any) => s + (Number(j.loggedHours) || 0), 0);
@@ -787,11 +791,51 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
     ownerUpdateJob(ownerActiveJob.id, { clockInAt: null, loggedHours: Math.round(((Number(ownerActiveJob.loggedHours) || 0) + rounded) * 100) / 100 });
     toast?.("+" + rounded + "h logged");
   };
-  const ownerMarkArrived = () => {
+  const ownerMarkArrived = async () => {
     if (!ownerActiveJob) return;
     ownerUpdateJob(ownerActiveJob.id, { arrivedAt: Date.now(), status: ownerActiveJob.status === "scheduled" ? "in_progress" : ownerActiveJob.status });
-    toast?.("Marked as arrived ✓");
+    // Same arrival text a technician's "I'm Here" sends (Settings →
+    // Notifications → "Text the customer when we arrive" turns it off).
+    const c = ownerActiveCustomer;
+    if ((settings as any)?.arrivalTextCustomer === false || !c?.phone) { toast?.("Marked as arrived ✓"); return; }
+    const msg = `Hi ${c.firstName || "there"}, ${(settings as any)?.companyName || "your crew"} has arrived and is getting started!`;
+    try {
+      await withTimeout(twilioSend(settings as any, c.phone, msg), 15000, "Arrival SMS");
+      logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: msg }).catch(() => {});
+      toast?.(`Marked as arrived ✓ — texted ${c.firstName}`, "green");
+    } catch (e: any) {
+      toast?.(`Marked as arrived ✓ — but the text to ${c.firstName} failed: ${e?.message || "unknown error"}`, "yellow");
+    }
   };
+  // "Done, next stop": finish this stop and, for a repeating job, book its
+  // next visit (same as completing it on the Jobs page or the crew portal),
+  // so the next stop becomes the active one.
+  const [ownerFinishing, setOwnerFinishing] = useState(false);
+  const ownerFinishStop = async () => {
+    const j: any = ownerActiveJob;
+    if (!j || ownerFinishing) return;
+    setOwnerFinishing(true);
+    const patch: any = { status: "completed", completedAt: new Date().toISOString() };
+    if (j.clockInAt) { patch.clockInAt = null; patch.loggedHours = Math.round(((Number(j.loggedHours) || 0) + (Date.now() - j.clockInAt) / 3600000) * 100) / 100; }
+    await ownerUpdateJob(j.id, patch);
+    if (j.isRecurring) {
+      const nextJob: any = { ...stripLegacyJobFields(j), id: uid(), googleEventId: null, status: "scheduled", scheduledDate: computeNextRecurringDate(j, j.scheduledDate), loggedHours: 0, clockInAt: null, arrivedAt: null, completedAt: null, signOff: null, photos: [], videos: [], commLog: [], checklist: (j.checklist || []).map((c: any) => ({ ...c, done: false })), preChecklist: (j.preChecklist || []).map((c: any) => ({ ...c, done: false })), duringChecklist: (j.duringChecklist || []).map((c: any) => ({ ...c, done: false })), postChecklist: (j.postChecklist || []).map((c: any) => ({ ...c, done: false })), paymentStatus: undefined, amountCollected: undefined };
+      setJobs((prev: any[]) => [...prev, nextJob]);
+      const r = await (supabase as any).from("jobs").insert(nextJob);
+      if (r?.error) {
+        const { completedAt, videos, signOff, ...core } = nextJob;
+        const r2 = await (supabase as any).from("jobs").insert(core);
+        if (r2?.error) toast?.("Stop done ✓ — but the next visit didn't save: " + r2.error.message, "red");
+        else toast?.(`Stop done ✓ — next visit ${nextJob.scheduledDate}`, "green");
+      } else toast?.(`Stop done ✓ — next visit ${nextJob.scheduledDate}`, "green");
+    } else toast?.("Stop done ✓", "green");
+    setOwnerFinishing(false);
+  };
+  // The day's stops in order, for the route steps on My Work.
+  const ownerDayStops = [...ownerJobsToday].sort((a: any, b: any) => (a.scheduledTime || "99").localeCompare(b.scheduledTime || "99"));
+  const ownerStopsDone = ownerDayStops.filter((j: any) => j.status === "completed").length;
+  const clock12 = (t?: string) => { const m = /^(\d{1,2}):(\d{2})/.exec(t || ""); if (!m) return ""; const h = Number(m[1]); return `${((h + 11) % 12) + 1}:${m[2]} ${h < 12 ? "AM" : "PM"}`; };
+  const directionsUrl = (addr?: string) => `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(addr || "")}`;
   // FIX 5 (mobile round 6) — "My Work": OTW/Running Late for the owner's own
   // active job, mirroring EmployeePortal.tsx's sendOtw/sendRunningLate (same
   // SMS-first send, same inbox logging, same toast-on-success-and-failure
@@ -1343,7 +1387,31 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
             <h3 className="font-semibold text-sm">My Work</h3>
             {ownerActiveJob.clockInAt && <Badge tone="green">Clocked in</Badge>}
           </div>
+          {/* The day, step by step: every stop in order, where you are in it,
+              when to be at the next one, and directions there. */}
+          {ownerDayStops.length > 1 && (
+            <div className="mb-3">
+              <div className="flex items-center justify-between text-[10px] text-white/40 mb-1.5"><span>Today's stops</span><span>{ownerStopsDone}/{ownerDayStops.length} done</span></div>
+              <PBar value={ownerStopsDone} max={ownerDayStops.length} />
+              <div className="mt-2 space-y-1 max-h-48 overflow-y-auto">
+                {ownerDayStops.map((j: any, i: number) => {
+                  const c = customers.find((x: any) => x.id === j.customerId);
+                  const done = j.status === "completed";
+                  const current = j.id === ownerActiveJob.id;
+                  return (
+                    <button key={j.id} onClick={() => setOwnerDetailId(j.id)} className={"w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-[11px] text-left " + (current ? "bg-green-950/30 border border-green-700/40" : "border border-transparent hover:bg-white/5") + (done ? " opacity-50" : "")}>
+                      {done ? <CheckCircle size={12} className="text-green-400 flex-shrink-0" /> : <span className={"w-3 text-center flex-shrink-0 " + (current ? "text-green-300" : "text-white/40")}>{i + 1}</span>}
+                      <span className="w-14 flex-shrink-0 text-white/50">{clock12(j.scheduledTime)}</span>
+                      <span className="flex-1 truncate">{c ? `${c.firstName} ${c.lastName}` : j.address}</span>
+                      {current && <span className="text-[9px] text-green-300 flex-shrink-0">{j.arrivedAt ? "Here" : "Next"}</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
           <button onClick={() => setOwnerDetailId(ownerActiveJob.id)} className="w-full text-left mb-3 p-2.5 rounded-xl border border-white/10 bg-black/30 hover:border-green-600/40 transition">
+            {ownerActiveJob.scheduledTime && !ownerActiveJob.arrivedAt && <div className="text-[10px] text-green-300 mb-0.5">Be there by {clock12(ownerActiveJob.scheduledTime)}</div>}
             <div className="text-sm font-medium truncate">{ownerActiveCustomer ? `${ownerActiveCustomer.firstName} ${ownerActiveCustomer.lastName}` : "Customer"}</div>
             <div className="text-[11px] text-white/40 flex items-center gap-1 truncate"><MapPin size={10} />{ownerActiveJob.address}</div>
             {ownerActiveJobProg && (
@@ -1354,8 +1422,14 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
             )}
           </button>
           <div className="flex gap-2 flex-wrap">
+            {!ownerActiveJob.arrivedAt && ownerActiveJob.address && (
+              <a href={directionsUrl(ownerActiveJob.address)} target="_blank" rel="noopener noreferrer" className="flex-1 inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl text-xs font-medium border border-white/15 bg-white/5 hover:bg-white/10 transition"><Navigation size={12} />Directions</a>
+            )}
             {!ownerActiveJob.arrivedAt && (
               <GBtn onClick={ownerMarkArrived} className="flex-1 !justify-center !text-xs"><MapPin size={12} className="inline mr-1" />I'm Here</GBtn>
+            )}
+            {ownerActiveJob.arrivedAt && (
+              <GBtn onClick={ownerFinishStop} disabled={ownerFinishing} className="flex-1 !justify-center !text-xs"><CheckCircle size={12} className="inline mr-1" />{ownerFinishing ? "Saving…" : ownerDayStops.filter((x: any) => x.status !== "completed").length > 1 ? "Done, next stop" : "Done for today"}</GBtn>
             )}
             {/* A per-job timer left running from before can still be stopped. */}
             {ownerActiveJob.clockInAt && (

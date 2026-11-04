@@ -11,6 +11,7 @@
 // owner asked for, more reliable than balance alone (a $0.00 balance can
 // still be a perfectly active pay-as-you-go account with a card on file).
 import { getOwnerSecrets, resolveCallerOwnerId } from "./_lib/ownerSecrets";
+import { twilioAccountSid } from "./_lib/twilioAccount";
 
 export const onRequestPost = async (context: { request: Request; env: Record<string, string> }) => {
   try {
@@ -45,9 +46,11 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       });
     }
     const auth = `Basic ${btoa(`${sid}:${token}`)}`;
+    // An API Key ("SK…") works for texting but not for account lookups.
+    const acct = await twilioAccountSid(sid, token);
     const [acctRes, balRes] = await Promise.all([
-      fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}.json`, { headers: { Authorization: auth } }),
-      fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Balance.json`, { headers: { Authorization: auth } }),
+      fetch(`https://api.twilio.com/2010-04-01/Accounts/${acct}.json`, { headers: { Authorization: auth } }),
+      fetch(`https://api.twilio.com/2010-04-01/Accounts/${acct}/Balance.json`, { headers: { Authorization: auth } }),
     ]);
     const acctData = await acctRes.json().catch(() => ({} as any));
     if (!acctRes.ok) {

@@ -2377,7 +2377,11 @@ export function App() {
       const cur = e.dayClockInAt ?? null;
       empSnap[e.id] = cur;
       if (!crewActivitySeededRef.current) continue;
+      // Never seen before (late load) → not news. Also only fresh changes:
+      // a clock-in more than 15 minutes old isn't "just started".
+      if (!(e.id in crewActivityEmpRef.current)) continue;
       const prev = crewActivityEmpRef.current[e.id] ?? null;
+      if (cur && Date.now() - Number(cur) > 15 * 60 * 1000) continue;
       // BUG FIX — "native push notifications aren't showing or working."
       // notifyDesktop only ever fires the plain browser Notification API,
       // which needs a tab actually open — the real Web Push pipeline
@@ -2417,7 +2421,7 @@ export function App() {
       const cust = customers.find(x => x.id === j.customerId);
       const who = cust ? `${cust.firstName} ${cust.lastName}` : j.address;
       if (cur.status === "completed" && prev.status && prev.status !== "completed") events.push({ id: j.id + ":done", text: `✅ Job completed — ${who}`, at: Date.now(), customerId: j.customerId });
-      if (cur.arrivedAt && !prev.arrivedAt) {
+      if (hadPrev && cur.arrivedAt && !prev.arrivedAt && Date.now() - Number(cur.arrivedAt) < 15 * 60 * 1000) {
         // FEATURE — arrival is tracked once per JOB (not per crew member),
         // so when a crew of several is assigned, one person tapping "I'm
         // Here" correctly reflects the whole crew arriving together — but
@@ -2451,7 +2455,7 @@ export function App() {
       }
       if (hadPrev && photoCount > (prev.photoCount ?? 0)) events.push({ id: j.id + ":photos:" + photoCount, text: `📸 ${photoCount - (prev.photoCount ?? 0)} new photo${photoCount - (prev.photoCount ?? 0) !== 1 ? "s" : ""} — ${who}`, at: Date.now(), customerId: j.customerId });
       if (hadPrev && signed && !prev.signed) events.push({ id: j.id + ":signed", text: `✍️ Got customer sign-off — ${who}`, at: Date.now(), customerId: j.customerId });
-      if (issueCount > (prev.issueCount ?? 0)) {
+      if (hadPrev && issueCount > (prev.issueCount ?? 0)) {
         const latestNote = [...(j.commLog || [])].reverse().find((c: any) => typeof c.note === "string" && c.note.startsWith("🚨 ISSUE REPORTED"));
         const text = `🚨 Problem reported — ${who}`;
         events.push({ id: j.id + ":issue:" + issueCount, text, at: Date.now(), customerId: j.customerId });
@@ -2464,8 +2468,16 @@ export function App() {
         if (crmUserId) sendPushNotification({ ownerId: crmUserId, title: "🚨 Problem reported", body: latestNote?.note?.replace("🚨 ISSUE REPORTED by ", "") || text, tag: "crew-issue" });
       }
     }
-    crewActivityEmpRef.current = empSnap;
-    crewActivityJobRef.current = jobSnap;
+    // BUG FIX (user report: "I sometimes get a whole bunch of notifications
+    // at once") — the snapshots used to be REPLACED by whatever this render
+    // had. When the jobs or employees list briefly came back short (a
+    // refetch, a realtime reload), the missing rows dropped out of the
+    // snapshot, and when they came back every already-arrived job and
+    // clocked-in employee looked new: one "arrived"/"started shift"
+    // notification each, all at once. Rows that are missing this time keep
+    // their last known state instead.
+    crewActivityEmpRef.current = { ...crewActivityEmpRef.current, ...empSnap };
+    crewActivityJobRef.current = { ...crewActivityJobRef.current, ...jobSnap };
     if (!crewActivitySeededRef.current) { crewActivitySeededRef.current = true; return; }
     if (events.length) {
       events.forEach(ev => toast(ev.text, ev.text.startsWith("🚨") ? "red" : undefined));

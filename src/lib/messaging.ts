@@ -363,6 +363,23 @@ export const twilioSend = async (
   }
 };
 
+// Texts the business owner's own phone, from any signed-in device (a crew
+// member's phone doesn't have the owner's number or Twilio details — the
+// server looks both up). Resolves to false when the owner has no phone set
+// or turned that kind of text off; throws only on a real send failure.
+export const textOwner = async (body: string, kind?: "arrival"): Promise<boolean> => {
+  let accessToken: string | undefined;
+  try { const { data } = await withTimeout(supabase.auth.getSession(), 8000, "Get session"); accessToken = data?.session?.access_token; } catch { /* server rejects */ }
+  const res = await fetch("/api/twilio-send", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
+    body: JSON.stringify({ toOwner: true, kind, body }),
+  });
+  const data = await res.json().catch(() => ({} as any));
+  if (!res.ok) throw new Error(data?.error || `Text error ${res.status}`);
+  return !data?.skipped;
+};
+
 // ─── A2P 10DLC campaign compliance status ("ATP checking") ─────────────────
 // Queries Twilio's Messaging Compliance API (via the same-origin proxy, same
 // CORS reason as twilioSend above) for the current A2P campaign status

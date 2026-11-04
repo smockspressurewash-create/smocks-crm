@@ -2554,6 +2554,21 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
               <button onClick={() => setF({ ...f, [n.k]: !f[n.k] })} className={"transition " + (f[n.k] ? "text-red-400" : "text-white/30")}>{f[n.k] ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}</button>
             </div>)}
 
+            {/* Arrival texts — used by "I'm Here" on the crew portal and on the
+                owner's My Work card. Both on unless turned off here. */}
+            <div className="pt-3 border-t border-red-900/20">
+              <div className="font-semibold text-sm mb-2">📍 Arrival Texts</div>
+              {([
+                ["arrivalTextCustomer", "Text the customer when we arrive", "\"Hi Sam, we've arrived and are getting started!\""],
+                ["arrivalTextOwner", "Text me when the crew arrives", f.myPhone ? `Goes to ${f.myPhone}` : "Add Your Mobile # in Settings first"],
+              ] as const).map(([key, label, hint]) => (
+                <div key={key} className="flex items-center justify-between p-3 bg-black/40 border border-red-900/20 rounded-xl mb-2">
+                  <div className="flex-1 min-w-0 pr-3"><div className="text-sm font-medium">{label}</div><div className="text-[10px] text-white/50">{hint}</div></div>
+                  <button onClick={() => setF({ ...f, [key]: (f as any)[key] === false })} className={"transition " + ((f as any)[key] !== false ? "text-red-400" : "text-white/30")}>{(f as any)[key] !== false ? <ToggleRight size={28} /> : <ToggleLeft size={28} />}</button>
+                </div>
+              ))}
+            </div>
+
             {/* FEATURE — "avoid being bothered by Alfred at certain times of
                 day, on weekends, or when on vacation." Enforced server-side
                 in functions/api/check-reminders.ts (the only truly proactive
