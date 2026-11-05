@@ -41,6 +41,7 @@ import { GInput } from "../ui/GInput";
 import { GDate } from "../ui/GDate";
 import { GSel } from "../ui/GSel";
 import { CustomerPicker } from "../ui/CustomerPicker";
+import { JobLinesEditor, PhotoReqsEditor, TextListEditor, WorkOrderTypePicker, applyWorkOrderType, jobLinesTotal, cleanLines, cleanReqs } from "../ui/WorkOrderFields";
 import { GTxt } from "../ui/GTxt";
 import { Modal } from "../ui/Modal";
 import { Badge } from "../ui/Badge";
@@ -828,30 +829,24 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                   <input type="checkbox" checked={!!(newJobForm as any).isNightJob} onChange={e => setNewJobForm(f => ({ ...f, isNightJob: e.target.checked } as any))} className="accent-purple-600 w-3.5 h-3.5" />
                   <span className="text-xs text-white/70">Night job (shows on the Calendar's separate Night Jobs view)</span>
                 </label>
+                {/* FEATURE (user report) — work orders need line items, default
+                    services per work order type (Settings → Work order types),
+                    materials to bring, and how many photos to take. */}
+                <WorkOrderTypePicker types={(settings as any)?.workOrderTypes || []} onPick={t => setNewJobForm(f => {
+                  const merged = applyWorkOrderType(f as any, t);
+                  return { ...f, ...merged, amount: merged.lineItems.length ? String(jobLinesTotal(merged.lineItems)) : f.amount } as any;
+                })} />
                 <div>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <label className="text-[10px] text-white/50">Required Photos/Videos</label>
-                    <button
-                      type="button"
-                      onClick={() => setNewJobForm(f => ({ ...f, photoRequirements: [...((f as any).photoRequirements || []), { id: uid(), label: "", kind: "photo", minCount: 1, instructions: "" }] } as any))}
-                      className="text-[10px] text-purple-300 hover:text-purple-200"
-                    >
-                      + Add requirement
-                    </button>
-                  </div>
-                  <div className="space-y-2">
-                    {((newJobForm as any).photoRequirements || []).map((req: any, i: number) => (
-                      <div key={req.id} className="flex items-center gap-1.5 bg-black/30 border border-white/10 rounded-lg p-1.5">
-                        <GInput placeholder="Section (e.g. loading dock)" value={req.label} onChange={e => setNewJobForm(f => ({ ...f, photoRequirements: ((f as any).photoRequirements || []).map((r: any, idx: number) => idx === i ? { ...r, label: e.target.value } : r) } as any))} className="!text-xs flex-1" />
-                        <GSel value={req.kind} onChange={e => setNewJobForm(f => ({ ...f, photoRequirements: ((f as any).photoRequirements || []).map((r: any, idx: number) => idx === i ? { ...r, kind: e.target.value } : r) } as any))} className="!text-xs !w-24">
-                          <option value="photo" className="bg-black">Photo</option>
-                          <option value="video" className="bg-black">Video</option>
-                        </GSel>
-                        <GInput type="number" min="1" value={req.minCount} onChange={e => setNewJobForm(f => ({ ...f, photoRequirements: ((f as any).photoRequirements || []).map((r: any, idx: number) => idx === i ? { ...r, minCount: Math.max(1, Number(e.target.value) || 1) } : r) } as any))} className="!text-xs !w-14" />
-                        <button type="button" onClick={() => setNewJobForm(f => ({ ...f, photoRequirements: ((f as any).photoRequirements || []).filter((_: any, idx: number) => idx !== i) } as any))} className="text-red-400/70 hover:text-red-300 p-1"><X size={12} /></button>
-                      </div>
-                    ))}
-                  </div>
+                  <label className="text-[10px] text-white/50 mb-1 block">Line items</label>
+                  <JobLinesEditor lines={(newJobForm as any).lineItems || []} services={services} onChange={lineItems => setNewJobForm(f => ({ ...f, lineItems, amount: lineItems.length ? String(jobLinesTotal(lineItems)) : f.amount } as any))} />
+                </div>
+                <div>
+                  <label className="text-[10px] text-white/50 mb-1 block">Materials to bring <span className="text-white/30">(crew checks these off before starting)</span></label>
+                  <TextListEditor items={(newJobForm as any).equipment || []} onChange={equipment => setNewJobForm(f => ({ ...f, equipment } as any))} placeholder="e.g. Bird pellets" addLabel="Add material" />
+                </div>
+                <div>
+                  <label className="text-[10px] text-white/50 mb-1 block">Required photos/videos <span className="text-white/30">(crew can't finish without them unless they confirm)</span></label>
+                  <PhotoReqsEditor reqs={(newJobForm as any).photoRequirements || []} onChange={photoRequirements => setNewJobForm(f => ({ ...f, photoRequirements } as any))} />
                 </div>
               </div>
             )}
@@ -1077,7 +1072,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 jobType: newJobForm.jobType as any,
                 notes: newJobForm.notes,
                 duration: newJobForm.duration ? Number(newJobForm.duration) : undefined,
-                crew: directAssignEmps.map(e => e.id), checklist: [], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
+                crew: directAssignEmps.map(e => e.id), checklist: [], photos: [], commLog: [], chemicalsUsed: [], equipment: ((newJobForm as any).equipment || []), tags: [],
                 // FEATURE — custom checklist items entered at scheduling
                 // time become the job's real preChecklist (what the field
                 // portal shows) — empty when the owner left it blank, so
@@ -1110,7 +1105,8 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                   workOrderNumber: (newJobForm as any).workOrderNumber || "",
                   workOrderClient: (newJobForm as any).workOrderClient || "",
                   requiresManagerSignoff: !!(newJobForm as any).requiresManagerSignoff,
-                  photoRequirements: ((newJobForm as any).photoRequirements || []).filter((r: any) => r.label.trim()),
+                  photoRequirements: cleanReqs((newJobForm as any).photoRequirements),
+                  ...(cleanLines((newJobForm as any).lineItems).length ? { lineItems: cleanLines((newJobForm as any).lineItems) } : {}),
                 } : {}),
               };
               if (job.isRecurring) console.log("[Verify] recurring jobs with custom schedules — working — mode:", job.recurringMode);
@@ -1156,11 +1152,13 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                     // optimistic local state above. Retry with those columns
                     // stripped so the job (and its crew) still lands.
                     console.error("[Recurring] new job insert failed:", error.message, "— retrying without recurring-schedule columns");
-                    const { isRecurring, recurringMode, recurringFreq, recurringInterval, recurringWeekdays, ...coreJob } = job as any;
+                    const { isRecurring, recurringMode, recurringFreq, recurringInterval, recurringWeekdays, lineItems, ...coreJob } = job as any;
                     const retry = await withTimeout<any>((supabase as any).from("jobs").insert(coreJob), 30000, "Save job (retry)");
                     if (retry?.error) {
                       console.error("[Recurring] core-column retry also failed:", retry.error.message);
                       toast?.("Job created locally, but failed to save to the server — " + retry.error.message, "red");
+                    } else if ((job as any).lineItems) {
+                      toast?.("Work order saved, but its line items couldn't be saved — run supabase/migrations/0105_job_line_items.sql in Supabase.", "yellow");
                     } else if ((job as any).isRecurring) {
                       console.warn("[Recurring] job saved without its recurring-schedule columns — run supabase/migrations/0007_custom_recurring_schedule_columns.sql to enable auto-scheduling.");
                       toast?.("Job saved, but recurring schedule couldn't be saved — ask your admin to run the pending database migration.", "yellow");

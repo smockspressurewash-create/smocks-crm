@@ -469,6 +469,9 @@ export interface Job {
   workOrderSummary?: string;
   workOrderSummarySentAt?: string;
   workOrderNotes?: { id: string; text: string; at: string; by?: string }[];
+  // Line items on the job itself (migration 0105) — typed on a work order,
+  // or copied from the estimate when a customer accepts it.
+  lineItems?: LineItem[];
 }
 
 export interface PhotoRequirement {
@@ -1033,6 +1036,9 @@ export interface AppSettings {
   reviewGoogleMinStars?: number;
   trashCanHolidayDates?: string[];
   workOrderEmailTemplate?: { subject?: string; instructions?: string; maxWords?: number; includeSignature?: boolean };
+  // Saved work order types (default lines, materials, instructions, photo
+  // counts, checklist) — see components/ui/WorkOrderFields.tsx.
+  workOrderTypes?: any[];
   // ITEM 10 — the owner's OAuth provider token/refresh token, distinct from
   // googleToken above (legacy/mock field). googleTokenExpiresAt lets Gmail
   // sends proactively refresh before the access token actually expires

@@ -5,7 +5,8 @@ import {
   Clock, Briefcase, Calendar, ChevronLeft, CheckSquare, Camera,
   LogOut, MapPin, Phone, User, Play, Pause, Square, Plus, X, Eye, EyeOff, DollarSign, BookOpen,
   ChevronRight, Home, List, CheckCircle, AlertCircle, AlertTriangle, Image, FileText,
-  Video, PenLine, Shield, Navigation, Database, Route, ToggleRight, ToggleLeft, Download, Bell, CreditCard, Mic, WifiOff, RefreshCw
+  Video, PenLine, Shield, Navigation, Database, Route, ToggleRight, ToggleLeft, Download, Bell, CreditCard, Mic, WifiOff, RefreshCw,
+  ClipboardList,
 } from "lucide-react";
 import { supabase, getStoredGoogleConnection, fetchOwnerGoogleToken, clearLocalAuthSession } from "../../lib/supabase";
 import { getEmpGoogleToken, isEmpGoogleTokenValid, saveEmpGoogleToken, clearEmpGoogleToken, refreshEmpGoogleToken, getValidEmpGoogleToken, createGCalEvent, updateGCalEvent, onGoogleAuthFailure, verifyGoogleTokenLive } from "../../lib/googleApi";
@@ -2856,6 +2857,22 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
             section, 10 of this section, a video of this"). Photos/videos
             uploaded here tag job.photoRequirementTags so progress is real,
             not just a count of everything ever uploaded to the job. */}
+        {/* FEATURE (owner request) — the job's line items (typed on a work
+            order or copied from the accepted estimate) with each line's
+            description, so the crew knows exactly what to do. No prices. */}
+        {Array.isArray((job as any).lineItems) && (job as any).lineItems.length > 0 && (
+          <Glass className="p-4 !bg-black/40" data-crew-lines>
+            <div className="text-xs text-white/60 uppercase tracking-wider mb-2 flex items-center gap-1"><ClipboardList size={12} />What to do</div>
+            <div className="space-y-1.5">
+              {(job as any).lineItems.map((li: any) => (
+                <div key={li.id} className="p-2 rounded-lg bg-black/30 border border-white/10">
+                  <div className="text-sm text-white/90">{Number(li.quantity) > 1 ? <span className="text-white/50">{li.quantity} × </span> : null}{li.description}</div>
+                  {li.notes && <div className="text-[11px] text-white/50 whitespace-pre-line mt-0.5">{li.notes}</div>}
+                </div>
+              ))}
+            </div>
+          </Glass>
+        )}
         {job.isWorkOrder && Array.isArray(job.photoRequirements) && job.photoRequirements.length > 0 && (
           <Glass className="p-4 !bg-purple-950/10 !border-purple-700/30">
             <div className="text-xs text-purple-300 uppercase tracking-wider mb-1 flex items-center gap-1">
@@ -2877,7 +2894,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
                         {met && <CheckCircle size={11} className="text-green-400 flex-shrink-0" />}
                         {req.label || (req.kind === "video" ? "Video" : "Photo")}
                       </div>
-                      {req.instructions && <div className="text-[10px] text-white/40 truncate">{req.instructions}</div>}
+                      {req.instructions && <div className="text-[10px] text-white/40 whitespace-pre-line">{req.instructions}</div>}
                       <div className="text-[10px] text-white/40">{count} / {req.minCount} {req.kind}{req.minCount !== 1 ? "s" : ""}</div>
                     </div>
                     {effPerms.can_upload_photos && (

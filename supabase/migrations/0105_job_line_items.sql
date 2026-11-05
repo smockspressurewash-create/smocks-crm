@@ -1,0 +1,13 @@
+-- Line items on jobs and work orders.
+--
+-- FEATURE (owner request) — "for work orders, you need to be able to create
+-- line items." A work order is a jobs row (isWorkOrder, migration 0094), so
+-- its lines live on the job. Jobs made from an accepted estimate also copy
+-- the estimate's lines here, so the crew sees what was sold.
+--
+-- Shape: [{ id, description, quantity, unitPrice, notes, notesInternal, serviceId }]
+-- Work order types (default lines, materials, photo counts) live in
+-- app_settings.data.workOrderTypes, so they need no column.
+--
+-- Safe to run more than once.
+alter table public.jobs add column if not exists "lineItems" jsonb not null default '[]'::jsonb;

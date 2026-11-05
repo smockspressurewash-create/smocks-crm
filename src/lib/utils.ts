@@ -666,6 +666,13 @@ export const countDaysOffInRange = (emp: { availability?: string[]; recurringDay
 // conversion, recurring next-occurrence) builds the same combined list the
 // same way, rather than each one reimplementing — and possibly disagreeing
 // on — the combine logic.
+// The lines a job carries over from the estimate the customer accepted, so
+// the crew sees what was sold (with each line's description) on the job.
+export const jobLinesFromEstimate = (est: any) => (est?.lineItems || [])
+  .filter((li: any) => li && String(li.description || "").trim())
+  .slice(0, 100)
+  .map((li: any) => ({ id: li.id, description: li.description, quantity: Number(li.quantity) || 1, unitPrice: Number(li.unitPrice) || 0, notes: li.notes || "", notesInternal: !!li.notesInternal, serviceId: li.serviceId }));
+
 export const buildChecklistFromServices = (
   lineItems: Array<{ serviceId?: string }> | undefined,
   services: Array<{ id: string; checklistTemplate?: Array<{ label: string; required?: boolean; photoRequired?: boolean }> }> | undefined

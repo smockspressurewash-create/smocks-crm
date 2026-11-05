@@ -40,6 +40,7 @@ import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
 import { GDate } from "../ui/GDate";
+import { WorkOrderTypesEditor } from "../ui/WorkOrderFields";
 import { GSel } from "../ui/GSel";
 import { GTxt } from "../ui/GTxt";
 import { Modal } from "../ui/Modal";
@@ -1069,6 +1070,15 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                 functions/api-side templates if that's ever added later —
                 lives in app_settings.data like every other setting, no
                 migration needed. */}
+            {/* FEATURE (owner request) — "work orders have default services":
+                a saved type (e.g. Home Depot night wash + bird check) fills a
+                new work order's lines, materials to bring, crew instructions,
+                photo counts and checklist in one pick. */}
+            <div className="p-3 rounded-xl border border-purple-700/20 bg-purple-950/10 space-y-2" id="settings-work-order-types">
+              <div className="text-xs font-semibold text-purple-300 flex items-center gap-1.5"><FileText size={12} />Work order types</div>
+              <div className="text-[10px] text-white/40">Defaults for work orders you do often. Pick one on a work order and it fills in the lines, materials, instructions, required photos and checklist.</div>
+              <WorkOrderTypesEditor types={(f as any).workOrderTypes || []} onChange={workOrderTypes => setF({ ...f, workOrderTypes } as any)} services={services || []} />
+            </div>
             <div className="p-3 rounded-xl border border-purple-700/20 bg-purple-950/10 space-y-2">
               <div className="text-xs font-semibold text-purple-300 flex items-center gap-1.5"><FileText size={12} />Work Order Email Style (used by Alfred)</div>
               <div>

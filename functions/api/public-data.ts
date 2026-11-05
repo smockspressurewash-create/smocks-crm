@@ -202,7 +202,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     if (action === "approve_estimate") {
       const { id, signedAt, sigData, payChoice, paid, totalPaid, payType, job } = body;
       if (!id) return json({ error: "Missing id" }, 400);
-      const estRes = await sb(serviceRoleKey, `estimates?id=eq.${encodeURIComponent(id)}&select=owner_id,customerId,paidDeposit,paidFull,status,total`);
+      const estRes = await sb(serviceRoleKey, `estimates?id=eq.${encodeURIComponent(id)}&select=owner_id,customerId,paidDeposit,paidFull,status,total,lineItems`);
       const est = Array.isArray(estRes.data) ? estRes.data[0] : null;
       if (!est) return json({ error: "Not found" }, 404);
       // SECURITY FIX (audit finding) — this never checked the estimate's
@@ -241,11 +241,22 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           checklist: list(job.checklist), preChecklist: list(job.preChecklist), photos: [], chemicalsUsed: [], equipment: [],
           tags: ["Needs Scheduling"], commLog: [], notes: "From approved estimate #" + String(id).slice(-4).toUpperCase(),
           createdAt: new Date().toISOString().slice(0, 10), estimateId: id,
+          // The accepted estimate's lines ride along so the crew sees what
+          // was sold (jobs.lineItems, migration 0105).
+          lineItems: list(est.lineItems).filter((li: any) => li && String(li.description || "").trim()).map((li: any) => ({
+            id: String(li.id || crypto.randomUUID()), description: String(li.description), quantity: Number(li.quantity) || 1,
+            unitPrice: Number(li.unitPrice) || 0, notes: String(li.notes || ""), notesInternal: !!li.notesInternal, serviceId: li.serviceId || undefined,
+          })),
         };
-        const jobIns = await sb(serviceRoleKey, `jobs`, {
+        let jobIns = await sb(serviceRoleKey, `jobs`, {
           method: "POST", headers: { Prefer: "return=minimal" },
           body: JSON.stringify(safeJob),
         });
+        if (!jobIns.ok) {
+          // jobs.lineItems missing (migration 0105 not run yet) — still make the job.
+          const { lineItems: _lines, ...coreJob } = safeJob;
+          jobIns = await sb(serviceRoleKey, `jobs`, { method: "POST", headers: { Prefer: "return=minimal" }, body: JSON.stringify(coreJob) });
+        }
         if (!jobIns.ok) console.error("[public-data approve_estimate] job insert failed for estimate", id, "— owner never got a job row for this approval");
       }
 

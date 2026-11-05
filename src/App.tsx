@@ -104,7 +104,7 @@ import {
 } from "./lib/seed";
 import { seedWeather } from "./lib/weather";
 import { fetchRealWeather, deriveWeatherLocation } from "./lib/weather";
-import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, getLastOwnerId, setLastOwnerId, buildChecklistFromServices, withTimeout, normalizeJobRow, totalJobPhotoCount, notifyDesktop, stripLegacyJobFields, getPollIntervalMs, purgeOldJobMedia, computeGoalProgress, localDateKey, US_STATE_BASE_TAX_RATES, consumeOAuthReturnPage } from "./lib/utils";
+import { fmt, uid, today, daysSince, daysFromNow, consumeOAuthIntent, getLastOwnerSessionFlag, setLastOwnerSessionFlag, getLastOwnerId, setLastOwnerId, buildChecklistFromServices, jobLinesFromEstimate, withTimeout, normalizeJobRow, totalJobPhotoCount, notifyDesktop, stripLegacyJobFields, getPollIntervalMs, purgeOldJobMedia, computeGoalProgress, localDateKey, US_STATE_BASE_TAX_RATES, consumeOAuthReturnPage } from "./lib/utils";
 import { sendPushNotification } from "./lib/push";
 import { sendEmail, sendOwnerGmailOnly, emailShell, emailButton, buildTomorrowJobsEmailHtml, buildWeeklyScheduleEmailHtml, buildDailyBriefingEmailHtml, buildWeeklyOwnerDigestEmailHtml, setOptedOutPhones, setTestModeContacts, setCurrentOwnerIdForSms, twilioSend, logOutboundSmsToInbox } from "./lib/messaging";
 import { exchangeSocialOAuthCode, type SocialPlatform } from "./lib/socialOAuth";
@@ -693,7 +693,7 @@ export function App() {
     // redirect to Stripe's hosted page. Carries plan/interval as query params
     // the same way estimate/rate links carry their own ids.
     if (hash === "checkout" || hash.startsWith("checkout?")) return "checkout";
-    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","goals","referrals","promotions","trashcans","sops","expenses","reports","analytics","budget","personal","accountability","employees","hiring","fleet","chemicals","google","portal","reset-password","client","referral","rate","welcome","login","features","pricing","about","cockpit","feedback","roadmap"];
+    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","goals","referrals","promotions","trashcans","workorders","sops","expenses","reports","analytics","budget","personal","accountability","employees","hiring","fleet","chemicals","google","portal","reset-password","client","referral","rate","welcome","login","features","pricing","about","cockpit","feedback","roadmap"];
     return valid.includes(hash) ? hash : "dashboard";
   });
   // BUG FIX (user report) — "whenever I open the CRM as an owner... it
@@ -1122,7 +1122,7 @@ export function App() {
 
   // Listen for browser back/forward
   useEffect(() => {
-    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","goals","referrals","promotions","trashcans","sops","expenses","reports","analytics","budget","personal","accountability","employees","hiring","fleet","chemicals","google","portal","reset-password","client","referral","rate","lead-form","trash-cans","apply","terms","privacy","welcome","login","features","pricing","about","cockpit","feedback","roadmap"];
+    const valid = ["dashboard","alfred","inbox","notifications","customers","estimates","invoices","pipeline","intake","jobs","calendar","crew","campaigns","reviews","automations","social","goals","referrals","promotions","trashcans","workorders","sops","expenses","reports","analytics","budget","personal","accountability","employees","hiring","fleet","chemicals","google","portal","reset-password","client","referral","rate","lead-form","trash-cans","apply","terms","privacy","welcome","login","features","pricing","about","cockpit","feedback","roadmap"];
     const handler = () => {
       const hash = window.location.hash.replace(/^#\/?/, "").split("?")[0];
       if (hash === "portal" || hash.startsWith("portal/")) { setPage("portal"); return; }
@@ -3529,6 +3529,8 @@ export function App() {
           // not just that one) every 30s until either the column exists or
           // it's excluded here.
           "tip",
+          // Line items on jobs — supabase/migrations/0105_job_line_items.sql.
+          "lineItems",
         ] as const;
         // Supabase-js resolves (rather than rejects) on a PostgREST error, so check
         // the returned `error` explicitly — a bare try/catch alone won't see a 400.
@@ -4894,6 +4896,7 @@ export function App() {
             equipment: [], tags: ["Needs Scheduling"], commLog: [],
             notes: "From approved estimate #" + id.slice(-4).toUpperCase(),
             createdAt: today(), estimateId: id,
+            lineItems: jobLinesFromEstimate(est),
           } as any;
           setJobs(prev => prev.some(j => (j as any).estimateId === id) ? prev : [...prev, { ...newJob, owner_id: (est as any).owner_id }]);
           // Anonymous visitor — no owner_id-satisfying session, so this
@@ -6084,7 +6087,7 @@ export function App() {
                 {page === "referrals"      && <ReferralsPage customers={customers} setCustomers={setCustomers} jobs={jobs} toast={toast} settings={settings} setSettings={setSettings} />}
                 {page === "promotions"     && <PromotionsPage promotions={promotions} setPromotions={setPromotions} customers={customers} services={services} settings={settings} toast={toast} />}
                 {page === "trashcans"      && (planBlocked("trashcans") ? <PlanRestrictedNotice label="Trash-Can Route Management" feature="trashcans" /> : <TrashCanPage jobs={jobs} setJobs={setJobs} customers={customers} setCustomers={setCustomers} employees={employees} settings={settings} setSettings={setSettings} toast={toast} ownerId={crmUserId} markRecentlyDeleted={markRecentlyDeleted} />)}
-                {page === "workorders"     && <WorkOrdersPage jobs={jobs} setJobs={setJobs} customers={customers} setCustomers={setCustomers} employees={employees} settings={settings} toast={toast} ownerId={crmUserId} onOpenJob={id => queueAlfredSpotlight({ page: "jobs", type: "job", id })} onNewWorkOrder={() => { setFabAutoOpenNew("jobs-workorder"); setPage("jobs"); }} markRecentlyDeleted={markRecentlyDeleted} />}
+                {page === "workorders"     && <WorkOrdersPage jobs={jobs} setJobs={setJobs} customers={customers} setCustomers={setCustomers} employees={employees} settings={settings} toast={toast} ownerId={crmUserId} onOpenJob={id => { setOpenJobId(id); setPage("jobs"); }} onNewWorkOrder={() => { setFabAutoOpenNew("jobs-workorder"); setPage("jobs"); }} markRecentlyDeleted={markRecentlyDeleted} />}
                 {page === "crew"           && <CrewView jobs={jobs} setJobs={setJobs} customers={customers} employees={employees} toast={toast} settings={settings} setSettings={setSettings} estimates={estimates} setEstimates={setEstimates} refetchEmployees={refetchEmployees} ownerId={crmUserId} />}
               </SafePage>
             </PageFade>
@@ -6415,6 +6418,7 @@ export function App() {
                 equipment: [], tags: ["Needs Scheduling"], commLog: [],
                 notes: "From approved estimate #" + id.slice(-4).toUpperCase(),
                 createdAt: today(), estimateId: id, owner_id: crmUserId,
+                lineItems: jobLinesFromEstimate(est),
               } as any;
               (supabase as any).from("jobs").insert(newJob)
                 .then((r: any) => { if (r?.error) toast?.("Job created locally, but failed to save to the server — " + r.error.message, "red"); })

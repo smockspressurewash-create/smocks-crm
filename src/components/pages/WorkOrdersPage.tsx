@@ -197,7 +197,7 @@ export function WorkOrdersPage({
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <div className="text-xl font-bold flex items-center gap-2"><ClipboardCheck size={20} className="text-purple-400" />Work Orders</div>
-          <div className="text-xs text-white/40 mt-0.5">Commercial & night jobs — Home Depot, Lowe's, and similar clients.</div>
+          <div className="text-xs text-white/40 mt-0.5">Commercial & night jobs that don't need customer approval — Home Depot, Lowe's, and similar clients. Saved work order types live in Settings → Company.</div>
         </div>
         <div className="flex items-center gap-2">
           <GBtn variant="ghost" onClick={() => setScanOpen(true)} className="!text-xs"><Camera size={13} className="inline mr-1.5" />Scan Paper Work Order</GBtn>
@@ -231,7 +231,7 @@ export function WorkOrdersPage({
                     {(j as any).workOrderNumber && <span className="text-white/40 font-normal text-xs">#{(j as any).workOrderNumber}</span>}
                   </div>
                   <div className="text-xs text-white/50">{c ? `${c.firstName} ${c.lastName}` : "No customer linked"} · {j.address}</div>
-                  <div className="text-[11px] text-white/40 mt-0.5">{j.scheduledDate}</div>
+                  <div className="text-[11px] text-white/40 mt-0.5">{j.scheduledDate || "Not scheduled yet"}{((j as any).lineItems || []).length > 0 ? ` · ${(j as any).lineItems.length} line${(j as any).lineItems.length > 1 ? "s" : ""} · ${fmt(Number(j.amount) || 0)}` : ""}{(j.crew || []).length > 0 ? ` · ${(j.crew || []).map((id: string) => employees.find((e: any) => e.id === id)?.firstName).filter(Boolean).join(", ")}` : ""}</div>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
                   {prog && (

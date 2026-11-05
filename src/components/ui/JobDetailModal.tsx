@@ -21,6 +21,7 @@ import {
   ComposedChart, Legend
 } from "recharts";
 import { fmt, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, isEmployeeUnavailable, computeDiscountsTotal, equipmentList, requiredChemicalsList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, compressImageFile, getEffectiveRate, mediaSrc, dataUrlToBlob, uploadJobMedia, deleteJobMediaByUrl, reconcileCrewAfterAssign, insertJobRequestSafely, checkVideoLimits, buildJobCalendarDescription, buildChecklistFromServices } from "../../lib/utils";
+import { WorkOrderPanel } from "./WorkOrderFields";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField, JobChecklistItem, ChecklistPhoto, JobVideo, JobSignOff } from "../../types";
 import { twilioSend, sendEmail, sendViaGmail, sendOwnerGmailOnly, emailShell, emailButton, logOutboundSmsToInbox } from "../../lib/messaging";
 import { sendPushNotification } from "../../lib/push";
@@ -1830,6 +1831,11 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
             </div>
           )}
         </div>
+
+        {/* FEATURE (user report) — line items and work order details
+            (number, client, required photo counts, work order types) can be
+            edited after the job is made, not only on the New Work Order form. */}
+        <WorkOrderPanel job={job} updateJob={(patch: any) => updateJob(jobId, patch)} services={services} settings={settings} />
 
         {/* Equipment */}
         <div>
