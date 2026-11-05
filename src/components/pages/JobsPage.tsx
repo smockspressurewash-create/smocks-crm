@@ -40,6 +40,7 @@ import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
 import { GDate } from "../ui/GDate";
 import { GSel } from "../ui/GSel";
+import { CustomerPicker } from "../ui/CustomerPicker";
 import { GTxt } from "../ui/GTxt";
 import { Modal } from "../ui/Modal";
 import { Badge } from "../ui/Badge";
@@ -694,13 +695,11 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
         <div className="space-y-3">
           <div>
             <label className="text-xs text-white/60 mb-1 block">Customer</label>
-            <GSel value={newJobForm.customerId} onChange={e => {
-              const c = customers.find(x => x.id === e.target.value);
-              setNewJobForm(f => ({ ...f, customerId: e.target.value, address: c?.address || f.address }));
-            }}>
-              <option value="" className="bg-black">— Select customer —</option>
-              {customers.map(c => <option key={c.id} value={c.id} className="bg-black">{c.firstName} {c.lastName}</option>)}
-            </GSel>
+            {/* Search by name, phone, email or address (was a plain dropdown). */}
+            <CustomerPicker customers={customers} value={newJobForm.customerId} onChange={id => {
+              const c = customers.find(x => x.id === id);
+              setNewJobForm(f => ({ ...f, customerId: id, address: c?.address || f.address }));
+            }} />
           </div>
           <div>
             <label className="text-xs text-white/60 mb-1 block">Service address</label>

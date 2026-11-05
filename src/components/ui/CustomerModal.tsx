@@ -34,6 +34,7 @@ import { GBtn } from "./GBtn";
 import { GInput } from "./GInput";
 import { GDate } from "./GDate";
 import { GSel } from "./GSel";
+import { CustomerPicker } from "./CustomerPicker";
 import { GTxt } from "./GTxt";
 import { Modal } from "./Modal";
 import { Badge } from "./Badge";
@@ -94,10 +95,7 @@ export function CustomerModal({ open, onClose, data, onSave, mapsKey = "", custo
               <GInput value={customLeadSrc} onChange={e => setCustomLeadSrc(e.target.value)} placeholder="Specify source (e.g. Door hanger, Craigslist…)" className="!text-xs mt-1.5" autoFocus />
             )}
             {f.leadSource === "Referral" && customers.length > 0 && (
-              <GSel value={(f as any).referredBy || ""} onChange={e => setF({ ...(f as any), referredBy: e.target.value } as any)} className="!text-xs mt-1.5">
-                <option value="" className="bg-black">Referred by…</option>
-                {customers.filter((c: any) => c.id !== (f as any).id).map((c: any) => <option key={c.id} value={c.id} className="bg-black">{c.firstName} {c.lastName}</option>)}
-              </GSel>
+              <CustomerPicker customers={customers.filter((c: any) => c.id !== (f as any).id)} value={(f as any).referredBy || ""} clearable className="mt-1.5" placeholder="Referred by… (search)" onChange={id => setF({ ...(f as any), referredBy: id } as any)} />
             )}
           </div>
           <div>

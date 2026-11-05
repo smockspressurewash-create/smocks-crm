@@ -34,6 +34,7 @@ import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
 import { GDate } from "../ui/GDate";
 import { GSel } from "../ui/GSel";
+import { CustomerPicker } from "../ui/CustomerPicker";
 import { GTxt } from "../ui/GTxt";
 import { Modal } from "../ui/Modal";
 import { Badge } from "../ui/Badge";
@@ -254,10 +255,8 @@ export function ReviewsPage({ reviews = [], setReviews, jobs = [], customers = [
         <Modal open onClose={() => setManualSendOpen(false)} title="Send Review Request">
           <div className="p-4 space-y-3">
             <div className="text-xs text-white/50">Pick any customer to ask for a review — not tied to a specific job.</div>
-            <GSel value={manualSendCustomerId} onChange={(e: any) => setManualSendCustomerId(e.target.value)}>
-              <option value="">Select a customer…</option>
-              {customers.map((c: any) => <option key={c.id} value={c.id}>{c.firstName} {c.lastName}{c.phone ? " · " + c.phone : c.email ? " · " + c.email : ""}</option>)}
-            </GSel>
+            {/* Search by name, phone, email or address (was a plain dropdown). */}
+            <CustomerPicker customers={customers} value={manualSendCustomerId} onChange={id => setManualSendCustomerId(id)} />
             <div className="flex gap-2 justify-end pt-2">
               <GBtn variant="ghost" onClick={() => setManualSendOpen(false)}>Cancel</GBtn>
               <GBtn onClick={sendManualReviewRequest} disabled={!manualSendCustomerId || manualSendBusy}>{manualSendBusy ? "Sending…" : "Send"}</GBtn>

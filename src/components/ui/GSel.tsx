@@ -17,6 +17,14 @@ import { ChevronDown } from "lucide-react";
 // to any CSS overflow, which this has to reproduce by hand.
 const GSEL_MAX_VISIBLE_ROWS = 8;
 const GSEL_ROW_HEIGHT = 36;
+// FEATURE (user report) — "whenever I'm choosing which customer it's for, I
+// should be able to search them up: I start typing J-O and John shows up."
+// Any list longer than this gets a search box at the top of the panel that
+// filters as you type (every word you type must appear, any order, so "jo
+// sm" finds John Smith). Covers every customer picker at once: estimates,
+// jobs, work orders, invoices, reviews.
+const GSEL_SEARCH_MIN_OPTIONS = 8;
+const GSEL_SEARCH_HEIGHT = 44;
 
 interface GSelOption { value: string; label: React.ReactNode; disabled?: boolean; }
 
@@ -50,27 +58,38 @@ const gSelNodeToText = (node: React.ReactNode): string => {
 export const GSel = ({ className = "", children, value, onChange, disabled, ...r }: any) => {
   const [open, setOpen] = useState(false);
   const [highlighted, setHighlighted] = useState(0);
-  const [coords, setCoords] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [coords, setCoords] = useState<{ top?: number; bottom?: number; left: number; width: number } | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const typeaheadRef = useRef({ text: "", timer: 0 as any });
+  const searchRef = useRef<HTMLInputElement>(null);
+  const [query, setQuery] = useState("");
 
-  const options = extractGSelOptions(children);
-  const selected = options.find(o => o.value === String(value ?? ""));
+  const allOptions = extractGSelOptions(children);
+  const searchable = allOptions.length > GSEL_SEARCH_MIN_OPTIONS;
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  // The blank "— Select —" row is hidden while searching; it isn't a match.
+  const options = words.length
+    ? allOptions.filter(o => o.value !== "" && words.every(w => gSelNodeToText(o.label).toLowerCase().includes(w)))
+    : allOptions;
+  const searchExtra = searchable ? GSEL_SEARCH_HEIGHT : 0;
+  const selected = allOptions.find(o => o.value === String(value ?? ""));
 
   const computeCoords = useCallback(() => {
     const el = triggerRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
-    const panelHeight = Math.min(Math.max(options.length, 1), GSEL_MAX_VISIBLE_ROWS) * GSEL_ROW_HEIGHT + 8;
+    const panelHeight = Math.min(Math.max(allOptions.length, 1), GSEL_MAX_VISIBLE_ROWS) * GSEL_ROW_HEIGHT + 8 + searchExtra;
     const spaceBelow = window.innerHeight - rect.bottom;
     const openUp = spaceBelow < panelHeight && rect.top > spaceBelow;
+    // Opening upward is anchored by its bottom edge, so a list that shrinks
+    // while searching stays against the dropdown instead of floating above.
     setCoords({
-      top: openUp ? rect.top - panelHeight - 4 : rect.bottom + 4,
+      ...(openUp ? { bottom: window.innerHeight - rect.top + 4 } : { top: rect.bottom + 4 }),
       left: rect.left,
       width: rect.width,
     });
-  }, [options.length]);
+  }, [allOptions.length, searchExtra]);
 
   const closeDropdown = () => setOpen(false);
 
@@ -79,6 +98,7 @@ export const GSel = ({ className = "", children, value, onChange, disabled, ...r
     computeCoords();
     const idx = Math.max(0, options.findIndex(o => o.value === String(value ?? "")));
     setHighlighted(idx);
+    setQuery("");
     setOpen(true);
   };
 
@@ -90,6 +110,7 @@ export const GSel = ({ className = "", children, value, onChange, disabled, ...r
   useEffect(() => {
     if (!open) return;
     panelRef.current?.querySelector(`[data-idx="${highlighted}"]`)?.scrollIntoView({ block: "nearest" });
+    if (searchable) searchRef.current?.focus({ preventScroll: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -120,11 +141,13 @@ export const GSel = ({ className = "", children, value, onChange, disabled, ...r
       if (triggerRef.current?.contains(t) || panelRef.current?.contains(t)) return;
       closeDropdown();
     };
+    const typing = () => !!searchRef.current && document.activeElement === searchRef.current;
     const onScroll = (e: Event) => {
       if (e.target instanceof Node && panelRef.current?.contains(e.target)) return;
+      if (typing()) { computeCoords(); return; }
       closeDropdown();
     };
-    const onResize = () => closeDropdown();
+    const onResize = () => { if (typing()) computeCoords(); else closeDropdown(); };
     const onKeyDown = (e: KeyboardEvent) => { if (e.key === "Escape") { closeDropdown(); triggerRef.current?.focus(); } };
     document.addEventListener("mousedown", onDocMouseDown);
     window.addEventListener("scroll", onScroll, true);
@@ -164,6 +187,10 @@ export const GSel = ({ className = "", children, value, onChange, disabled, ...r
     else if (e.key === "ArrowUp") { e.preventDefault(); const next = Math.max(0, highlighted - 1); setHighlighted(next); scrollRowIntoView(next); }
     else if (e.key === "Enter") { e.preventDefault(); const opt = options[highlighted]; if (opt) choose(opt); }
     else if (e.key === "Tab") { closeDropdown(); }
+    else if (e.key.length === 1 && searchable) {
+      // Typing on the focused trigger goes into the search box.
+      e.preventDefault(); setQuery(q => q + e.key); setHighlighted(0); searchRef.current?.focus();
+    }
     else if (e.key.length === 1) {
       // Type-ahead, matching native <select> letter-jump behavior.
       clearTimeout(typeaheadRef.current.timer);
@@ -192,9 +219,29 @@ export const GSel = ({ className = "", children, value, onChange, disabled, ...r
       {open && coords && createPortal(
         <div
           ref={panelRef}
-          style={{ position: "fixed", top: coords.top, left: coords.left, width: coords.width, maxHeight: Math.min(Math.max(options.length, 1), GSEL_MAX_VISIBLE_ROWS) * GSEL_ROW_HEIGHT + 8, zIndex: 500 }}
+          style={{ position: "fixed", top: coords.top, bottom: coords.bottom, left: coords.left, width: coords.width, maxHeight: Math.min(Math.max(allOptions.length, 1), GSEL_MAX_VISIBLE_ROWS) * GSEL_ROW_HEIGHT + 8 + searchExtra, zIndex: 500 }}
           className="overflow-y-auto bg-neutral-950 border border-red-900/40 rounded-xl shadow-2xl py-1"
         >
+          {searchable && (
+            <div className="sticky top-0 z-10 bg-neutral-950 px-2 pb-1" style={{ height: GSEL_SEARCH_HEIGHT }}>
+              <input
+                ref={searchRef}
+                data-gsel-search
+                value={query}
+                onChange={e => { setQuery(e.target.value); setHighlighted(0); panelRef.current?.scrollTo({ top: 0 }); }}
+                onKeyDown={e => {
+                  if (e.key === "ArrowDown") { e.preventDefault(); const next = Math.min(options.length - 1, highlighted + 1); setHighlighted(next); scrollRowIntoView(next); }
+                  else if (e.key === "ArrowUp") { e.preventDefault(); const next = Math.max(0, highlighted - 1); setHighlighted(next); scrollRowIntoView(next); }
+                  else if (e.key === "Enter") { e.preventDefault(); const opt = options[highlighted]; if (opt) choose(opt); }
+                  else if (e.key === "Tab") closeDropdown();
+                }}
+                placeholder="Type to search…"
+                autoComplete="off"
+                enterKeyHint="search"
+                className="w-full h-9 mt-0.5 bg-white/5 border border-white/10 rounded-lg px-3 text-[16px] md:text-sm text-white placeholder-white/35 focus:outline-none focus:border-red-500/60"
+              />
+            </div>
+          )}
           {options.map((opt, i) => (
             <div
               key={opt.value + ":" + i}
@@ -211,7 +258,7 @@ export const GSel = ({ className = "", children, value, onChange, disabled, ...r
               {opt.label}
             </div>
           ))}
-          {options.length === 0 && <div className="px-4 text-sm text-white/30 flex items-center" style={{ height: GSEL_ROW_HEIGHT }}>No options</div>}
+          {options.length === 0 && <div className="px-4 text-sm text-white/30 flex items-center" style={{ height: GSEL_ROW_HEIGHT }}>{words.length ? `No match for "${query.trim()}"` : "No options"}</div>}
         </div>,
         document.body
       )}

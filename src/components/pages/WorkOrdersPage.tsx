@@ -17,6 +17,7 @@ import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
 import { GSel } from "../ui/GSel";
+import { CustomerPicker } from "../ui/CustomerPicker";
 import { GDate } from "../ui/GDate";
 import { GTxt } from "../ui/GTxt";
 import { Badge } from "../ui/Badge";
@@ -275,10 +276,7 @@ export function WorkOrdersPage({
               <div>
                 <label className="text-xs text-white/60 mb-1 block">Customer</label>
                 {customers.length > 0 && (
-                  <GSel value={reviewCustomerId} onChange={e => { setReviewCustomerId(e.target.value); if (e.target.value) setNewCustomerName(""); }} className="mb-1.5">
-                    <option value="" className="bg-black">— Select existing —</option>
-                    {customers.map(c => <option key={c.id} value={c.id} className="bg-black">{c.firstName} {c.lastName}</option>)}
-                  </GSel>
+                  <CustomerPicker customers={customers} value={reviewCustomerId} clearable className="mb-1.5" placeholder="Search existing customers…" onChange={id => { setReviewCustomerId(id); if (id) setNewCustomerName(""); }} />
                 )}
                 {!reviewCustomerId && (
                   <GInput placeholder="Or type a new customer/company name" value={newCustomerName} onChange={e => setNewCustomerName(e.target.value)} />

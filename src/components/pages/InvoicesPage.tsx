@@ -38,6 +38,7 @@ import { GBtn } from "../ui/GBtn";
 import { GInput } from "../ui/GInput";
 import { GDate } from "../ui/GDate";
 import { GSel } from "../ui/GSel";
+import { CustomerPicker } from "../ui/CustomerPicker";
 import { GTxt } from "../ui/GTxt";
 import { Modal } from "../ui/Modal";
 import { InvoicePreviewModal } from "../ui/InvoicePreviewModal";
@@ -1106,10 +1107,8 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
           )}
           <div>
             <label className="text-xs text-white/60 mb-1 block">Customer *</label>
-            <GSel value={newInvForm.customerId} onChange={(e: any) => setNewInvForm(f => ({ ...f, customerId: e.target.value }))}>
-              <option value="" className="bg-black">Select a customer…</option>
-              {customers.map((c: any) => <option key={c.id} value={c.id} className="bg-black">{c.firstName} {c.lastName}</option>)}
-            </GSel>
+            {/* Search by name, phone, email or address (was a plain dropdown). */}
+            <CustomerPicker customers={customers} value={newInvForm.customerId} onChange={id => setNewInvForm(f => ({ ...f, customerId: id }))} />
           </div>
           <div>
             <label className="text-xs text-white/60 mb-1 block">Title / description</label>

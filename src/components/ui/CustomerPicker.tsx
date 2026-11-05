@@ -7,7 +7,7 @@ import { Search, X } from "lucide-react";
 const label = (c: any) => `${c?.firstName || ""} ${c?.lastName || ""}`.trim() || c?.company || c?.phone || c?.email || "(no name)";
 const norm = (s: any) => String(s || "").toLowerCase();
 
-export function CustomerPicker({ customers = [], value, onChange, placeholder = "Search customers…" }: { customers?: any[]; value: string; onChange: (id: string) => void; placeholder?: string }) {
+export function CustomerPicker({ customers = [], value, onChange, placeholder = "Search customers…", clearable = false, className = "" }: { customers?: any[]; value: string; onChange: (id: string) => void; placeholder?: string; clearable?: boolean; className?: string }) {
   const selected = useMemo(() => customers.find((c: any) => c.id === value) || null, [customers, value]);
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
@@ -35,7 +35,7 @@ export function CustomerPicker({ customers = [], value, onChange, placeholder = 
   const choose = (c: any) => { onChange(c.id); setQ(""); setOpen(false); };
 
   return (
-    <div ref={boxRef} className="relative" data-customer-picker>
+    <div ref={boxRef} className={"relative " + className} data-customer-picker>
       {selected && !open ? (
         <button type="button" onClick={() => setOpen(true)} className="w-full bg-surface/40 border border-edge/30 rounded-xl px-4 py-2.5 text-left flex items-center justify-between gap-2 hover:border-red-500/40 transition">
           <span className="min-w-0">
@@ -44,7 +44,11 @@ export function CustomerPicker({ customers = [], value, onChange, placeholder = 
           </span>
           <span className="text-[11px] text-white/40 flex-shrink-0">Change</span>
         </button>
-      ) : (
+      ) : null}
+      {selected && !open && clearable ? (
+        <button type="button" onClick={() => onChange("")} className="mt-1 text-[11px] text-white/40 hover:text-white">Clear customer</button>
+      ) : null}
+      {!(selected && !open) && (
         <div className="relative">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30" />
           <input
