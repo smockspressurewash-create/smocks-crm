@@ -21,6 +21,8 @@
 // AUTOMATIONS_CRON_SECRET in the Cloudflare Pages dashboard and have your
 // pinger call /api/run-automations?key=<that value>.
 
+import { logSmsToInbox } from "./_lib/inboxLog";
+import { twilioAccountSid } from "./_lib/twilioAccount";
 import { getOwnerSecrets } from "./_lib/ownerSecrets";
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
@@ -62,7 +64,23 @@ const SMS_TEMPLATES: Record<string, string> = {
   owner_unassigned:     "Heads up {{first_name}} — the job for {{customer_name}} at {{job_address}} on {{date}} still has nobody assigned to it.",
 };
 
-const today = () => new Date().toISOString().slice(0, 10);
+// BUG FIX (owner report: texts at odd hours / twice) — this server runs on
+// UTC, so "today", "6-10am" and a job's 8:00 were all UTC: reminders went
+// out around 3am Eastern and the daily limit reset at 7-8pm. Everything now
+// uses the business's own time zone (settings.timeZone, default Eastern).
+let OWNER_TZ = "America/New_York";
+const zonedParts = (d: Date, tz = OWNER_TZ) => {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).formatToParts(d).map(p => [p.type, p.value]));
+  return { date: `${parts.year}-${parts.month}-${parts.day}`, hour: Number(parts.hour) % 24, minute: Number(parts.minute) };
+};
+// A wall-clock date/time in the owner's zone, as a real timestamp.
+const zonedMs = (date: string, time: string) => {
+  const guess = Date.parse(`${date}T${time || "08:00"}:00Z`);
+  const p = zonedParts(new Date(guess));
+  const shown = Date.parse(`${p.date}T${String(p.hour).padStart(2, "0")}:${String(p.minute).padStart(2, "0")}:00Z`);
+  return guess + (guess - shown);
+};
+const today = () => zonedParts(new Date()).date;
 const daysSince = (d: string) => Math.floor((Date.now() - new Date(d).getTime()) / 86400000);
 const fillTemplate = (template: string, vars: Record<string, string>): string =>
   template.replace(/\{\{(\w+)\}\}/g, (_, key) => vars[key] ?? `{{${key}}}`);
@@ -268,10 +286,21 @@ const runForOwner = async (ownerId: string, serviceRoleKey: string, env: Record<
   // attempt (not just successful sends) so AutomationsPage.tsx can show a
   // real "last checked Xm ago" instead of the owner having no way to tell
   // whether the background job is actually configured and running at all.
-  fetch(`${SUPABASE_URL}/rest/v1/app_settings?owner_id=eq.${encodeURIComponent(ownerId)}`, {
-    method: "PATCH", headers: { ...headers, "Content-Type": "application/json", Prefer: "return=minimal" },
-    body: JSON.stringify({ data: { ...settings, lastAutomationRunAt: new Date().toISOString() } }),
-  }).catch(() => {});
+  // BUG FIX — these writes used to save the whole settings record read at
+  // the start of the run, undoing anything the owner (or another run) saved
+  // in between, including the per-customer daily limit. Re-read just before
+  // writing and change only this run's own keys.
+  const patchSettings = async (keys: (cur: any) => Record<string, any>) => {
+    try {
+      const fresh = await fetch(`${SUPABASE_URL}/rest/v1/app_settings?owner_id=eq.${encodeURIComponent(ownerId)}&select=data`, { headers }).then(r => r.json()).catch(() => null);
+      const cur = (Array.isArray(fresh) ? fresh[0]?.data : null) || settings;
+      await fetch(`${SUPABASE_URL}/rest/v1/app_settings?owner_id=eq.${encodeURIComponent(ownerId)}`, {
+        method: "PATCH", headers: { ...headers, "Content-Type": "application/json", Prefer: "return=minimal" },
+        body: JSON.stringify({ data: { ...cur, ...keys(cur) } }),
+      });
+    } catch { /* next run tries again */ }
+  };
+  await patchSettings(() => ({ lastAutomationRunAt: new Date().toISOString() }));
   if (settings.automationsPaused !== false) return { sent: 0, failed: 0, skippedPaused: true };
 
   const jobs = await jobsRes.json().catch(() => []);
@@ -280,9 +309,10 @@ const runForOwner = async (ownerId: string, serviceRoleKey: string, env: Record<
   const referrals = await refRes.json().catch(() => []);
 
   const secrets = await getOwnerSecrets(ownerId, serviceRoleKey);
+  OWNER_TZ = typeof settings.timeZone === "string" && settings.timeZone ? settings.timeZone : "America/New_York";
   const todayStr = today();
   const now = new Date();
-  const hour = now.getHours();
+  const hour = zonedParts(now).hour;
   const mmdd = todayStr.slice(5);
 
   const paymentLink = (estId: string) => `${origin}/#/estimate/${estId}`;
@@ -298,12 +328,13 @@ const runForOwner = async (ownerId: string, serviceRoleKey: string, env: Record<
     estimate_expiring: { direction: "before", defaultDelayMinutes: 2880, defaultCooldownDays: 30, smsTemplateKey: "estimate_expiring",
       extraVars: (cand: any) => ({ payment_link: paymentLink(cand.estimate.id) }),
       getCandidates: () => estimates.filter((e: any) => e.status === "pending" && e.validUntil).map((e: any) => { const c = customers.find((x: any) => x.id === e.customerId); return c ? { key: e.id, customer: c, estimate: e, anchorMs: new Date(e.validUntil).getTime() } : null; }).filter(Boolean) },
-    job_reminder: { direction: "before", defaultDelayMinutes: 1440, defaultCooldownDays: 1, smsTemplateKey: "job_reminder",
-      getCandidates: () => jobs.filter((j: any) => j.status === "scheduled" && j.scheduledDate).map((j: any) => { const c = customers.find((x: any) => x.id === j.customerId); if (!c) return null; const t = j.scheduledTime ? new Date(`${j.scheduledDate}T${j.scheduledTime}`) : new Date(`${j.scheduledDate}T08:00:00`); return { key: j.id, customer: c, job: j, anchorMs: t.getTime() }; }).filter(Boolean) },
-    job_reminder_morning: { direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 1, smsTemplateKey: "job_reminder",
-      getCandidates: () => (hour >= 6 && hour < 10) ? jobs.filter((j: any) => j.status === "scheduled" && j.scheduledDate === todayStr).map((j: any) => { const c = customers.find((x: any) => x.id === j.customerId); return c ? { key: j.id, customer: c, job: j, anchorMs: Date.now() } : null; }).filter(Boolean) : [] },
-    crew_starts: { direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 1, smsTemplateKey: "crew_starts",
-      getCandidates: () => jobs.filter((j: any) => j.status === "in_progress" && j.scheduledDate === todayStr).map((j: any) => { const c = customers.find((x: any) => x.id === j.customerId); return c ? { key: j.id, customer: c, job: j, anchorMs: Date.now() } : null; }).filter(Boolean) },
+    // Once per job per date (see useAutomationEngine.ts's matching comment).
+    job_reminder: { direction: "before", defaultDelayMinutes: 1440, defaultCooldownDays: 3650, smsTemplateKey: "job_reminder",
+      getCandidates: () => jobs.filter((j: any) => j.status === "scheduled" && j.scheduledDate).map((j: any) => { const c = customers.find((x: any) => x.id === j.customerId); if (!c) return null; return { key: `${j.id}@${j.scheduledDate}`, customer: c, job: j, anchorMs: zonedMs(j.scheduledDate, j.scheduledTime || "08:00") }; }).filter(Boolean) },
+    job_reminder_morning: { direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 3650, smsTemplateKey: "job_reminder",
+      getCandidates: () => (hour >= 6 && hour < 10) ? jobs.filter((j: any) => j.status === "scheduled" && j.scheduledDate === todayStr).map((j: any) => { const c = customers.find((x: any) => x.id === j.customerId); return c ? { key: `${j.id}@${j.scheduledDate}`, customer: c, job: j, anchorMs: Date.now() } : null; }).filter(Boolean) : [] },
+    crew_starts: { direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 3650, smsTemplateKey: "crew_starts",
+      getCandidates: () => jobs.filter((j: any) => j.status === "in_progress" && j.scheduledDate === todayStr).map((j: any) => { const c = customers.find((x: any) => x.id === j.customerId); return c ? { key: `${j.id}@${j.scheduledDate}`, customer: c, job: j, anchorMs: Date.now() } : null; }).filter(Boolean) },
     job_scheduled: { direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 3650, smsTemplateKey: "job_scheduled",
       getCandidates: () => jobs.filter((j: any) => j.status === "scheduled" && daysSince(j.createdAt || j.scheduledDate) <= 2).map((j: any) => { const c = customers.find((x: any) => x.id === j.customerId); return c ? { key: j.id, customer: c, job: j, anchorMs: Date.now() } : null; }).filter(Boolean) },
     review_request: { direction: "after", defaultDelayMinutes: 2880, defaultCooldownDays: 3650, smsTemplateKey: "review_request",
@@ -313,7 +344,7 @@ const runForOwner = async (ownerId: string, serviceRoleKey: string, env: Record<
       // EmployeePortal.tsx's Report Problem panel) excludes it here — same
       // opt-out this cron-driven path shares with JobDetailModal's manual
       // send button.
-      getCandidates: () => jobs.filter((j: any) => j.status === "completed" && !j.skipReviewRequest).map((j: any) => { const c = customers.find((x: any) => x.id === j.customerId); if (!c) return null; const completedDate = j.signOff?.timestamp?.slice(0, 10) || j.scheduledDate; if (!completedDate || daysSince(completedDate) > 14) return null; if (c.reviewRequested && daysSince(c.reviewRequested) < 90) return null; const anchorMs = j.signOff?.timestamp ? new Date(j.signOff.timestamp).getTime() : new Date(completedDate).getTime(); return { key: j.id, customer: c, job: j, anchorMs }; }).filter(Boolean) },
+      getCandidates: () => jobs.filter((j: any) => j.status === "completed" && !j.skipReviewRequest && !j.reviewRequestedAt).map((j: any) => { const c = customers.find((x: any) => x.id === j.customerId); if (!c) return null; const completedDate = j.signOff?.timestamp?.slice(0, 10) || j.scheduledDate; if (!completedDate || daysSince(completedDate) > 14) return null; if (c.reviewRequested && daysSince(c.reviewRequested) < 90) return null; const anchorMs = j.signOff?.timestamp ? new Date(j.signOff.timestamp).getTime() : new Date(completedDate).getTime(); return { key: j.id, customer: c, job: j, anchorMs }; }).filter(Boolean) },
     estimate_followup: { direction: "after", defaultDelayMinutes: 1440, defaultCooldownDays: 3, conditionKey: "estimate_not_viewed", smsTemplateKey: "estimate_followup",
       getCandidates: () => estimates.filter((e: any) => e.status === "pending" && e.sentAt).map((e: any) => { const c = customers.find((x: any) => x.id === e.customerId); return c ? { key: e.id, customer: c, estimate: e, anchorMs: new Date(e.sentAt).getTime() } : null; }).filter(Boolean) },
     estimate_viewed: { direction: "after", defaultDelayMinutes: 0, defaultCooldownDays: 3650, smsTemplateKey: "estimate_viewed_ack",
@@ -433,6 +464,11 @@ const runForOwner = async (ownerId: string, serviceRoleKey: string, env: Record<
       const effectiveDelay = dir.explicitDelay ? dir.delayMinutes : dir.delayMinutes || spec.defaultDelayMinutes;
       for (const cand of spec.getCandidates()) {
         if (dir.channel === "sms" && cand.customer.smsOptOut) continue;
+        // Trash can stops only when the automation is switched on for them.
+        if (cand.job?.serviceCategory === "trash_can" && !auto.includeTrashCans) continue;
+        // Testing Mode: never message a customer marked Test Client — same
+        // rule the app's own send path (lib/messaging.ts) follows.
+        if (settings.testModeEnabled && cand.customer.isTestClient) continue;
         if (dir.conditions.some((c: string) => !evalCondition(c, cand, { jobs, referrals, settings }))) continue;
         let ok: boolean;
         if (spec.direction === "before") { const untilMs = cand.anchorMs - Date.now(); ok = untilMs <= effectiveDelay * 60000 && untilMs > -3600000; }
@@ -491,7 +527,8 @@ const runForOwner = async (ownerId: string, serviceRoleKey: string, env: Record<
   // Persist sentLog/count back onto each automation row.
   for (const autoId of Object.keys(patchesByAutoId)) {
     const patch = patchesByAutoId[autoId];
-    const row = automations.find(a => a.id === autoId);
+    const freshRows = await fetch(`${SUPABASE_URL}/rest/v1/automations?id=eq.${encodeURIComponent(autoId)}&owner_id=eq.${encodeURIComponent(ownerId)}&select=data`, { headers }).then(r => r.json()).catch(() => null);
+    const row = (Array.isArray(freshRows) ? freshRows[0]?.data : null) || automations.find(a => a.id === autoId);
     if (!row) continue;
     const nextData = { ...row, lastTriggered: todayStr, count: (row.count ?? 0) + patch.sent, sentLog: { ...(row.sentLog || {}), ...patch.sentTo } };
     await fetch(`${SUPABASE_URL}/rest/v1/automations?id=eq.${encodeURIComponent(autoId)}&owner_id=eq.${encodeURIComponent(ownerId)}`, {
@@ -499,12 +536,7 @@ const runForOwner = async (ownerId: string, serviceRoleKey: string, env: Record<
       body: JSON.stringify({ data: nextData, updated_at: new Date().toISOString() }),
     }).catch(() => {});
   }
-  if (sent > 0) {
-    await fetch(`${SUPABASE_URL}/rest/v1/app_settings?owner_id=eq.${encodeURIComponent(ownerId)}`, {
-      method: "PATCH", headers: { ...headers, "Content-Type": "application/json", Prefer: "return=minimal" },
-      body: JSON.stringify({ data: { ...settings, automationDailySendLog: newDailyLog } }),
-    }).catch(() => {});
-  }
+  if (sent > 0) await patchSettings(cur => ({ automationDailySendLog: { ...(cur.automationDailySendLog || {}), ...newDailyLog } }));
   return { sent, failed };
 };
 
@@ -550,29 +582,11 @@ const sendOneServerSide = async (
   if (!secrets?.twilioAuthToken || !secrets?.twilioAccountSid || !secrets?.twilioFromNumber) { console.warn("[Automations]", item.auto.name, "— Twilio not configured"); return false; }
   const auth = `Basic ${btoa(`${secrets.twilioAccountSid}:${secrets.twilioAuthToken}`)}`;
   const params = new URLSearchParams({ To: c.phone, From: secrets.twilioFromNumber, Body: item.body });
-  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${secrets.twilioAccountSid}/Messages.json`, {
+  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${await twilioAccountSid(secrets.twilioAccountSid, secrets.twilioAuthToken)}/Messages.json`, {
     method: "POST", headers: { Authorization: auth, "Content-Type": "application/x-www-form-urlencoded" }, body: params.toString(),
   });
   if (!res.ok) { console.warn("[Automations]", item.auto.name, "— Twilio send failed:", res.status); return false; }
-  // Log to inbox_threads the same way every other outbound SMS does.
-  try {
-    const authHeaders = { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` };
-    const normDigits = (p: string) => (p || "").replace(/\D/g, "");
-    const threadsRes = await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads?channel=eq.sms&owner_id=eq.${encodeURIComponent(ownerId)}&select=id,contact_phone`, { headers: authHeaders });
-    const threads = await threadsRes.json().catch(() => []);
-    const existing = Array.isArray(threads) ? threads.find((t: any) => normDigits(t.contact_phone) === normDigits(c.phone)) : null;
-    const msg = { id: crypto.randomUUID(), dir: "out", body: item.body, ts: Date.now() };
-    if (existing) {
-      await fetch(`${SUPABASE_URL}/rest/v1/rpc/append_inbox_message`, {
-        method: "POST", headers: { ...authHeaders, "Content-Type": "application/json" },
-        body: JSON.stringify({ p_thread_id: existing.id, p_message: msg, p_unread: false }),
-      });
-    } else {
-      await fetch(`${SUPABASE_URL}/rest/v1/inbox_threads`, {
-        method: "POST", headers: { ...authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
-        body: JSON.stringify({ id: crypto.randomUUID(), channel: "sms", contact_name: `${c.firstName} ${c.lastName}`, contact_phone: c.phone, customer_id: c.id, unread: false, messages: [msg], last_message_at: msg.ts, updated_at: new Date().toISOString(), owner_id: ownerId }),
-      });
-    }
-  } catch { /* non-fatal — the SMS itself already sent */ }
+  // Log to the inbox the same way every other outbound SMS does.
+  await logSmsToInbox(serviceRoleKey, { ownerId, phone: c.phone, name: `${c.firstName} ${c.lastName}`, customerId: c.id, body: item.body, via: "automation" });
   return true;
 };

@@ -12,6 +12,7 @@
 // employeeName the model could substitute to act as someone else, and
 // nothing here touches other employees, customers, money, or CRM-wide data.
 
+import { twilioAccountSid } from "./twilioAccount";
 import { effectiveModel } from "./modelOverrides";
 import { stripMarkdownForSms } from "./textFormat";
 import { COCKPIT_TOOLS, cockpitPrompt, cockpitSender, cockpitSenderFor, runCockpitTool } from "./cockpitBridge";
@@ -63,7 +64,7 @@ const sendCustomerSms = async (ctx: Ctx, toPhone: string, bodyRaw: string, conta
   const body = stripMarkdownForSms(bodyRaw);
   const auth = `Basic ${btoa(`${ctx.twilioSid}:${ctx.twilioToken}`)}`;
   const params = new URLSearchParams({ To: toPhone, From: ctx.twilioFrom, Body: body });
-  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${ctx.twilioSid}/Messages.json`, {
+  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${await twilioAccountSid(ctx.twilioSid, ctx.twilioToken)}/Messages.json`, {
     method: "POST", headers: { Authorization: auth, "Content-Type": "application/x-www-form-urlencoded" }, body: params.toString(),
   });
   if (!res.ok) return { ok: false, error: (await res.text().catch(() => "")).slice(0, 200) };

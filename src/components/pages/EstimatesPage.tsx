@@ -218,7 +218,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
     const priceText = hasSelectableOptions(est)
       ? `Your ${est.estimateType === "package" ? "packages" : "service options"} from ` + (settings?.companyName || "Crew Boss") + " are ready — pick what works for you."
       : "Your quote of " + fmt(est.total) + " from " + (settings?.companyName || "Crew Boss") + " is ready.";
-    return "Hi " + cust.firstName + "! " + priceText + " Review and sign here: " + link + " — questions? Call " + (settings?.companyPhone || "(717) 555-0100");
+    return "Hi " + cust.firstName + "! " + priceText + " Review and sign here: " + link + " — questions? " + (settings?.companyPhone ? "Call " + settings.companyPhone : "Just reply to this text");
   };
 
   const doSend = async () => {
@@ -532,7 +532,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
                 const c = est && customers.find(x => x.id === est.customerId);
                 if (!c?.email) continue;
                 const estCoName = (settings as any)?.companyName || "Crew Boss";
-                const estCoPhone = (settings as any)?.companyPhone || "(717) 555-0100";
+                const estCoPhone = (settings as any)?.companyPhone || "";
                 // BUG FIX (round 13) — same broken "smocks.com" domain + fixed-
                 // price wording issue as the SMS bulk-send above; now uses the
                 // real portal link and hides the amount for options/package

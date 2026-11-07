@@ -5,6 +5,7 @@
 // /api/check-reminders cron on its next run until everyone's been sent.
 // Every send re-checks opt-outs, is logged to the owner's Inbox, and the
 // matching campaign in the Campaigns page is kept up to date.
+import { twilioAccountSid } from "./twilioAccount";
 import { recGet, recPut, recListAllOwners } from "./ownerRecords";
 import { stripMarkdownForSms } from "./textFormat";
 
@@ -43,7 +44,7 @@ export async function runBulkSendBatch(authHeaders: Record<string, string>, owne
     if (Date.now() > deadline) break;
     if (optedOut.has(r.customerId)) { r.status = "skipped"; r.error = "opted out"; continue; }
     const body = stripMarkdownForSms(draft.message.replace(/{{first_name}}/g, r.firstName || "there"));
-    const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${twilio.sid}/Messages.json`, {
+    const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${await twilioAccountSid(twilio.sid, twilio.token)}/Messages.json`, {
       method: "POST", headers: { Authorization: auth, "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ To: r.phone, From: twilio.from, Body: body }).toString(),
     }).catch((e: any) => ({ ok: false, text: async () => String(e?.message || e) } as any));

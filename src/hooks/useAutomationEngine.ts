@@ -648,7 +648,7 @@ export function useAutomationEngine({
     if (c.smsOptOut) return { ok: false, reason: `${c.firstName} ${c.lastName} has opted out of texts (replied STOP)` };
     try {
       await twilioSend(settings, c.phone, body);
-      logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body }).catch(() => {});
+      logOutboundSmsToInbox({ via: "automation", contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body }).catch(() => {});
       onSent();
       toast(`📱 ${auto.name} → ${c.firstName}`);
       return { ok: true };
@@ -724,6 +724,8 @@ export function useAutomationEngine({
       const todayStr = today();
       const now = new Date();
       const hour = now.getHours();
+      const lastServerRun = Date.parse((settings as any).lastAutomationRunAt || "");
+      const serverRunsAutomations = !Number.isNaN(lastServerRun) && Date.now() - lastServerRun < 45 * 60000;
       const mmdd = todayStr.slice(5);
 
       const alreadySent = (auto: Automation, key: string, cooldownDays: number): boolean => {
@@ -748,29 +750,36 @@ export function useAutomationEngine({
             return c ? { key: e.id, customer: c, estimate: e, anchorMs: new Date(e.validUntil).getTime() } : null;
           }).filter(Boolean) as Candidate[],
         },
+        // BUG FIX (owner report: "make sure it's not randomly sending texts
+        // for the trash cans") — job texts used a 1-day cooldown keyed on the
+        // job, but the send window runs 24h before to 1h after the job, and
+        // the cooldown counted calendar days. One job could be texted twice
+        // (the day before and again the morning of). Keys now include the
+        // job's date and never expire, so it's once per job per date; a
+        // rescheduled job gets one new reminder for its new date.
         job_reminder: {
-          direction: "before", defaultDelayMinutes: 1440, defaultCooldownDays: 1, smsTemplateKey: "job_reminder",
+          direction: "before", defaultDelayMinutes: 1440, defaultCooldownDays: 3650, smsTemplateKey: "job_reminder",
           getCandidates: () => jobs.filter(j => j.status === "scheduled" && j.scheduledDate).map(j => {
             const c = customers.find(x => x.id === j.customerId);
             if (!c) return null;
             const t = j.scheduledTime ? new Date(`${j.scheduledDate}T${j.scheduledTime}`) : new Date(`${j.scheduledDate}T08:00:00`);
-            return { key: j.id, customer: c, job: j, anchorMs: t.getTime() };
+            return { key: `${j.id}@${j.scheduledDate}`, customer: c, job: j, anchorMs: t.getTime() };
           }).filter(Boolean) as Candidate[],
         },
         job_reminder_morning: {
-          direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 1, smsTemplateKey: "job_reminder",
+          direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 3650, smsTemplateKey: "job_reminder",
           getCandidates: () => hour >= 6 && hour < 10
             ? jobs.filter(j => j.status === "scheduled" && j.scheduledDate === todayStr).map(j => {
                 const c = customers.find(x => x.id === j.customerId);
-                return c ? { key: j.id, customer: c, job: j, anchorMs: Date.now() } : null;
+                return c ? { key: `${j.id}@${j.scheduledDate}`, customer: c, job: j, anchorMs: Date.now() } : null;
               }).filter(Boolean) as Candidate[]
             : [],
         },
         crew_starts: {
-          direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 1, smsTemplateKey: "crew_starts",
+          direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 3650, smsTemplateKey: "crew_starts",
           getCandidates: () => jobs.filter(j => j.status === "in_progress" && j.scheduledDate === todayStr).map(j => {
             const c = customers.find(x => x.id === j.customerId);
-            return c ? { key: j.id, customer: c, job: j, anchorMs: Date.now() } : null;
+            return c ? { key: `${j.id}@${j.scheduledDate}`, customer: c, job: j, anchorMs: Date.now() } : null;
           }).filter(Boolean) as Candidate[],
         },
         job_scheduled: {
@@ -783,7 +792,7 @@ export function useAutomationEngine({
         review_request: {
           direction: "after", defaultDelayMinutes: 2880, defaultCooldownDays: 3650, smsTemplateKey: "review_request",
           extraVars: cand => ({ review_link: reviewLink(cand.customer, settings) }),
-          getCandidates: () => jobs.filter(j => j.status === "completed").map(j => {
+          getCandidates: () => jobs.filter(j => j.status === "completed" && !(j as any).skipReviewRequest && !(j as any).reviewRequestedAt).map(j => {
             const c = customers.find(x => x.id === j.customerId);
             if (!c) return null;
             const completedDate = j.signOff?.timestamp?.slice(0, 10) || j.scheduledDate;
@@ -1240,6 +1249,10 @@ export function useAutomationEngine({
             // never actually sent, but a confusing perpetual entry in the
             // owner's approval modal. Skip them before they ever reach it.
             if (dir.channel === "sms" && cand.customer.smsOptOut) continue;
+            // Trash can stops are weekly and have their own texts (Trash Cans
+            // page). An automation only reaches them when it's switched on for
+            // trash cans (Automations → "Include trash can jobs").
+            if ((cand.job as any)?.serviceCategory === "trash_can" && !(auto as any).includeTrashCans) continue;
             if (dir.conditions.some(c => !evalCondition(c, cand, { jobs, referrals, settings }))) continue;
             let ok: boolean;
             if (spec.direction === "before") {
@@ -1274,7 +1287,10 @@ export function useAutomationEngine({
               conditions: dir.conditions,
               webhookUrl: dir.url, webhookPayload: payload,
             };
-            if ((auto as any).autoApprove) autoSend.push(readyItem);
+            // Auto-approved automations are sent by the server's background
+            // run when it's set up (it stamps lastAutomationRunAt every run).
+            // Sending them from this browser too texted customers twice.
+            if ((auto as any).autoApprove) { if (!serverRunsAutomations) autoSend.push(readyItem); }
             else gathered.push(readyItem);
           }
         }

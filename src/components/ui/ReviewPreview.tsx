@@ -464,7 +464,7 @@ const executeAction = async (step, ctx, toast, settings) => {
     .replace(/{{address}}/gi, ctx.job?.address || ctx.customer?.address || "")
     .replace(/{{review_link}}/gi, "smocks.com/r/[token]")
     .replace(/{{portal_link}}/gi, "smocks.com/portal/[id]")
-    .replace(/{{company_phone}}/gi, settings?.companyPhone || "(717) 555-0100");
+    .replace(/{{company_phone}}/gi, settings?.companyPhone || "");
 
   // Use messageBody if set, otherwise fall back to label
   const rawBody = step.messageBody || step.label || "Notification from Crew Boss";

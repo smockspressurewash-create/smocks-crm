@@ -20,6 +20,7 @@
 // controls), just slightly more guessable as an endpoint to hit repeatedly
 // (harmless — sending an already-sent reminder again is prevented by the
 // `sent` flag, checked and set atomically per-row below).
+import { twilioAccountSid } from "./_lib/twilioAccount";
 import { runModelWatch } from "./_lib/modelWatch";
 import { getOwnerSecrets } from "./_lib/ownerSecrets";
 import { continueBulkSends } from "./_lib/bulkTextSend";
@@ -152,7 +153,7 @@ export const onRequest = async (context: { request: Request; env: Record<string,
     }
     const auth = `Basic ${btoa(`${ownerSecrets.twilioAccountSid}:${ownerSecrets.twilioAuthToken}`)}`;
     const params = new URLSearchParams({ To: r.phone, From: ownerSecrets.twilioFromNumber, Body: `⏰ Reminder: ${r.message}` });
-    const smsRes = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${ownerSecrets.twilioAccountSid}/Messages.json`, {
+    const smsRes = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${await twilioAccountSid(ownerSecrets.twilioAccountSid, ownerSecrets.twilioAuthToken)}/Messages.json`, {
       method: "POST", headers: { Authorization: auth, "Content-Type": "application/x-www-form-urlencoded" }, body: params.toString(),
     });
     if (!smsRes.ok) {

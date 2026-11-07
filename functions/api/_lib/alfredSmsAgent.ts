@@ -31,6 +31,7 @@
 // convention this is NOT routable, purely a shared module for the actual
 // route files (twilio-sms-webhook.ts) to import from.
 
+import { twilioAccountSid } from "./twilioAccount";
 import { effectiveModel } from "./modelOverrides";
 import { prepareImportFromFile, runTextImport } from "./textImport";
 import { syncEmployeeJobToCalendar } from "./employeeCalendarSync";
@@ -540,7 +541,7 @@ const sendSms = async (ctx: Ctx, toPhone: string, bodyRaw: string, isOwnerReply 
   // itself, so this just needs the document's already-public Supabase
   // Storage URL (see get_customer_documents/text_me_document below).
   if (mediaUrl) params.append("MediaUrl", mediaUrl);
-  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${ctx.twilioSid}/Messages.json`, {
+  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${await twilioAccountSid(ctx.twilioSid, ctx.twilioToken)}/Messages.json`, {
     method: "POST",
     headers: { Authorization: auth, "Content-Type": "application/x-www-form-urlencoded" },
     body: params.toString(),

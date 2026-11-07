@@ -1643,7 +1643,13 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
     // one stage with no customer-facing text at all (only the owner-facing
     // summary email just above). Automatic and best-effort, same treatment
     // as that email — never blocks the completion flow itself.
-    if (!isPreview && customer?.phone && settings?.twilioSid) {
+    // Not for weekly trash can stops (owner report: random trash can
+    // texts), and once per job — a retried Complete used to text again.
+    const doneKey = "crm.doneText." + job.id;
+    let doneAlready = false;
+    try { doneAlready = !!localStorage.getItem(doneKey); } catch { /* private mode */ }
+    if (!isPreview && customer?.phone && settings?.twilioSid && (job as any).serviceCategory !== "trash_can" && job.status !== "completed" && !doneAlready) {
+      try { localStorage.setItem(doneKey, "1"); } catch { /* private mode */ }
       const doneMsg = `Hi ${customer.firstName}, your ${settings?.companyName || "Crew Boss"} service at ${job.address || "your property"} is all finished! Thanks for choosing us.`;
       twilioSend(settings as any, customer.phone, doneMsg)
         .then(() => logOutboundSmsToInbox({ contactName: `${customer.firstName} ${customer.lastName}`, contactPhone: customer.phone, customerId: customer.id, body: doneMsg }).catch(() => {}))

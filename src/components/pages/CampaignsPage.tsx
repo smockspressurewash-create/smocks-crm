@@ -149,7 +149,7 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
   const [tab, setTab] = useState("compose");
   const [ch, setCh] = useState("sms");
   const [subj, setSubj] = useState("");
-  const [body, setBody] = useState("Hi {{first_name}}, spring special — 15% off house soft washes this month. Reply BOOK or call " + ((settings as any)?.companyPhone || "(717) 555-0100") + ". — " + ((settings as any)?.companyName || "Crew Boss"));
+  const [body, setBody] = useState("Hi {{first_name}}, spring special — 15% off house soft washes this month. Reply BOOK or call " + ((settings as any)?.companyPhone || "") + ". — " + ((settings as any)?.companyName || "Crew Boss"));
   const [fCity, setFCity] = useState("");
   const [fLast, setFLast] = useState(""); // last service date (most recent completed job)
   const [fTag, setFTag] = useState("");
@@ -291,7 +291,7 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
     .replace(/{{address}}/g, customer.address || "")
     .replace(/{{phone}}/g, customer.phone || "")
     .replace(/{{company_name}}/g, (settings as any)?.companyName || "Crew Boss")
-    .replace(/{{company_phone}}/g, (settings as any)?.companyPhone || "(717) 555-0100");
+    .replace(/{{company_phone}}/g, (settings as any)?.companyPhone || "");
 
   const launch = async () => {
     if (!body.trim() || (ch === "email" && !subj.trim()) || matches.length === 0) return;
@@ -314,29 +314,10 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
       try {
         if (ch === "sms") {
           await twilioSend(settings, customer.phone, personalized);
-          // Add to inbox as outgoing campaign message — local optimistic
-          // update for this session's own UI...
-          if (setInboxThreads) {
-            setInboxThreads(prev => {
-              const existing = prev.find(t => t.channel === "sms" && t.contactPhone?.replace(/\D/g, "") === customer.phone?.replace(/\D/g, ""));
-              const outMsg = { id: uid(), dir: "out", body: personalized, ts: Date.now(), status: "sent", campaignId };
-              if (existing) {
-                return prev.map(t => t.id === existing.id ? { ...t, messages: [...t.messages, outMsg] } : t);
-              } else {
-                return [{ id: uid(), channel: "sms", contactName: customer.firstName + " " + customer.lastName, contactPhone: customer.phone, contactEmail: customer.email, customerId: customer.id, unread: false, messages: [outMsg] }, ...prev];
-              }
-            });
-          }
-          // ISSUE 7 — ...but that local update alone never reached
-          // Supabase, unlike every other outbound-SMS path in the app
-          // (owner Inbox replies, employee OTW/Running Late/invoice texts).
-          // A campaign text was therefore invisible to any OTHER device/
-          // session, and if the customer replied, InboxPage's own
-          // phone-matching poll would create a thread with only their
-          // reply in it — no record of the campaign message that prompted
-          // it. logOutboundSmsToInbox does the same find-existing-thread-
-          // by-phone-or-create merge every other send path already uses.
+          // Logged once on the server (shows in the inbox within seconds).
+          // A second local copy used to show each campaign text twice.
           logOutboundSmsToInbox({
+            via: "campaign",
             contactName: `${customer.firstName} ${customer.lastName}`,
             contactPhone: customer.phone,
             customerId: customer.id,
@@ -373,7 +354,7 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
     } else {
       toast(`Campaign sent! ${sent} delivered`, "success");
     }
-    setBody("Hi {{first_name}}, spring special — 15% off house soft washes this month. Reply BOOK or call " + ((settings as any)?.companyPhone || "(717) 555-0100") + ". — " + ((settings as any)?.companyName || "Crew Boss"));
+    setBody("Hi {{first_name}}, spring special — 15% off house soft washes this month. Reply BOOK or call " + ((settings as any)?.companyPhone || "") + ". — " + ((settings as any)?.companyName || "Crew Boss"));
     setSubj("");
   };
 

@@ -543,7 +543,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
     const c = customers.find(x => x.id === inv.customerId);
     if (!c) return;
     const age = inv.invoicedAt ? daysSince(inv.invoicedAt) : 0;
-    const msg = `Hi ${c.firstName}, this is a friendly reminder that your invoice of ${fmt(inv.total)} from Crew Boss is ${age > 0 ? age + " days " : ""}past due. Pay online or call (717) 555-0100. Thank you!`;
+    const msg = `Hi ${c.firstName}, this is a friendly reminder that your invoice of ${fmt(inv.total)} from ${(settings as any)?.companyName || "us"} is ${age > 0 ? age + " days " : ""}past due. Pay online${(settings as any)?.companyPhone ? " or call " + (settings as any).companyPhone : ""}. Thank you!`;
     if (settings?.twilioSid && c.phone) {
       try {
         await twilioSend(settings, c.phone, msg);
@@ -565,7 +565,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
       const c = customers.find(x => x.id === inv.customerId);
       if (!c) continue;
       const age = inv.invoicedAt ? daysSince(inv.invoicedAt) : 0;
-      const msg = "Hi " + c.firstName + ", friendly reminder that your invoice of " + fmt(inv.total) + " from Crew Boss is " + (age > 0 ? age + " days " : "") + "past due. Please pay at your convenience. Call (717) 555-0100 with questions. Thank you!";
+      const msg = "Hi " + c.firstName + ", friendly reminder that your invoice of " + fmt(inv.total) + " from Crew Boss is " + (age > 0 ? age + " days " : "") + "past due. Please pay at your convenience." + ((settings as any)?.companyPhone ? " Call " + (settings as any).companyPhone + " with questions." : "") + " Thank you!";
       try {
         if (settings?.twilioSid && c.phone) { await twilioSend(settings, c.phone, msg); logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: msg }).catch(() => {}); sent++; }
         else if (c.phone) { window.location.href = "sms:" + c.phone.replace(/\D/g,"") + "?body=" + encodeURIComponent(msg); sent++; break; }
@@ -785,7 +785,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
                         <button onClick={() => {
                           const c = customers.find(x => x.id === inv.customerId);
                           const html = `<!DOCTYPE html><html><head><title>Invoice</title><style>body{font-family:Arial;padding:32px;color:#111;max-width:700px;margin:auto}h1{color:#e11d48}.hdr{display:flex;justify-content:space-between;border-bottom:2px solid #e11d48;padding-bottom:16px;margin-bottom:24px}table{width:100%;border-collapse:collapse;font-size:13px}th{text-align:left;padding:8px;border-bottom:1px solid #ccc;font-size:10px;text-transform:uppercase}td{padding:8px;border-bottom:1px solid #eee}.r{text-align:right}.total{font-weight:bold;font-size:16px;color:#e11d48}.paid{background:#dcfce7;border:1px solid #16a34a;padding:12px;text-align:center;margin-top:16px;border-radius:8px;font-weight:bold}</style></head><body>
-                          <div class="hdr"><div><h1>Crew Boss</h1><div style="font-size:12px;color:#666">York, PA · (717) 555-0100</div></div><div style="text-align:right"><strong>INVOICE #${inv.id.slice(-8).toUpperCase()}</strong><br><span style="font-size:12px;color:#666">${inv.invoicedAt || today()}</span></div></div>
+                          <div class="hdr"><div><h1>${(settings as any)?.companyName || "Crew Boss"}</h1><div style="font-size:12px;color:#666">${(settings as any)?.companyPhone || ""}</div></div><div style="text-align:right"><strong>INVOICE #${inv.id.slice(-8).toUpperCase()}</strong><br><span style="font-size:12px;color:#666">${inv.invoicedAt || today()}</span></div></div>
                           <div style="margin-bottom:16px"><strong>Bill To:</strong><br>${c ? c.firstName + " " + c.lastName : ""}<br>${c?.address || ""}</div>
                           <table><thead><tr><th>Service</th><th class="r">Qty</th><th class="r">Unit</th><th class="r">Amount</th></tr></thead><tbody>
                           ${(inv.lineItems || []).map(li => `<tr><td>${li.description}${lineNoteHtml(li)}</td><td class="r">${li.quantity}</td><td class="r">$${Number(li.unitPrice).toFixed(2)}</td><td class="r">$${(li.quantity*li.unitPrice).toFixed(2)}</td></tr>`).join("")}
@@ -887,7 +887,7 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
                   (viewing.discount > 0 ? '<div style="color:#16a34a"><span>Discount</span><span>− ' + fmt(viewing.discount) + '</span></div>' : '') +
                   '<div><span>Tax</span><span>' + fmt(viewing.tax) + '</span></div><div class="total"><span>Total Due</span><span>' + fmt(viewing.total) + '</span></div></div>' +
                   (viewing.paidAt ? '<div class="paid">✓ PAID on ' + viewing.paidAt + '</div>' : (age > 14 ? '<div class="due">⚠ ' + age + ' days past due — please remit payment.</div>' : '')) +
-                  '<div style="margin-top:40px;font-size:11px;color:#888;text-align:center">Thank you for your business. Questions? Call (717) 555-0100</div>' +
+                  '<div style="margin-top:40px;font-size:11px;color:#888;text-align:center">Thank you for your business.' + ((settings as any)?.companyPhone ? ' Questions? Call ' + (settings as any).companyPhone : '') + '</div>' +
                   '<script>window.onload=()=>setTimeout(()=>window.print(),300)<\/script></body></html>';
                 const w = window.open("", "_blank");
                 if (w) { w.document.write(html); w.document.close(); }

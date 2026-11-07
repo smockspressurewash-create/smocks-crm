@@ -587,6 +587,14 @@ export function AutomationsPage({ automations = [], setAutomations, jobs = [], c
                       >
                         {a.autoApprove ? "Auto-send" : "Ask first"}
                       </button>
+                      <button
+                        data-trash-toggle
+                        onClick={() => setAutomations(automations.map(x => x.id === a.id ? { ...x, includeTrashCans: !(x as any).includeTrashCans } as any : x))}
+                        title={(a as any).includeTrashCans ? "Also runs for trash can jobs — click to skip them" : "Skips trash can jobs — click to include them"}
+                        className={"flex-shrink-0 px-1.5 py-0.5 rounded-lg border text-[9px] font-semibold transition " + ((a as any).includeTrashCans ? "bg-amber-950/40 border-amber-700/40 text-amber-300" : "bg-white/5 border-white/10 text-white/40")}
+                      >
+                        {(a as any).includeTrashCans ? "Trash cans: on" : "Trash cans: off"}
+                      </button>
                     </div>
                   </div>
 

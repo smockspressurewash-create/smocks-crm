@@ -480,10 +480,13 @@ export interface InboxSyncMessage {
 }
 
 export const logOutboundSmsToInbox = async (
-  opts: { contactName: string; contactPhone: string; customerId?: string | null; body: string; ownerId?: string | null }
+  opts: { contactName: string; contactPhone: string; customerId?: string | null; body: string; ownerId?: string | null; via?: string }
 ): Promise<void> => {
   try {
-    const newMsg: InboxSyncMessage = { id: uid(), dir: "out", body: opts.body, ts: Date.now(), status: "sent" };
+    // via — set for texts the app sent on its own (automations, trash can
+    // notices, receipts), shown as a small label in the inbox so they don't
+    // look like random messages.
+    const newMsg: InboxSyncMessage = { id: uid(), dir: "out", body: opts.body, ts: Date.now(), status: "sent", ...(opts.via ? { via: opts.via } : {}) } as any;
     // BUG FIX — "the SMS inbox conversation got split up again." Used to be
     // a plain read-then-write: fetch every thread, find one by normalized
     // phone in JS, insert a new row if none found. That's a check-then-act
@@ -524,7 +527,7 @@ export const sendPaymentReceipt = async (
   if (customer.phone) {
     const body = `Hi ${name}, this confirms your payment of $${amount} to ${companyName}${description ? " for " + description : ""}. Thank you!`;
     await twilioSend(settings, customer.phone, body);
-    await logOutboundSmsToInbox({ contactName: name, contactPhone: customer.phone, customerId: customer.id, body });
+    await logOutboundSmsToInbox({ contactName: name, contactPhone: customer.phone, customerId: customer.id, body, via: "receipt" });
     return;
   }
   if (customer.email) {

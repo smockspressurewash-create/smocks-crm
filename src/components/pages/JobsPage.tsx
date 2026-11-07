@@ -324,26 +324,34 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
     });
 
   const move = (jid, ns) => {
+    const before = jobs.find(x => x.id === jid);
     setJobs(jobs.map(j => j.id === jid ? { ...j, status: ns } : j));
+    // BUG FIX (owner report: random texts, trash cans) — these status texts
+    // went out every time a job was moved, even back and forth, and to
+    // weekly trash can stops. Only text on a real change, never for trash
+    // can jobs (they have their own texts on the Trash Cans page), and use
+    // the business's own name and phone — the completed text used to carry a
+    // made-up phone number.
+    const statusText = !!before && before.status !== ns && (before as any).serviceCategory !== "trash_can";
+    const coName = (settings as any)?.companyName || "Crew Boss";
+    const coPhone = (settings as any)?.companyPhone || "";
     // Auto-text customer when job is confirmed/scheduled
-    if (ns === "scheduled") {
-      const j = jobs.find(x => x.id === jid);
+    if (ns === "scheduled" && statusText) {
+      const j = before;
       const c = j && customers.find(x => x.id === j.customerId);
       if (c?.phone && settings?.twilioSid) {
-        const coName = (settings as any)?.companyName || "Crew Boss";
-        const coPhone = (settings as any)?.companyPhone || "(717) 555-0100";
-        const msg = "Hi " + c.firstName + "! Your pressure washing service has been confirmed for " + (j.scheduledDate || "your requested date") + ". We'll text you when we're on the way. Questions? Call " + coPhone + ". — " + coName;
+        const msg = "Hi " + c.firstName + "! Your service with " + coName + " is confirmed for " + (j.scheduledDate || "your requested date") + ". We'll text you when we're on the way." + (coPhone ? " Questions? Call " + coPhone + "." : "") + " — " + coName;
         twilioSend(settings, c.phone, msg)
           .then(() => logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: msg }).catch(() => {}))
           .catch((e: any) => console.warn("[JobsPage] scheduled-confirmation text failed:", e?.message));
       }
     }
     // Job completed thank-you text (separate from review request)
-    if (ns === "completed") {
-      const j = jobs.find(x => x.id === jid);
+    if (ns === "completed" && statusText) {
+      const j = before;
       const c = j && customers.find(x => x.id === j.customerId);
       if (c?.phone && settings?.twilioSid) {
-        const msg = "Hi " + c.firstName + "! Your home is looking great 🙌 Thank you for choosing Crew Boss. We appreciate your business! If you ever need us again, reply or call (717) 555-0100. — Will @ Crew Boss";
+        const msg = "Hi " + c.firstName + "! All done — thank you for choosing " + coName + ". If you ever need us again, just reply" + (coPhone ? " or call " + coPhone : "") + ". — " + coName;
         setTimeout(() => twilioSend(settings, c.phone, msg)
           .then(() => logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: msg }).catch(() => {}))
           .catch((e: any) => console.warn("[JobsPage] job-completed thank-you text failed:", e?.message)), 1000);
@@ -1258,7 +1266,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
               const c = customers.find(x => x.id === j?.customerId);
               if (!c?.phone) continue;
               const coName = (settings as any)?.companyName || "Crew Boss";
-              const coPhone = (settings as any)?.companyPhone || "(717) 555-0100";
+              const coPhone = (settings as any)?.companyPhone || "";
               const msg = "Hi " + c.firstName + ", reminder about your scheduled pressure wash on " + (j?.scheduledDate || "your upcoming date") + ". Questions? Call " + coPhone + " — " + coName;
               try {
                 if (settings?.twilioSid) { await twilioSend(settings, c.phone, msg); logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: msg }).catch(() => {}); sent++; }

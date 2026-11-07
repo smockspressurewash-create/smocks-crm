@@ -4,6 +4,7 @@
 // tracked). Turned on by text-Alfred's set_birthday_offer; the setting is the
 // owner_records row kind "birthday_offer", id "default". Run by the
 // /api/check-reminders cron.
+import { twilioAccountSid } from "./twilioAccount";
 import { recListAllOwners, recPut } from "./ownerRecords";
 import { stripMarkdownForSms } from "./textFormat";
 
@@ -53,7 +54,7 @@ export async function runBirthdayOffers(authHeaders: Record<string, string>, get
       const body = stripMarkdownForSms((cfg.message || DEFAULT_BIRTHDAY_MESSAGE)
         .replace(/{{first_name}}/g, c.firstName || "there").replace(/{{code}}/g, code)
         .replace(/{{percent}}/g, String(Number(cfg.discountPercent) || 10)).replace(/{{expires}}/g, expiresLabel).replace(/{{company}}/g, company));
-      const sms = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${tw.sid}/Messages.json`, {
+      const sms = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${await twilioAccountSid(tw.sid, tw.token)}/Messages.json`, {
         method: "POST", headers: { Authorization: auth, "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({ To: c.phone, From: tw.from, Body: body }).toString(),
       }).catch(() => null);

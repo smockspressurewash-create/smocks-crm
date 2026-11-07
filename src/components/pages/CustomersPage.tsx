@@ -170,7 +170,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
     .replace(/{{last_name}}/g, c.lastName || "")
     .replace(/{{address}}/g, c.address || "")
     .replace(/{{company_name}}/g, (settings as any)?.companyName || "Crew Boss")
-    .replace(/{{company_phone}}/g, (settings as any)?.companyPhone || "(717) 555-0100");
+    .replace(/{{company_phone}}/g, (settings as any)?.companyPhone || "");
 
   const bulkSmsSelectedCustomers = customers.filter((c: any) => bulkSelected.includes(c.id));
   const bulkSmsEligible = bulkSmsSelectedCustomers.filter((c: any) => c.phone && !c.smsOptOut);

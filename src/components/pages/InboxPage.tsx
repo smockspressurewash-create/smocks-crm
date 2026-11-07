@@ -130,8 +130,9 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
   // or the owner has been idle 5+ minutes; realtime (subscribed below)
   // already delivers new messages instantly, this is just the fallback.
   const shouldPollInbox = usePollGate();
+  const appendedSidsRef = useRef<Set<string>>(new Set());
 
-  const activeThread = threads.find(t => t.id === active) || gmailThreads.find(t => t.id === active);
+  const activeThread = threads.find(t => t.id === active || (t as any).aliasIds?.includes(active)) || gmailThreads.find(t => t.id === active);
 
   // ISSUE 9/17 (round 3) — a real customer thread (+17173841589) was found
   // with the SAME automated message duplicated 8-10x, every duplicate
@@ -186,8 +187,13 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
   const dedupeMessages = (msgs: any[]) => {
     const seenSids = new Set<string>();
     const seenKeys = new Set<string>();
+    const seenIds = new Set<string>();
     const out: any[] = [];
     for (const m of msgs) {
+      if (m?.id) {
+        if (seenIds.has(m.id)) continue;
+        seenIds.add(m.id);
+      }
       if (m?.sid) {
         if (seenSids.has(m.sid)) continue;
         seenSids.add(m.sid);
@@ -218,6 +224,58 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
     unread: !!r.unread,
     messages: dedupeMessages(Array.isArray(r.messages) ? r.messages : []),
   });
+  // BUG FIX (owner report: "duplicate phone numbers... when I click on it,
+  // it just disappears") — one conversation per phone number on screen.
+  // Duplicate rows for the same number (left over until the 0106 clean-up
+  // SQL is run) are shown as one, with every message, and remember all
+  // their ids (aliasIds) so opening or marking read works whichever row
+  // was tapped. Nothing is deleted from here any more: the old in-browser
+  // merge deleted rows, and could delete the conversation just opened.
+  const isPlaceholderName = (t: any) => !t.contactName || t.contactName === "Unknown" || /^alfred$/i.test(String(t.contactName).trim()) || normalizePhoneDigits(t.contactName) === normalizePhoneDigits(t.contactPhone);
+  const collapseSmsByPhone = (list: any[]) => {
+    const out: any[] = [];
+    const groups = new Map<string, any[]>();
+    for (const t of list) {
+      const d = t.channel === "sms" ? normalizePhoneDigits(t.contactPhone) : "";
+      if (!d) { out.push(t); continue; }
+      if (!groups.has(d)) groups.set(d, []);
+      groups.get(d)!.push(t);
+    }
+    groups.forEach(rows => {
+      const ids = Array.from(new Set(rows.flatMap((r: any) => [r.id, ...(r.aliasIds || [])])));
+      if (rows.length === 1) { out.push({ ...rows[0], aliasIds: ids }); return; }
+      const sorted = [...rows].sort((a, b) => String(a.id).localeCompare(String(b.id)));
+      const keep = sorted.find(t => !isPlaceholderName(t)) || sorted[0];
+      const messages = dedupeMessages(rows.flatMap((t: any) => t.messages || [])).sort((a: any, b: any) => (a.ts || 0) - (b.ts || 0));
+      out.push({ ...keep, customerId: rows.find((r: any) => r.customerId)?.customerId || null, unread: rows.some((r: any) => r.unread), messages, aliasIds: ids });
+    });
+    return out;
+  };
+  // Adds one message to a conversation on the server (found or created by
+  // phone number, never a second conversation for the same number).
+  const appendSmsMessage = async (t: any, msg: any, unread = false): Promise<string | null> => {
+    try {
+      const { data, error } = await (supabase as any).rpc("find_or_create_inbox_thread", {
+        p_owner_id: null, p_channel: "sms", p_contact_phone: t.contactPhone, p_contact_name: t.contactName,
+        p_customer_id: t.customerId || null, p_message: msg, p_unread: unread,
+      });
+      if (!error) return typeof data === "string" ? data : null;
+      console.warn("[Inbox] append failed, saving the whole conversation instead:", error.message);
+    } catch (e: any) {
+      console.warn("[Inbox] append threw:", e?.message);
+    }
+    await syncThreadToSupabase({ ...t, messages: [...(t.messages || []).filter((m: any) => m.id !== msg.id), msg] });
+    return null;
+  };
+  // Sets one message's status without rewriting the conversation.
+  const setMessageStatus = async (msgId: string, status: string, error?: string) => {
+    try {
+      const r = await (supabase as any).rpc("set_inbox_message_status", { p_message_id: msgId, p_status: status, p_error: error || null });
+      if (!r?.error) return;
+    } catch { /* fall back below */ }
+    const t = threadsRef.current.find((x: any) => (x.messages || []).some((m: any) => m.id === msgId));
+    if (t) syncThreadToSupabase(t);
+  };
   // ONE-TIME CLEANUP — merges any pre-existing duplicate sms threads left
   // over from the phone-normalization mismatch fixed above (see
   // normalizePhoneDigits in lib/utils.ts). Threads created via the Twilio
@@ -237,83 +295,10 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
   // it stayed open. A short cooldown instead of a permanent one-shot lets
   // it keep periodically catching new duplicates without hammering the
   // database on every single poll tick.
-  const dedupeRanRef = useRef(0);
-  const DEDUPE_COOLDOWN_MS = 30000;
-  const mergeDuplicateInboxThreads = async () => {
-    if (Date.now() - dedupeRanRef.current < DEDUPE_COOLDOWN_MS) return;
-    dedupeRanRef.current = Date.now();
-    try {
-      const { data, error } = await (supabase as any).from("inbox_threads").select("*").eq("channel", "sms");
-      if (error || !Array.isArray(data) || data.length < 2) return;
-      const groups = new Map<string, any[]>();
-      for (const row of data) {
-        const digits = normalizePhoneDigits(row.contact_phone);
-        if (!digits) continue;
-        if (!groups.has(digits)) groups.set(digits, []);
-        groups.get(digits)!.push(row);
-      }
-      for (const rows of groups.values()) {
-        if (rows.length < 2) continue;
-        console.log("[Inbox] merging", rows.length, "duplicate threads for the same number:", rows.map(r => r.id));
-        // "Alfred" is a placeholder too, same as a bare phone number — an
-        // older thread created before that naming got fixed elsewhere
-        // should never win as the canonical name once a real contact name
-        // (or even just the raw number from the newer, correctly-named row)
-        // is available to replace it with.
-        const looksLikeRawNumber = (name: string, phone: string) => !name || normalizePhoneDigits(name) === normalizePhoneDigits(phone) || name.trim().toLowerCase() === "alfred";
-        const canonical = rows.find(r => !looksLikeRawNumber(r.contact_name, r.contact_phone))
-          || [...rows].sort((a, b) => (b.messages?.length || 0) - (a.messages?.length || 0))[0];
-        const others = rows.filter(r => r.id !== canonical.id);
-        const allMessages = dedupeMessages(rows.flatMap(r => Array.isArray(r.messages) ? r.messages : [])).sort((a: any, b: any) => (a.ts || 0) - (b.ts || 0));
-        const bestName = rows.find(r => !looksLikeRawNumber(r.contact_name, r.contact_phone))?.contact_name || rows[0].contact_phone || canonical.contact_name;
-        const bestCustomerId = rows.find(r => r.customer_id)?.customer_id || null;
-        const anyUnread = rows.some(r => r.unread);
-        await (supabase as any).from("inbox_threads").update({
-          contact_name: bestName,
-          customer_id: bestCustomerId,
-          messages: allMessages,
-          unread: anyUnread,
-          last_message_at: allMessages[allMessages.length - 1]?.ts || canonical.last_message_at,
-          updated_at: new Date().toISOString(),
-        }).eq("id", canonical.id);
-        // BUG FIX — "sometimes it looks like it deletes messages... the
-        // Alfred response disappears." The `others` rows below get
-        // permanently DELETED, but `allMessages` was computed from the
-        // initial SELECT at the top of this function — if Twilio's inbound
-        // webhook or the Alfred SMS agent wrote a NEW message into one of
-        // these `others` rows in the gap between that SELECT and this
-        // DELETE (a real, not-rare window: this merge is triggered by
-        // texting Alfred, which is exactly when Alfred's own reply lands
-        // moments later), that message was never in `allMessages` and this
-        // deleted the only row that had it — gone, not just delayed. Re-fetch
-        // each `other` row immediately before deleting it and fold in any
-        // message it gained since the initial snapshot.
-        for (const other of others) {
-          const { data: freshOther } = await (supabase as any).from("inbox_threads").select("messages").eq("id", other.id).maybeSingle();
-          const freshMsgs: any[] = Array.isArray(freshOther?.messages) ? freshOther.messages : [];
-          const staleMsgs: any[] = Array.isArray(other.messages) ? other.messages : [];
-          const newSinceSnapshot = freshMsgs.filter(m => !staleMsgs.some((s: any) => (m.id && s.id === m.id) || (m.sid && s.sid === m.sid)));
-          if (newSinceSnapshot.length > 0) {
-            const { data: canonNow } = await (supabase as any).from("inbox_threads").select("messages,last_message_at").eq("id", canonical.id).maybeSingle();
-            const mergedAgain = dedupeMessages([...(Array.isArray(canonNow?.messages) ? canonNow.messages : allMessages), ...newSinceSnapshot]).sort((a: any, b: any) => (a.ts || 0) - (b.ts || 0));
-            await (supabase as any).from("inbox_threads").update({
-              messages: mergedAgain,
-              last_message_at: mergedAgain[mergedAgain.length - 1]?.ts || canonNow?.last_message_at,
-              updated_at: new Date().toISOString(),
-            }).eq("id", canonical.id);
-          }
-          await (supabase as any).from("inbox_threads").delete().eq("id", other.id);
-        }
-      }
-    } catch (e: any) {
-      console.warn("[Inbox] duplicate-thread merge failed:", e?.message);
-    }
-  };
   useEffect(() => {
     let cancelled = false;
     const loadInboxThreads = async () => {
       try {
-        await mergeDuplicateInboxThreads();
         const { data, error } = await (supabase as any).from("inbox_threads").select("*").eq("channel", "sms");
         if (error) { console.warn("[Inbox] inbox_threads fetch failed — run the inbox_threads SQL:", error.message); return; }
         if (cancelled || !Array.isArray(data)) return;
@@ -340,10 +325,13 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
           // "my message showed up wrong." Merge in any locally-known message
           // the server fetch doesn't have yet, instead of dropping it.
           const merged = fromServer.map(t => {
-            const local = prev.find(p => p.id === t.id);
+            const local = prev.find(p => p.id === t.id || (p as any).aliasIds?.includes(t.id));
             if (!local || !Array.isArray(local.messages) || local.messages.length === 0) return t;
             const serverIds = new Set(t.messages.map((m: any) => m.id));
-            const pendingLocal = local.messages.filter((m: any) => !serverIds.has(m.id));
+            // Only messages still on their way to the server. Keeping every
+            // local-only message forever brought deleted or dropped messages
+            // back ("random messages going in and out").
+            const pendingLocal = local.messages.filter((m: any) => !serverIds.has(m.id) && (m.status === "sending" || Date.now() - (m.ts || 0) < 2 * 60000));
             if (pendingLocal.length === 0) return t;
             const combined = dedupeMessages([...t.messages, ...pendingLocal]).sort((a: any, b: any) => (a.ts || 0) - (b.ts || 0));
             return { ...t, messages: combined };
@@ -362,12 +350,12 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
           // that and still missing from the server is stale, not pending.
           const FIVE_MIN = 5 * 60000;
           const localOnlySms = prev.filter(t => {
-            if (t.channel !== "sms" || byId.has(t.id)) return false;
+            if (t.channel !== "sms" || byId.has(t.id) || ((t as any).aliasIds || []).some((id: string) => byId.has(id))) return false;
             const newestTs = Math.max(0, ...(Array.isArray(t.messages) ? t.messages.map((m: any) => m.ts || 0) : []));
             return Date.now() - newestTs < FIVE_MIN;
           });
           const nonSms = prev.filter(t => t.channel !== "sms");
-          return [...merged, ...localOnlySms, ...nonSms];
+          return [...collapseSmsByPhone([...merged, ...localOnlySms]), ...nonSms];
         });
       } catch (e: any) {
         console.warn("[Inbox] inbox_threads fetch threw:", e?.message);
@@ -478,6 +466,7 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
           // messages" even though every single one was skipped. Track the
           // ACTUAL processed count instead.
           let newlyProcessedCount = 0;
+          const toAppend: { t: any; m: any }[] = [];
           setThreads(prev => {
             let updated = [...prev];
             incoming.forEach(msg => {
@@ -543,9 +532,14 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
                 newlyProcessedCount++;
               }
             });
-            touchedIds.forEach(id => { const t = updated.find(x => x.id === id); if (t) syncThreadToSupabase(t); });
+            touchedIds.forEach(id => {
+              const t = updated.find(x => x.id === id);
+              const m = t?.messages?.[t.messages.length - 1];
+              if (t && m && !appendedSidsRef.current.has(m.id)) { appendedSidsRef.current.add(m.id); toAppend.push({ t, m }); }
+            });
             return updated;
           });
+          setTimeout(() => toAppend.forEach(({ t, m }) => appendSmsMessage(t, m, true)), 0);
           if (newlyProcessedCount > 0) toast(newlyProcessedCount + " new message" + (newlyProcessedCount > 1 ? "s" : ""));
         }
       } catch { /* silent */ } finally { setPolling(false); }
@@ -691,13 +685,20 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
       }
       setGmailThreads(prev => prev.map(t => t.id === id ? { ...t, unread: false, unreadGmailMessageIds: [] } : t));
     } else {
-      const next = threads.map(t => t.id === id ? { ...t, unread: false } : t);
-      setThreads(next);
-      const t = next.find(x => x.id === id);
-      if (t) syncThreadToSupabase(t);
+      // Only the unread flag — this used to re-save the whole conversation,
+      // which could overwrite messages that had just arrived.
+      const t: any = threads.find(x => x.id === id || (x as any).aliasIds?.includes(id));
+      if (!t || !t.unread) return;
+      setThreads(prev => prev.map(x => x === t || x.id === t.id ? { ...x, unread: false } : x));
+      if (t.channel === "sms") {
+        const ids = t.aliasIds?.length ? t.aliasIds : [t.id];
+        (supabase as any).from("inbox_threads").update({ unread: false }).in("id", ids)
+          .then((r: any) => { if (r?.error) console.warn("[Inbox] mark read failed:", r.error.message); });
+      }
     }
   };
 
+  const appendedRef = useRef<Promise<any> | null>(null);
   const send = async () => {
     if (!input.trim() || !activeThread || sending) return;
     const msgText = input.trim();
@@ -719,7 +720,7 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
       // immediately, with dir "out" already set, closes that window: even if
       // a concurrent refetch runs a moment later, the merge fix above will
       // already find this message on the server and keep it correctly.
-      syncThreadToSupabase({ ...activeThread, messages: [...activeThread.messages, outMsg] });
+      appendedRef.current = appendSmsMessage(activeThread, outMsg);
     }
     setInput("");
     setSending(true);
@@ -727,12 +728,8 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
       if (isGmail) {
         setGmailThreads(prev => prev.map(t => t.id === active ? { ...t, messages: t.messages.map(m => m.id === outMsg.id ? { ...m, status, ...extra } : m) } : t));
       } else {
-        setThreads(prev => {
-          const next = prev.map(t => t.id === active ? { ...t, messages: t.messages.map(m => m.id === outMsg.id ? { ...m, status, ...extra } : m) } : t);
-          const t = next.find(x => x.id === active);
-          if (t) syncThreadToSupabase(t);
-          return next;
-        });
+        setThreads(prev => prev.map(t => (t.messages || []).some((m: any) => m.id === outMsg.id) ? { ...t, messages: t.messages.map(m => m.id === outMsg.id ? { ...m, status, ...extra } : m) } : t));
+        Promise.resolve(appendedRef.current).finally(() => setMessageStatus(outMsg.id, status, extra?.error));
       }
     };
     try {
@@ -810,16 +807,18 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
       composedThread = { id: threadId, channel: newDraft.channel, contactName: newDraft.to, contactPhone: newDraft.phone, contactEmail: newDraft.email, customerId: customer?.id || null, unread: false, messages: [outMsg] };
       setThreads(prev => [composedThread, ...prev]);
     }
-    if (newDraft.channel === "sms") syncThreadToSupabase(composedThread);
+    const appended = newDraft.channel === "sms" ? appendSmsMessage(composedThread, outMsg) : Promise.resolve(null);
+    appended.then(serverId => {
+      if (serverId && serverId !== threadId) {
+        setThreads(prev => prev.map(t => t.id === threadId ? { ...t, id: serverId, aliasIds: Array.from(new Set([serverId, threadId, ...((t as any).aliasIds || [])])) } : t));
+        setActive(a => a === threadId ? serverId : a);
+      }
+    });
     setActive(threadId);
     setNewModal(false);
     const finalize = (status: "sent" | "failed", extra: any = {}) => {
-      setThreads(prev => {
-        const next = prev.map(t => t.id === threadId ? { ...t, messages: t.messages.map(m => m.id === outMsg.id ? { ...m, status, ...extra } : m) } : t);
-        const t = next.find(x => x.id === threadId);
-        if (t) syncThreadToSupabase(t);
-        return next;
-      });
+      setThreads(prev => prev.map(t => (t.messages || []).some((m: any) => m.id === outMsg.id) ? { ...t, messages: t.messages.map(m => m.id === outMsg.id ? { ...m, status, ...extra } : m) } : t));
+      if (newDraft.channel === "sms") appended.finally(() => setMessageStatus(outMsg.id, status, extra?.error));
     };
     try {
       if (newDraft.channel === "sms") {
@@ -1104,7 +1103,7 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
   const filteredThreads = allThreads
     .filter(t => showHidden ? hiddenThreadIds.includes(t.id) : !hiddenThreadIds.includes(t.id))
     .filter(t => channelView === "all" || t.channel === channelView)
-    .filter(t => !unreadOnly || t.unread)
+    .filter(t => !unreadOnly || t.unread || t.id === active || (t as any).aliasIds?.includes(active))
     .filter(t => dateRange === "all" || (t.messages[t.messages.length - 1]?.ts || 0) >= dateRangeCutoff)
     .filter(t => !search || (t.contactName || "").toLowerCase().includes(search.toLowerCase()) || t.messages.some(m => (m.body || "").toLowerCase().includes(search.toLowerCase())))
     .sort((a, b) => {
@@ -1394,6 +1393,7 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
                   </div>
                   <div className={"text-[9px] mt-1 flex items-center gap-1 " + (isOut ? "justify-end text-white/40" : "text-white/30")}>
                     {relTime(m.ts)}
+                    {m.via && <span data-msg-via className="text-amber-300/70"> · {m.via === "automation" ? "automation" : m.via === "trash cans" ? "trash cans" : m.via === "receipt" ? "receipt" : m.via === "campaign" ? "campaign" : "automatic"}</span>}
                     {isOut && m.status === "sending" && " · sending…"}
                     {isOut && m.status === "sent" && " · ✓"}
                     {isOut && m.status === "failed" && <span className="text-red-400"> · ✗ {m.error?.slice(0, 40)}</span>}

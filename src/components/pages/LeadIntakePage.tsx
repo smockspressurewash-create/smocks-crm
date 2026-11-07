@@ -130,7 +130,10 @@ export function LeadIntakePage({ customers = [], setCustomers, estimates = [], s
 
       // Instant auto-response SMS to the lead
       if (settings?.twilioSid && f.phone) {
-        const autoReply = "Hi " + f.firstName + "! Thanks for reaching out to Crew Boss 🙌 We received your request" + (f.service ? " for " + f.service : "") + " and will follow up within 24 hours with a quote. Questions? Call (717) 555-0100. — Will @ Crew Boss";
+        const coName = (settings as any)?.companyName || "Crew Boss";
+        const coPhone = (settings as any)?.companyPhone || "";
+        // Was hardcoded to a made-up phone number and "Will @ Crew Boss".
+        const autoReply = "Hi " + f.firstName + "! Thanks for reaching out to " + coName + " 🙌 We received your request" + (f.service ? " for " + f.service : "") + " and will follow up within 24 hours with a quote." + (coPhone ? " Questions? Call " + coPhone + "." : "") + " — " + coName;
         twilioSend(settings, f.phone, autoReply)
           .then(() => logOutboundSmsToInbox({ contactName: `${f.firstName} ${f.lastName}`, contactPhone: f.phone, customerId: custId, body: autoReply }).catch(() => {}))
           .catch(() => {});

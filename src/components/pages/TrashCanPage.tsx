@@ -191,7 +191,7 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
         const msg = `Hi ${c.firstName}! Your trash can cleaning with ${(settings as any)?.companyName || "us"} is scheduled for ${j.scheduledDate}. Reply STOP to opt out.`;
         try {
           await twilioSend(settings as any, c.phone, msg);
-          logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: msg }).catch(() => {});
+          logOutboundSmsToInbox({ via: "trash cans", contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: msg }).catch(() => {});
           sent++;
         } catch { failed++; }
       }

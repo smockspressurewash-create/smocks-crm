@@ -271,12 +271,12 @@ export const seedEmailTemplates = [
 // ─── Seed SMS templates ───────────────────────────────────────────────────────
 
 export const seedSmsTemplates = [
-  { id: "st1", name: "New Lead Response",   body: "Hi {{first_name}}! Thanks for reaching out to Crew Boss. I'll send your estimate within the hour. Questions? Call/text (717) 555-0100. — Will" },
+  { id: "st1", name: "New Lead Response",   body: "Hi {{first_name}}! Thanks for reaching out to Crew Boss. I'll send your estimate within the hour. Questions? Just reply to this text. — Will" },
   { id: "st2", name: "Job Reminder",        body: "Hi {{first_name}}, reminder: your Crew Boss service is tomorrow at {{time}}. We'll text when on the way. Reply STOP to unsubscribe." },
   { id: "st3", name: "On My Way",           body: "Hi {{first_name}}, Will from Crew Boss — heading your way now! ETA: {{eta}}. Live location: {{location_link}}" },
   { id: "st4", name: "Job Complete",        body: "Hi {{first_name}}, all done! Your property is looking great 🙌 Thank you for choosing Crew Boss. — Will" },
   { id: "st5", name: "Review Request",      body: "Hi {{first_name}}, loved your service today? A quick Google review means the world: {{review_link}} — Will @ Crew Boss" },
-  { id: "st6", name: "Payment Overdue",     body: "Hi {{first_name}}, just a reminder that your invoice for {{amount}} is past due. Pay here: {{payment_link}} Questions? (717) 555-0100." },
+  { id: "st6", name: "Payment Overdue",     body: "Hi {{first_name}}, just a reminder that your invoice for {{amount}} is past due. Pay here: {{payment_link}} Questions? Just reply to this text." },
   { id: "st7", name: "Estimate Follow-Up",  body: "Hi {{first_name}}, just checking in on your estimate for {{amount}}. Any questions? Ready to schedule? — Will @ Crew Boss" },
   { id: "st8", name: "Weather Reschedule",  body: "Hi {{first_name}}, due to rain in the forecast we're rescheduling your service. We'll reach out with new options. Sorry for any inconvenience! — Crew Boss" },
 ];

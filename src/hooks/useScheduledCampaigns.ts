@@ -25,7 +25,7 @@ const merge = (template: string, customer: any, settings: any): string =>
     .replace(/{{address}}/g, customer.address || "")
     .replace(/{{phone}}/g, customer.phone || "")
     .replace(/{{company_name}}/g, settings?.companyName || "Crew Boss")
-    .replace(/{{company_phone}}/g, settings?.companyPhone || "(717) 555-0100");
+    .replace(/{{company_phone}}/g, settings?.companyPhone || "");
 
 export function useScheduledCampaigns({ campaigns, setCampaigns, customers, settings, toast }: ScheduledCampaignsProps) {
   const campaignsRef = useRef(campaigns);
@@ -68,7 +68,7 @@ export function useScheduledCampaigns({ campaigns, setCampaigns, customers, sett
               if (camp.ch === "sms") {
                 if (!customer.phone) throw new Error("No phone on file");
                 await twilioSend(settingsNow, customer.phone, personalized);
-                logOutboundSmsToInbox({ contactName: `${customer.firstName} ${customer.lastName}`, contactPhone: customer.phone, customerId: customer.id, body: personalized }).catch(() => {});
+                logOutboundSmsToInbox({ via: "campaign", contactName: `${customer.firstName} ${customer.lastName}`, contactPhone: customer.phone, customerId: customer.id, body: personalized }).catch(() => {});
               } else {
                 if (!customer.email) throw new Error("No email on file");
                 await sendEmail(settingsNow, { to: customer.email, subject: merge(camp.subject || camp.name || "", customer, settingsNow), body: personalized });

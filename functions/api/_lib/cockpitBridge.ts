@@ -10,6 +10,7 @@
 //
 // Everything else they text Alfred about (their customers, jobs, invoices…)
 // is ordinary business Alfred, unchanged.
+import { twilioAccountSid } from "./twilioAccount";
 import { getOwnerSecrets } from "./ownerSecrets";
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
@@ -217,7 +218,7 @@ export const runCockpitTool = async (env: Record<string, string>, ownerId: strin
 
 // ── Outbound: text both Cockpit phones when Claude needs them or finishes ──
 const sendTwilio = async (sid: string, token: string, from: string, to: string, body: string) => {
-  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
+  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${await twilioAccountSid(sid, token)}/Messages.json`, {
     method: "POST",
     headers: { Authorization: "Basic " + btoa(`${sid}:${token}`), "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ To: to, From: from, Body: body }).toString(),

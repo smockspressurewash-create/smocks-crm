@@ -168,7 +168,12 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     const def = effectiveModel(body.modelId, MODELS[body.modelId]);
     if (!def) return json({ error: `Unknown model key: "${body.modelId}"` }, 400);
     const secrets = await getOwnerSecrets(ownerId, serviceRoleKey);
-    const apiKey = secrets?.modelKeys?.[body.modelId] || "";
+    // BUG FIX (owner report: DeepSeek not answering) — keys were looked up
+    // per model slot, so a NVIDIA key pasted once (say under Nemotron) left
+    // the DeepSeek slot with no key. One provider's key works for all its
+    // models, so fall back to any key saved for the same provider.
+    const keys: Record<string, string> = secrets?.modelKeys || {};
+    const apiKey = keys[body.modelId] || Object.keys(MODELS).filter(k => MODELS[k]?.provider === def.provider).map(k => keys[k]).find(Boolean) || "";
     const maxTokens = body.maxTokens ?? 4096;
 
     if (def.provider === "anthropic") {
@@ -349,7 +354,9 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         if ((err?.status === 401 || err?.status === 402 || err?.status === 403) || modelCandidates.length <= 1) throw err;
         // NVIDIA: only move to another model when this one was slow or
         // overloaded — a bad request (400) would fail the same way on all.
-        if (def.provider === "nvidia" && !(/timed out/i.test(err?.message || "") || err?.status === 429 || (err?.status || 0) >= 500)) throw err;
+        // A retired model (404/410) also moves on — that's how DeepSeek on
+        // NVIDIA went quiet when NVIDIA swapped its model.
+        if (def.provider === "nvidia" && !(/timed out/i.test(err?.message || "") || err?.status === 429 || err?.status === 404 || err?.status === 410 || (err?.status || 0) >= 500)) throw err;
         continue;
       }
     }

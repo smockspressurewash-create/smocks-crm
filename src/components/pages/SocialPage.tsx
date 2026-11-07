@@ -285,7 +285,7 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
   // template never leaves a literal placeholder for the owner to hand-edit.
   const mergeCaption = (text: string) => (text || "")
     .replace(/\{\{company_name\}\}/g, settings.companyName || "Crew Boss")
-    .replace(/\{\{company_phone\}\}/g, settings.companyPhone || "(717) 555-0100");
+    .replace(/\{\{company_phone\}\}/g, settings.companyPhone || "");
 
   const captionTemplates = [
     { type: "before_after", captions: [
@@ -310,7 +310,7 @@ export function SocialPage({ posts = [], setPosts, toast, settings = {} as AppSe
   const generate = async () => {
     setGenerating(true);
     const companyName = settings.companyName || "Crew Boss";
-    const companyPhone = settings.companyPhone || "(717) 555-0100";
+    const companyPhone = settings.companyPhone || "";
     const typeDesc = { before_after: "a before/after transformation post", promo: "a promotional offer post", testimonial: "a customer testimonial/review post", tip: "a helpful pressure washing tip", team: "a team/culture/behind-the-scenes post", day_in_life: "a casual 'day in the life' behind-the-scenes post following the crew through a real workday" }[f.type] || "a social media post";
     try {
       // If there's an uploaded image and it's a before_after, use vision analysis

@@ -29,6 +29,7 @@
 // customer's opt-in flag flipping at the business whose Twilio number was
 // guessed.
 
+import { twilioAccountSid } from "./_lib/twilioAccount";
 import { loadModelOverrides } from "./_lib/modelOverrides";
 import { transcribeAudioBuffer, TRANSCRIBE_SETUP_HELP } from "./_lib/transcribe";
 import { runAlfredSmsAgent, sendAlfredSms } from "./_lib/alfredSmsAgent";
@@ -47,7 +48,7 @@ const sendCustomerAgentReply = async (ctx: { authHeaders: Record<string, string>
   if (!ctx.twilioSid || !ctx.twilioToken || !ctx.twilioFrom) return;
   const auth = `Basic ${btoa(`${ctx.twilioSid}:${ctx.twilioToken}`)}`;
   const params = new URLSearchParams({ To: toPhone, From: ctx.twilioFrom, Body: body });
-  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${ctx.twilioSid}/Messages.json`, {
+  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${await twilioAccountSid(ctx.twilioSid, ctx.twilioToken)}/Messages.json`, {
     method: "POST", headers: { Authorization: auth, "Content-Type": "application/x-www-form-urlencoded" }, body: params.toString(),
   });
   if (!res.ok) { console.error("[TwilioSmsWebhook] customer agent reply send failed:", await res.text().catch(() => "")); return; }

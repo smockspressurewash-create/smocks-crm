@@ -1230,7 +1230,7 @@ export function SettingsModal({ open, onClose, settings, setSettings, jobs = [],
                       : <div className="h-10 w-10 rounded-lg bg-white/20 flex items-center justify-center text-xl">🏢</div>}
                     <div>
                       <div className="font-bold text-white">{f.companyName || "Your Company"}</div>
-                      <div className="text-[11px] text-white/70">{f.companyPhone || "(717) 555-0100"} · {f.companyEmail || "info@yourcompany.com"}</div>
+                      <div className="text-[11px] text-white/70">{f.companyPhone || ""} · {f.companyEmail || "info@yourcompany.com"}</div>
                     </div>
                   </div>
                   <div className="text-white/80 text-[11px] text-right">

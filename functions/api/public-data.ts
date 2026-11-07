@@ -13,6 +13,8 @@
 // never a raw table dump — so this is not a re-opening of the "public
 // USING(true)" hole RLS just closed. Each action's own comment explains
 // what bounds the query (an unguessable id, a verified session email, etc).
+import { logSmsToInbox } from "./_lib/inboxLog";
+import { twilioAccountSid } from "./_lib/twilioAccount";
 import { getOwnerSecrets, resolveCallerOwnerId } from "./_lib/ownerSecrets";
 import { promoUsable } from "../../src/lib/promoRules";
 
@@ -283,7 +285,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           const msg = `✍️ QUOTE ACCEPTED: ${custName} approved ${amount || "their estimate"}${paid ? " and paid" : " — will pay later"}. New job added to Unscheduled — needs a date.`;
           const auth = `Basic ${btoa(`${ownerSecrets.twilioAccountSid}:${ownerSecrets.twilioAuthToken}`)}`;
           const params = new URLSearchParams({ To: s.myPhone, From: ownerSecrets.twilioFromNumber, Body: msg });
-          await fetch(`https://api.twilio.com/2010-04-01/Accounts/${ownerSecrets.twilioAccountSid}/Messages.json`, {
+          await fetch(`https://api.twilio.com/2010-04-01/Accounts/${await twilioAccountSid(ownerSecrets.twilioAccountSid, ownerSecrets.twilioAuthToken)}/Messages.json`, {
             method: "POST", headers: { Authorization: auth, "Content-Type": "application/x-www-form-urlencoded" }, body: params.toString(),
           });
         }
@@ -541,7 +543,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           if (s?.twilioSid && s?.twilioAuthToken && s?.twilioFromNumber) {
             const companyName = s.companyName || "Crew Boss";
             const body2 = `Hi ${newCust.firstName || "there"}! You're all set with ${companyName} for trash can cleaning — you're on the ${assignedDayLabel} route, first service ${assignedJob.scheduledDate}. Reply STOP to opt out.`;
-            await fetch(`https://api.twilio.com/2010-04-01/Accounts/${s.twilioSid}/Messages.json`, {
+            await fetch(`https://api.twilio.com/2010-04-01/Accounts/${await twilioAccountSid(s.twilioSid, s.twilioAuthToken)}/Messages.json`, {
               method: "POST",
               headers: { Authorization: `Basic ${btoa(s.twilioSid + ":" + s.twilioAuthToken)}`, "Content-Type": "application/x-www-form-urlencoded" },
               body: new URLSearchParams({ To: newCust.phone, From: s.twilioFromNumber, Body: body2 }).toString(),
@@ -741,26 +743,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       const normPhone = (p: string) => (p || "").replace(/\D/g, "");
       // Only that customer's own number (this needs no sign-in).
       if (normPhone(custRow.data[0]?.phone).slice(-10) !== normPhone(contactPhone).slice(-10)) return json({ error: "Phone doesn't match this customer" }, 400);
-      const existingRow = await sb(serviceRoleKey, `inbox_threads?channel=eq.sms&owner_id=eq.${encodeURIComponent(ownerId)}&select=*`);
-      const rows: any[] = Array.isArray(existingRow.data) ? existingRow.data : [];
-      const existing = rows.find(r => normPhone(r.contact_phone) === normPhone(contactPhone));
-      const newMsg = { id: crypto.randomUUID(), dir: "out", body: smsBody, ts: Date.now(), status: "sent" };
-      if (existing) {
-        // BUG FIX — "my SMS inbox messages disappeared from one
-        // conversation." Same class of bug fixed everywhere else in this
-        // codebase: reading messages then PATCHing a brand-new array back
-        // can silently discard another appender's message that landed in
-        // the gap between the read and this write. append_inbox_message
-        // does the append inside one atomic UPDATE instead.
-        await sb(serviceRoleKey, `rpc/append_inbox_message`, {
-          method: "POST", body: JSON.stringify({ p_thread_id: existing.id, p_message: newMsg, p_unread: false }),
-        });
-      } else {
-        await sb(serviceRoleKey, `inbox_threads`, {
-          method: "POST",
-          body: JSON.stringify({ id: crypto.randomUUID(), channel: "sms", contact_name: contactName || "", contact_phone: contactPhone, customer_id: customerId, owner_id: ownerId, unread: false, messages: [newMsg], last_message_at: newMsg.ts, updated_at: new Date().toISOString() }),
-        });
-      }
+      await logSmsToInbox(serviceRoleKey, { ownerId, phone: contactPhone, name: contactName || "", customerId, body: smsBody });
       return json({ success: true });
     }
 

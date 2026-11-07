@@ -88,7 +88,7 @@ export function ReviewLandingPage({ review, customer, settings = {} as any, onCl
             <span className="text-2xl">🚿</span>
           </div>
           <div className="font-bold text-lg text-white">{companyName}</div>
-          <div className="text-red-200 text-xs">York, PA · {settings?.companyPhone || "(717) 555-0100"}</div>
+          <div className="text-red-200 text-xs">York, PA · {settings?.companyPhone || ""}</div>
         </div>
 
         <div className="p-6">

@@ -12,6 +12,7 @@
 // runs server-side (no CORS restriction applies to it) and same-origin (no
 // CORS restriction applies to calling IT from the browser either), so it
 // proxies the real Twilio call through.
+import { twilioAccountSid } from "./_lib/twilioAccount";
 import { getOwnerSecrets, resolveCallerOwnerId } from "./_lib/ownerSecrets";
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
@@ -113,7 +114,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     }
 
     const formData = new URLSearchParams({ To: to, From: from, Body: body });
-    const twilioRes = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`, {
+    const twilioRes = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${await twilioAccountSid(sid, token)}/Messages.json`, {
       method: "POST",
       headers: {
         Authorization: `Basic ${btoa(`${sid}:${token}`)}`,

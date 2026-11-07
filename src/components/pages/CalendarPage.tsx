@@ -417,7 +417,7 @@ export function CalendarPage({ jobs = [], setJobs, customers = [], employees = [
       const c = customers.find(x => x.id === job.customerId);
       if (c?.phone && settings?.twilioSid) {
         const coName = (settings as any)?.companyName || "Crew Boss";
-        const coPhone = (settings as any)?.companyPhone || "(717) 555-0100";
+        const coPhone = (settings as any)?.companyPhone || "";
         const msg = "Hi " + c.firstName + "! Your " + coName + " service has been rescheduled from " + oldDate + " to " + targetKey + ". Questions? Call " + coPhone + ". — " + coName;
         twilioSend(settings, c.phone, msg)
           .then(() => logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: msg }).catch(() => {}))

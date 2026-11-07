@@ -1415,7 +1415,7 @@ export function App() {
   const [timeline,        setTimeline]        = usePersistent<Timeline>("smocks.timeline", seedTimeline as Timeline);
   const [settings,        setSettings]        = usePersistent<AppSettings>("smocks.settings", {
     companyName: "Crew Boss",
-    companyPhone: "(717) 555-0100",
+    companyPhone: "",
     ownerName: "Will Smock",
     monthlyRevenueGoal: 8000,
     monthlyJobsGoal: 20,
@@ -1559,13 +1559,23 @@ export function App() {
     if (json === lastSyncedAutomationsJsonRef.current) return;
     const timer = setTimeout(async () => {
       try {
-        const { data: existingRows } = await (supabase as any).from("automations").select("id").eq("owner_id", crmUserId);
+        const { data: existingRows } = await (supabase as any).from("automations").select("id,data").eq("owner_id", crmUserId);
         const serverIds = new Set(Array.isArray(existingRows) ? existingRows.map((r: any) => r.id) : []);
         const localIds = new Set(automations.map(a => a.id));
         const removedIds = Array.from(serverIds).filter(id => !localIds.has(id));
+        // BUG FIX (owner report: texts going out twice) — the server's
+        // background run records what it sent in each automation's sentLog.
+        // This tab loaded automations once and then saved its whole copy,
+        // wiping those records, so the next server run sent them again.
+        // Keep every "already sent" record from both sides.
+        const serverData = new Map<string, any>(Array.isArray(existingRows) ? existingRows.map((r: any) => [r.id, r.data || {}]) : []);
+        const withServerLog = (a: any) => {
+          const srv = serverData.get(a.id);
+          return srv?.sentLog ? { ...a, sentLog: { ...srv.sentLog, ...(a.sentLog || {}) }, count: Math.max(Number(a.count) || 0, Number(srv.count) || 0) } : a;
+        };
         if (automations.length > 0) {
           const { error } = await (supabase as any).from("automations").upsert(
-            automations.map(a => ({ id: a.id, owner_id: crmUserId, data: a, updated_at: new Date().toISOString() })),
+            automations.map(a => ({ id: a.id, owner_id: crmUserId, data: withServerLog(a), updated_at: new Date().toISOString() })),
             { onConflict: "id" }
           );
           if (error) { console.warn("[Automations Sync] save failed:", error.message); return; }
@@ -1863,7 +1873,15 @@ export function App() {
       const v = rawModelKeys[mid];
       if (v && v !== SECRET_MASK) modelKeyUpdates[mid] = v;
     }
-    const hasNewSecrets = !!twilioReal || !!googleReal || Object.keys(modelKeyUpdates).length > 0;
+    // BUG FIX (health check) — the Twilio SID and From number only reached
+    // the server when the Auth Token was re-typed too. Fixing an "SK…" SID
+    // to the "AC…" Account SID while the token showed as hidden changed
+    // nothing on the server. Send them whenever they change.
+    const twilioIds = JSON.stringify([raw.twilioSid || "", raw.twilioFrom || "", raw.twilioMessagingServiceSid || ""]);
+    let twilioIdsPushed = "";
+    try { twilioIdsPushed = localStorage.getItem("crm.twilioIdsPushed") || ""; } catch { /* private mode */ }
+    const twilioIdsChanged = !!raw.twilioSid && twilioIds !== twilioIdsPushed;
+    const hasNewSecrets = !!twilioReal || !!googleReal || Object.keys(modelKeyUpdates).length > 0 || twilioIdsChanged;
     const sanitized = {
       ...raw,
       ...(twilioReal ? { twilioToken: SECRET_MASK } : {}),
@@ -1880,7 +1898,8 @@ export function App() {
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
         body: JSON.stringify({
           action: "save_owner_secrets",
-          ...(twilioReal ? { twilioAuthToken: twilioReal, twilioAccountSid: raw.twilioSid, twilioFromNumber: raw.twilioFrom, twilioMessagingServiceSid: raw.twilioMessagingServiceSid } : {}),
+          ...(twilioReal ? { twilioAuthToken: twilioReal } : {}),
+          ...(twilioReal || twilioIdsChanged ? { twilioAccountSid: raw.twilioSid, twilioFromNumber: raw.twilioFrom, twilioMessagingServiceSid: raw.twilioMessagingServiceSid } : {}),
           ...(googleReal ? { googleRefreshToken: googleReal } : {}),
           ...(Object.keys(modelKeyUpdates).length ? { modelKeyUpdates } : {}),
         }),
@@ -1891,6 +1910,7 @@ export function App() {
         toast?.("Couldn't securely save your Twilio/Google/AI key changes — " + (resData?.error || "unknown error") + ". They may not take effect.", "red");
         return { sanitized: raw, hadSecrets: false }; // don't mask locally if the real save didn't land
       }
+      try { localStorage.setItem("crm.twilioIdsPushed", twilioIds); } catch { /* private mode */ }
       return { sanitized, hadSecrets: true };
     } catch (e: any) {
       console.error("[Secrets] save_owner_secrets threw:", e?.message);
@@ -2846,7 +2866,8 @@ export function App() {
       const s = settingsRef.current as any;
       if (s?.alfredSmsCheckinEnabled && s?.myPhone && s?.twilioSid) {
         twilioSend(s, s.myPhone, briefing)
-          .then(() => logOutboundSmsToInbox({ contactName: "Owner (Daily Check-in)", contactPhone: s.myPhone, body: briefing }).catch(() => {}))
+          // Not logged to the inbox: it's a note to the owner, not a
+          // customer conversation, and it looked like a random message there.
           .catch((e: any) => console.warn("[AlfredBriefing] SMS check-in send failed:", e?.message));
       }
       setSettings?.((prev: any) => ({ ...prev, alfredBriefingDate: todayStr }));

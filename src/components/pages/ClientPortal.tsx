@@ -482,7 +482,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
   };
 
   const companyName = settings?.companyName || "Crew Boss";
-  const companyPhone = settings?.companyPhone || "(717) 555-0100";
+  const companyPhone = settings?.companyPhone || "";
 
   // BUG FIX — "the quote demo just sits there, no button responds." The JSX
   // below dereferences c.firstName/e.notes/etc directly (no optional
@@ -1109,7 +1109,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                   td{padding:8px;border-bottom:1px solid #eee;font-size:13px}
                 </style></head><body>
                 <div class="header">
-                  <div><h1>${companyName}</h1><div style="font-size:12px;color:#666">York, PA · ${settings?.companyPhone || "(717) 555-0100"}</div></div>
+                  <div><h1>${companyName}</h1><div style="font-size:12px;color:#666">York, PA · ${settings?.companyPhone || ""}</div></div>
                   <div style="text-align:right"><div style="font-weight:bold">SIGNED ESTIMATE</div><div style="font-size:12px;color:#666">#${e.id.slice(-8).toUpperCase()}</div><div style="font-size:12px;color:#666">${new Date().toLocaleDateString()}</div></div>
                 </div>
                 <div style="margin-bottom:16px"><strong>Customer:</strong> ${c.firstName} ${c.lastName}<br><span style="font-size:12px;color:#666">${c.address || ""} · ${c.email || ""} · ${c.phone || ""}</span></div>
@@ -1138,7 +1138,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
               <button onClick={() => {
                 const companyName = settings?.companyName || "Crew Boss";
                 const receiptHtml = `<!DOCTYPE html><html><head><title>Receipt</title><style>body{font-family:Arial;padding:40px;max-width:500px;margin:auto;color:#111}.logo{font-size:22px;font-weight:bold;color:#dc2626}.receipt-box{border:2px solid #dc2626;border-radius:8px;padding:24px;margin:20px 0}.line{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee;font-size:13px}.total{font-size:18px;font-weight:bold;color:#dc2626;margin-top:8px}.stamp{background:#dcfce7;border:2px solid #16a34a;color:#14532d;padding:10px;text-align:center;border-radius:8px;font-weight:bold;margin-top:16px;font-size:15px}@media print{body{padding:20px}}</style></head><body>
-                <div class="logo">${companyName}</div><div style="font-size:11px;color:#666">York, PA · (717) 555-0100</div>
+                <div class="logo">${companyName}</div><div style="font-size:11px;color:#666">${(settings as any)?.companyPhone || ""}</div>
                 <div class="receipt-box">
                   <div style="text-align:center;margin-bottom:16px"><div style="font-size:14px;font-weight:bold;text-transform:uppercase;letter-spacing:2px;color:#666">Payment Receipt</div><div style="font-size:11px;color:#999">${new Date().toLocaleString()}</div></div>
                   <div class="line"><span>Customer</span><span>${c.firstName} ${c.lastName}</span></div>

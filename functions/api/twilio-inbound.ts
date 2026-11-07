@@ -2,6 +2,7 @@
 // SMS into the owner's Inbox (InboxPage's pollTwilioIncoming). Credentials
 // are sent in the POST body rather than a query string so they don't end up
 // logged in any CDN/proxy access log.
+import { twilioAccountSid } from "./_lib/twilioAccount";
 import { getOwnerSecrets, resolveCallerOwnerId } from "./_lib/ownerSecrets";
 
 export const onRequestPost = async (context: { request: Request; env: Record<string, string> }) => {
@@ -36,7 +37,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // ignored), so this "since" filter never actually narrowed the request —
     // every poll re-fetched the same last-50 messages regardless.
     const sinceParam = since ? `&DateSent>${encodeURIComponent(since)}` : "";
-    const url = `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json?Direction=inbound&PageSize=50${sinceParam}`;
+    const url = `https://api.twilio.com/2010-04-01/Accounts/${await twilioAccountSid(sid, token)}/Messages.json?Direction=inbound&PageSize=50${sinceParam}`;
     const twilioRes = await fetch(url, {
       headers: { Authorization: `Basic ${btoa(`${sid}:${token}`)}` },
     });

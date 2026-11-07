@@ -3768,7 +3768,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
               ? { error: "Customer not found", suggestions, instruction: "Ask the user 'Do you mean " + suggestions.join(", or ") + "?' — do not ask a generic follow-up question." }
               : { error: "Customer not found" };
           }
-          const msg = inputs.message || ("Hi " + c.firstName + ", a quick reminder from Crew Boss. Reply or call (717) 555-0100.");
+          const msg = inputs.message || ("Hi " + c.firstName + ", a quick reminder from " + ((settings as any)?.companyName || "Crew Boss") + "." + ((settings as any)?.companyPhone ? " Reply or call " + (settings as any).companyPhone + "." : " Just reply to this text."));
           // BUG FIX (Alfred customer-texting audit) — smsOptOut is a real,
           // owner-set-per-customer field (CustomerDetail.tsx's opt-in/out
           // badge) that notify_all_customers already respects, but every
