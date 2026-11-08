@@ -22,6 +22,7 @@ import { GDate } from "../ui/GDate";
 import { GTxt } from "../ui/GTxt";
 import { Badge } from "../ui/Badge";
 import { Modal } from "../ui/Modal";
+import { WorkOrderEditor } from "../ui/WorkOrderEditor";
 
 type Extracted = {
   workOrderNumber: string; workOrderClient: string; address: string; requestedDate: string;
@@ -38,10 +39,38 @@ const emptyExtracted = (): Extracted => ({
 export function WorkOrdersPage({
   jobs = [], setJobs, customers = [], setCustomers, employees = [], settings = {} as AppSettings, toast = (() => {}) as any, ownerId = "",
   onOpenJob = (_id: string) => {}, onNewWorkOrder = () => {}, markRecentlyDeleted = (_t: "jobs", _ids: string[]) => {},
+  services = [] as any[], setServices = null as any,
 }: {
   jobs?: Job[]; setJobs?: any; customers?: Customer[]; setCustomers?: any; employees?: any[]; settings?: AppSettings; toast?: any; ownerId?: string;
   onOpenJob?: (id: string) => void; onNewWorkOrder?: () => void; markRecentlyDeleted?: (table: "jobs", ids: string[]) => void;
+  services?: any[]; setServices?: any;
 }) {
+  // FEATURE (owner request) — work orders are made and edited right here,
+  // line items first (WorkOrderEditor). "New Work Order" used to jump to the
+  // Jobs page's long form, and tapping a work order opened the job screen
+  // with its line items far down the page.
+  const [editing, setEditing] = useState<any | "new" | null>(null);
+  const saveWorkOrder = async (job: any, isNew: boolean): Promise<boolean> => {
+    // jobs.lineItems needs migration 0105; without it, save the rest.
+    const withoutLines = (o: any) => { const { lineItems, ...rest } = o; return rest; };
+    if (isNew) {
+      const row = { ...job, owner_id: ownerId };
+      setJobs?.((prev: any[]) => [...prev, row]);
+      let r: any = await (supabase as any).from("jobs").insert(row);
+      if (r?.error && /lineItems/i.test(r.error.message || "")) { r = await (supabase as any).from("jobs").insert(withoutLines(row)); if (!r?.error) toast("Saved, but line items need the database update (migration 0105).", "yellow"); }
+      if (r?.error) { toast("Couldn't save the work order — " + r.error.message, "red"); return false; }
+      toast("Work order created ✓", "green");
+      return true;
+    }
+    const id = (editing as any)?.id;
+    setJobs?.((prev: any[]) => prev.map((j: any) => j.id === id ? { ...j, ...job } : j));
+    let r: any = await (supabase as any).from("jobs").update(job).eq("id", id).select("id");
+    if (r?.error && /lineItems/i.test(r.error.message || "")) { r = await (supabase as any).from("jobs").update(withoutLines(job)).eq("id", id).select("id"); if (!r?.error) toast("Saved, but line items need the database update (migration 0105).", "yellow"); }
+    if (r?.error) { toast("Couldn't save the work order — " + r.error.message, "red"); return false; }
+    if (!r?.data?.length) { toast("Couldn't save — the server rejected the change", "red"); return false; }
+    toast("Work order saved ✓", "green");
+    return true;
+  };
   // A work order is a job row — deleting it removes the job on the server
   // and marks it deleted so the sync / autosave can't bring it back.
   const deleteWorkOrder = async (j: any) => {
@@ -57,7 +86,11 @@ export function WorkOrdersPage({
       toast("Deleted here, but the server didn't delete it — " + (e?.message || "unknown error"), "red");
     }
   };
-  const workOrders = (jobs as any[]).filter(j => j.isWorkOrder);
+  // "Once the estimate gets accepted, it turns into a work order" — jobs
+  // from an accepted quote are listed here too, next to commercial ones.
+  const [source, setSource] = useState<"all" | "commercial" | "quotes">("all");
+  const allWorkOrders = (jobs as any[]).filter(j => j.isWorkOrder || j.estimateId);
+  const workOrders = allWorkOrders.filter(j => source === "all" || (source === "commercial" ? j.isWorkOrder : !j.isWorkOrder && j.estimateId));
   const [tab, setTab] = useState<"active" | "needs_review" | "completed">("active");
   const active = workOrders.filter(j => j.status === "scheduled" || j.status === "in_progress");
   const needsReview = workOrders.filter(j => j.status === "completed" && j.requiresManagerSignoff && !j.managerSignedAt);
@@ -197,11 +230,11 @@ export function WorkOrdersPage({
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <div className="text-xl font-bold flex items-center gap-2"><ClipboardCheck size={20} className="text-purple-400" />Work Orders</div>
-          <div className="text-xs text-white/40 mt-0.5">Commercial & night jobs that don't need customer approval — Home Depot, Lowe's, and similar clients. Saved work order types live in Settings → Company.</div>
+          <div className="text-xs text-white/40 mt-0.5">Jobs ready to schedule: commercial & night work that doesn't need customer approval, plus every accepted quote. Saved work order types live in Settings → Company.</div>
         </div>
         <div className="flex items-center gap-2">
           <GBtn variant="ghost" onClick={() => setScanOpen(true)} className="!text-xs"><Camera size={13} className="inline mr-1.5" />Scan Paper Work Order</GBtn>
-          <GBtn onClick={onNewWorkOrder} className="!text-xs"><Plus size={13} className="inline mr-1.5" />New Work Order</GBtn>
+          <GBtn onClick={() => setEditing("new")} className="!text-xs" data-new-wo><Plus size={13} className="inline mr-1.5" />New Work Order</GBtn>
         </div>
       </div>
 
@@ -209,6 +242,12 @@ export function WorkOrdersPage({
         <Glass className="p-3 text-center"><div className="text-2xl font-black text-blue-400">{active.length}</div><div className="text-[10px] text-white/40 uppercase tracking-wider">Active</div></Glass>
         <Glass className="p-3 text-center"><div className="text-2xl font-black text-yellow-400">{needsReview.length}</div><div className="text-[10px] text-white/40 uppercase tracking-wider">Needs Sign-Off</div></Glass>
         <Glass className="p-3 text-center"><div className="text-2xl font-black text-green-400">{completed.length}</div><div className="text-[10px] text-white/40 uppercase tracking-wider">Completed</div></Glass>
+      </div>
+
+      <div className="flex gap-1.5 flex-wrap">
+        {([["all", "All"], ["commercial", "Commercial"], ["quotes", "From accepted quotes"]] as const).map(([key, label]) => (
+          <button key={key} onClick={() => setSource(key)} className={"px-3 py-1 rounded-full text-[11px] border transition " + (source === key ? "bg-purple-700/40 border-purple-600/50 text-white" : "bg-white/5 border-white/10 text-white/50")}>{label}</button>
+        ))}
       </div>
 
       <div className="flex gap-1 p-1 bg-white/5 border border-white/10 rounded-xl">
@@ -223,14 +262,18 @@ export function WorkOrdersPage({
           const c = customers.find(x => x.id === (j as any).customerId);
           const prog = reqProgress(j);
           return (
-            <Glass key={j.id} className="p-4 cursor-pointer hover:border-purple-600/40 transition" onClick={() => onOpenJob(j.id)}>
+            <Glass key={j.id} className="p-4 cursor-pointer hover:border-purple-600/40 transition" onClick={() => setEditing(j)} data-wo-card>
               <div className="flex items-center justify-between gap-3 flex-wrap">
                 <div className="min-w-0">
                   <div className="font-semibold text-sm flex items-center gap-2">
-                    {(j as any).workOrderClient || "Work Order"}
+                    {(j as any).workOrderClient || (c ? `${c.firstName} ${c.lastName}` : "Work Order")}
+                    {!(j as any).isWorkOrder && (j as any).estimateId && <span className="text-[10px] font-normal px-1.5 py-0.5 rounded bg-green-900/30 text-green-300 border border-green-700/30">From quote</span>}
                     {(j as any).workOrderNumber && <span className="text-white/40 font-normal text-xs">#{(j as any).workOrderNumber}</span>}
                   </div>
                   <div className="text-xs text-white/50">{c ? `${c.firstName} ${c.lastName}` : "No customer linked"} · {j.address}</div>
+                  {((j as any).lineItems || []).length > 0 && (
+                    <div className="text-[11px] text-white/60 mt-1 truncate">{(j as any).lineItems.slice(0, 3).map((l: any) => (Number(l.quantity) > 1 ? l.quantity + "× " : "") + l.description).join(" · ")}{(j as any).lineItems.length > 3 ? ` +${(j as any).lineItems.length - 3} more` : ""}</div>
+                  )}
                   <div className="text-[11px] text-white/40 mt-0.5">{j.scheduledDate || "Not scheduled yet"}{((j as any).lineItems || []).length > 0 ? ` · ${(j as any).lineItems.length} line${(j as any).lineItems.length > 1 ? "s" : ""} · ${fmt(Number(j.amount) || 0)}` : ""}{(j.crew || []).length > 0 ? ` · ${(j.crew || []).map((id: string) => employees.find((e: any) => e.id === id)?.firstName).filter(Boolean).join(", ")}` : ""}</div>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
@@ -250,6 +293,19 @@ export function WorkOrdersPage({
           );
         })}
       </div>
+
+      <WorkOrderEditor
+        open={!!editing}
+        job={editing === "new" ? null : editing}
+        onClose={() => setEditing(null)}
+        onSave={saveWorkOrder}
+        onOpenJob={onOpenJob}
+        customers={customers}
+        employees={employees}
+        services={services}
+        setServices={setServices}
+        settings={settings}
+      />
 
       {/* ── Scan & Digitize modal ────────────────────────────────────────── */}
       <Modal open={scanOpen} onClose={resetScan} title="Scan Paper Work Order" maxW="max-w-lg">

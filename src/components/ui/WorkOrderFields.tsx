@@ -58,8 +58,20 @@ export function WorkOrderTypePicker({ types = [], onPick }: { types?: WorkOrderT
   );
 }
 
-export function JobLinesEditor({ lines = [], onChange, services = [], showPrices = true }: { lines?: JobLine[]; onChange: (lines: JobLine[]) => void; services?: any[]; showPrices?: boolean }) {
+export function JobLinesEditor({ lines = [], onChange, services = [], showPrices = true, setServices = null }: { lines?: JobLine[]; onChange: (lines: JobLine[]) => void; services?: any[]; showPrices?: boolean; setServices?: any }) {
   const set = (id: string, patch: Partial<JobLine>) => onChange(lines.map(l => l.id === id ? { ...l, ...patch } : l));
+  const [savedMsg, setSavedMsg] = useState<Record<string, string>>({});
+  // A line typed on the spot can be kept as a service for next time (same
+  // as the quote builder's "Save as a service").
+  const saveAsService = (l: JobLine) => {
+    const name = (l.description || "").trim();
+    if (!name || !setServices) return;
+    const existing = services.find((s: any) => String(s.name || "").trim().toLowerCase() === name.toLowerCase());
+    const id = existing?.id || uid();
+    if (!existing) setServices((prev: any[]) => [...(prev || []), { id, name, customerDescription: l.notes || "", price: Number(l.unitPrice) || 0, basePrice: Number(l.unitPrice) || 0, unit: "flat", category: "Other", taxable: true, active: true, checklistTemplate: [] }]);
+    set(l.id, { serviceId: id });
+    setSavedMsg(m => ({ ...m, [l.id]: existing ? "Already in your services — linked" : "Saved to your services ✓" }));
+  };
   const active = services.filter((s: any) => s.active !== false && s.name);
   const addService = (sid: string) => {
     const s = active.find((x: any) => x.id === sid);
@@ -77,6 +89,10 @@ export function JobLinesEditor({ lines = [], onChange, services = [], showPrices
             <button type="button" title="Remove line" onClick={() => onChange(lines.filter(x => x.id !== l.id))} className="text-red-400/70 hover:text-red-300 p-1 flex-shrink-0"><X size={12} /></button>
           </div>
           <GTxt rows={1} placeholder="Description / instructions for this line (optional)" value={l.notes || ""} onChange={e => set(l.id, { notes: e.target.value })} className="!text-xs" />
+          {setServices && !l.serviceId && (l.description || "").trim() && (
+            <button type="button" data-line-save-service onClick={() => saveAsService(l)} className="text-[10px] text-purple-300 hover:text-purple-200">Save as a service for next time</button>
+          )}
+          {savedMsg[l.id] && <div className="text-[10px] text-green-300">{savedMsg[l.id]}</div>}
         </div>
       ))}
       <div className="flex items-center gap-2 flex-wrap">
