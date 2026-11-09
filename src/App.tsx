@@ -3449,6 +3449,16 @@ export function App() {
   }, [jobs.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-save jobs to Supabase every 30 seconds (upsert on id)
+  // BUG FIX — "the trash can routes keep going back to the wrong days."
+  // This loop re-upserted EVERY job's full in-memory row every 30s, so any
+  // open tab or phone holding an older copy put old dates, prices and names
+  // back over changes made anywhere else (another device, an import, Alfred).
+  // Now a job that is already on the server only sends the fields THIS tab
+  // changed since the last cycle, and only when they differ from the
+  // server. jobsAutosaveBaseRef holds each job as this tab had it at the end
+  // of the previous cycle.
+  const jobsAutosaveBaseRef = useRef<Map<string, any> | null>(null);
+  if (jobsAutosaveBaseRef.current === null && jobs.length > 0) jobsAutosaveBaseRef.current = new Map(jobs.map((j: any) => [j.id, j]));
   useEffect(() => {
     const interval = setInterval(async () => {
       if (jobs.length === 0) return;
@@ -3511,17 +3521,40 @@ export function App() {
         // still has (edits) or brand-new local ones never seen there — never
         // one this tab knows was deleted, or one that vanished from the
         // server after this tab had confirmed it.
-        const live = await fetchAllRows("jobs", "id", crmUserId);
+        const live = await fetchAllRows("jobs", "*", crmUserId);
         if (!live.data) return; // can't tell new from deleted — skip this cycle
-        const liveJobIds = new Set(live.data.map((r: any) => r.id));
+        const liveById = new Map<string, any>(live.data.map((r: any) => [r.id, r]));
+        const liveJobIds = new Set(liveById.keys());
         const deletedJobIds = readTombstones("jobs");
         const recentlyDeletedJobs = recentlyDeletedRef.current.jobs;
         // A job never seen on the server only counts as new if it was
         // created in the last half hour — an old cached copy of a job deleted
         // on another device is not.
         const isNewLocal = (j: any) => { const t = Date.parse(j?.createdAt || ""); return !syncedJobIdsRef.current.has(j.id) && !Number.isNaN(t) && Date.now() - t < 30 * 60 * 1000; };
-        const pushable = jobs.filter(j => !deletedJobIds.has(j.id) && !recentlyDeletedJobs.has(j.id) && (liveJobIds.has(j.id) || isNewLocal(j)));
-        if (pushable.length === 0) return;
+        const base = jobsAutosaveBaseRef.current || new Map<string, any>();
+        jobsAutosaveBaseRef.current = new Map(jobs.map((j: any) => [j.id, j]));
+        const same = (a: any, b: any) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+        const skipFields = new Set<string>([...EMPLOYEE_OWNED_FIELDS, "id", "owner_id"]);
+        // Existing jobs: send only fields changed here since last cycle that
+        // the server doesn't already have. A job this tab never touched is
+        // never written, however old its copy is.
+        for (const j of jobs as any[]) {
+          if (deletedJobIds.has(j.id) || recentlyDeletedJobs.has(j.id)) continue;
+          const server = liveById.get(j.id);
+          const prev = base.get(j.id);
+          if (!server || !prev || prev === j) continue;
+          const local: any = stripLegacyJobFields(j);
+          const patch: any = {};
+          for (const k of Object.keys(local)) {
+            if (skipFields.has(k) || !(k in server)) continue;
+            if (!same(local[k], prev[k]) && !same(local[k], server[k])) patch[k] = local[k];
+          }
+          if (Object.keys(patch).length === 0) continue;
+          const r = await (supabase as any).from("jobs").update(patch).eq("id", j.id);
+          if (r?.error) console.warn("Auto-save — couldn't save job", j.id, r.error.message);
+        }
+        const pushable = jobs.filter(j => !deletedJobIds.has(j.id) && !recentlyDeletedJobs.has(j.id) && !liveJobIds.has(j.id) && isNewLocal(j));
+        if (pushable.length === 0) { setLastSynced(new Date()); return; }
         const safeJobs = pushable.map(j => {
           const copy: any = stripLegacyJobFields(j);
           EMPLOYEE_OWNED_FIELDS.forEach(f => delete copy[f]);
