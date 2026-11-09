@@ -80,7 +80,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function ExpensesPage({ expenses = [], setExpenses, toast = (() => {}) as any }) {
+export function ExpensesPage({ expenses = [], setExpenses, toast = (() => {}) as any, settings = {} as any }) {
   const [modal, setModal] = useState({ open: false, data: null });
   const [filterCat, setFilterCat] = useState("all");
   const [timeframe, setTimeframe] = useState("30d");
