@@ -1,4 +1,5 @@
 // auto-extracted from Crew Boss OS monolith
+import { ServiceMultiPicker } from "../ui/ServiceMultiPicker";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -86,7 +87,7 @@ import { ChemicalModal } from "../ui/ChemicalModal";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
-export function InvoicesPage({ estimates = [], setEstimates, customers = [], settings = {} as AppSettings, toast, jobs = [], setJobs = (() => {}) as any, ownerId = "", highlightId = null, pushUndo = (_desc: string, _fn: () => void, _redoFn?: () => void) => {}, markRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[]) => {}, unmarkRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[]) => {} }: { estimates?: any[]; setEstimates?: any; customers?: any[]; settings?: AppSettings; toast?: any; jobs?: any[]; setJobs?: any; ownerId?: string; highlightId?: string | null; pushUndo?: (desc: string, fn: () => void, redoFn?: () => void) => void; markRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void; unmarkRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void }) {
+export function InvoicesPage({ services = [] as any[], estimates = [], setEstimates, customers = [], settings = {} as AppSettings, toast, jobs = [], setJobs = (() => {}) as any, ownerId = "", highlightId = null, pushUndo = (_desc: string, _fn: () => void, _redoFn?: () => void) => {}, markRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[]) => {}, unmarkRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[]) => {} }: { services?: any[]; estimates?: any[]; setEstimates?: any; customers?: any[]; settings?: AppSettings; toast?: any; jobs?: any[]; setJobs?: any; ownerId?: string; highlightId?: string | null; pushUndo?: (desc: string, fn: () => void, redoFn?: () => void) => void; markRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void; unmarkRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void }) {
   // FEATURE — "Alfred spotlight": briefly glows + scrolls to the invoice
   // Alfred just sent, driven by App.tsx's spotlight queue.
   useEffect(() => {
@@ -1127,6 +1128,9 @@ export function InvoicesPage({ estimates = [], setEstimates, customers = [], set
                   )}
                 </div>
               ))}
+            </div>
+            <div className="mt-2">
+              <ServiceMultiPicker services={services} onAdd={list => setNewInvForm(f => ({ ...f, items: [...f.items.filter(it => it.description.trim() || (Number(it.unitPrice) || 0) > 0), ...list.map((sv: any) => ({ id: uid(), description: sv.name, quantity: 1, unitPrice: Number(sv.basePrice || sv.price || 0) }))] }))} />
             </div>
             <button onClick={() => setNewInvForm(f => ({ ...f, items: [...f.items, { id: uid(), description: "", quantity: 1, unitPrice: 0 }] }))} className="mt-2 text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1"><Plus size={12} />Add line item</button>
           </div>

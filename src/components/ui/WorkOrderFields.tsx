@@ -9,6 +9,7 @@
 // A work order type saved in Settings holds those defaults; picking it on a
 // work order fills in the lines, materials, instructions, photo counts and
 // checklist in one go. Everything stays editable afterwards.
+import { ServiceMultiPicker } from "./ServiceMultiPicker";
 import React, { useState } from "react";
 import { Plus, X } from "lucide-react";
 import { fmt, uid } from "../../lib/utils";
@@ -73,11 +74,6 @@ export function JobLinesEditor({ lines = [], onChange, services = [], showPrices
     setSavedMsg(m => ({ ...m, [l.id]: existing ? "Already in your services — linked" : "Saved to your services ✓" }));
   };
   const active = services.filter((s: any) => s.active !== false && s.name);
-  const addService = (sid: string) => {
-    const s = active.find((x: any) => x.id === sid);
-    if (!s) return;
-    onChange([...lines, { id: uid(), description: s.name, quantity: 1, unitPrice: Number(s.price ?? s.basePrice) || 0, notes: s.customerDescription || "", serviceId: s.id }]);
-  };
   return (
     <div className="space-y-2" data-job-lines>
       {lines.map(l => (
@@ -97,11 +93,8 @@ export function JobLinesEditor({ lines = [], onChange, services = [], showPrices
       ))}
       <div className="flex items-center gap-2 flex-wrap">
         {active.length > 0 && (
-          <div className="flex-1 min-w-[180px]">
-            <GSel value="" onChange={e => addService(e.target.value)} className="!text-xs">
-              <option value="" className="bg-black">+ Add a saved service…</option>
-              {active.map((s: any) => <option key={s.id} value={s.id} className="bg-black">{s.name}{Number(s.price ?? s.basePrice) ? ` — ${fmt(Number(s.price ?? s.basePrice))}` : ""}</option>)}
-            </GSel>
+          <div className="w-full">
+            <ServiceMultiPicker services={active} onAdd={list => onChange([...lines, ...list.map((sv: any) => ({ id: uid(), description: sv.name, quantity: 1, unitPrice: Number(sv.price ?? sv.basePrice) || 0, notes: sv.customerDescription || "", serviceId: sv.id }))])} />
           </div>
         )}
         <button type="button" data-add-line onClick={() => onChange([...lines, { id: uid(), description: "", quantity: 1, unitPrice: 0, notes: "" }])} className="text-[11px] text-purple-300 hover:text-purple-200 whitespace-nowrap">+ Custom line</button>

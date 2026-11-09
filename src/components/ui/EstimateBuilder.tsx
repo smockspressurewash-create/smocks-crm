@@ -1,4 +1,5 @@
 // auto-extracted from Crew Boss OS monolith
+import { ServiceMultiPicker } from "./ServiceMultiPicker";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -367,14 +368,7 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
 
         <div className="p-3 bg-black/40 border border-red-900/20 rounded-xl">
           <label className="text-xs text-white/60 mb-1 block">Add from catalog</label>
-          <GSel onChange={e => e.target.value && addSvc(e.target.value)} value="">
-            <option value="" className="bg-black">Select service…</option>
-            {(services as any[]).map(s => {
-              const price = s.basePrice || s.price || 0;
-              const range = s.minPrice && s.maxPrice ? ` (${fmt(s.minPrice)}–${fmt(s.maxPrice)})` : "";
-              return <option key={s.id} value={s.id} className="bg-black">{s.name} — {fmt(price)}{range}</option>;
-            })}
-          </GSel>
+          <ServiceMultiPicker services={services as any[]} onAdd={list => list.forEach((sv: any) => addSvc(sv.id))} />
         </div>
 
         {/* AI Pricing Assistant — sqft-based + AI comparables */}
