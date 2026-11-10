@@ -1,4 +1,5 @@
 // auto-extracted from Crew Boss OS monolith
+import { jobTaxSplit } from "../../lib/jobWrite";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { IS_PREVIEW } from "../../lib/preview";
 import {
@@ -194,8 +195,8 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
     try {
       const newInv = {
         id: uid(), customerId: job.customerId,
-        lineItems: [{ id: uid(), description: job.notes || job.address || "Service", quantity: 1, unitPrice: Number(job.amount) || 0 }],
-        subtotal: Number(job.amount) || 0, discount: 0, depositRequired: 0, tax: 0, total: Number(job.amount) || 0,
+        lineItems: [{ id: uid(), description: job.notes || job.address || "Service", quantity: 1, unitPrice: jobTaxSplit(job).subtotal }],
+        subtotal: jobTaxSplit(job).subtotal, discount: 0, depositRequired: 0, tax: jobTaxSplit(job).tax, total: jobTaxSplit(job).total,
         status: "approved" as const, createdAt: today(), validUntil: daysFromNow(30), invoiced: true, invoicedAt: today(),
         // BUG FIX — missing owner_id meant this insert violated the
         // owner_id-scoped RLS policy added by the multi-tenant migration

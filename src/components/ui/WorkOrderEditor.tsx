@@ -19,6 +19,8 @@ import { GInput } from "./GInput";
 import { GDate } from "./GDate";
 import { GTxt } from "./GTxt";
 import { CustomerPicker } from "./CustomerPicker";
+import { SalesTaxControl, defaultTaxRate } from "./SalesTaxControl";
+import { jobTaxSplit, taxOf } from "../../lib/jobWrite";
 import { JobLinesEditor, PhotoReqsEditor, TextListEditor, WorkOrderTypePicker, applyWorkOrderType, jobLinesTotal, cleanLines, cleanReqs, type JobLine, type PhotoReq } from "./WorkOrderFields";
 
 type Draft = {
@@ -26,14 +28,16 @@ type Draft = {
   workOrderNumber: string; workOrderClient: string; lineItems: JobLine[]; equipment: string[];
   photoRequirements: PhotoReq[]; checklist: { id: string; label: string }[]; notes: string;
   requiresManagerSignoff: boolean; isNightJob: boolean; amount: string;
+  taxOn: boolean; taxRate: number | string;
 };
 
-const fromJob = (j: any): Draft => ({
+const fromJob = (j: any, settings?: any): Draft => ({
   customerId: j?.customerId || "", address: j?.address || "", scheduledDate: j ? (j.scheduledDate || "") : today(), scheduledTime: j?.scheduledTime || "",
   crew: Array.isArray(j?.crew) ? j.crew : [], workOrderNumber: j?.workOrderNumber || "", workOrderClient: j?.workOrderClient || "",
   lineItems: j?.lineItems || [], equipment: j?.equipment || [], photoRequirements: j?.photoRequirements || [], checklist: [],
   notes: j?.notes || "", requiresManagerSignoff: !!j?.requiresManagerSignoff, isNightJob: !!j?.isNightJob,
-  amount: j?.amount ? String(j.amount) : "",
+  amount: j?.amount ? String(jobTaxSplit(j).subtotal) : "",
+  taxOn: Number(j?.tax) > 0, taxRate: j?.taxRate != null && j?.taxRate !== "" ? j.taxRate : defaultTaxRate(settings),
 });
 
 export function WorkOrderEditor({
@@ -42,12 +46,14 @@ export function WorkOrderEditor({
   job?: any; open: boolean; onClose: () => void; onSave: (job: any, isNew: boolean) => Promise<boolean> | boolean;
   onOpenJob?: (id: string) => void; customers?: any[]; employees?: any[]; services?: any[]; setServices?: any; settings?: any;
 }) {
-  const [d, setD] = useState<Draft>(() => fromJob(job));
+  const [d, setD] = useState<Draft>(() => fromJob(job, settings));
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
-  React.useEffect(() => { if (open) { setD(fromJob(job)); setErr(""); } }, [open, job?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  React.useEffect(() => { if (open) { setD(fromJob(job, settings)); setErr(""); } }, [open, job?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const upd = (patch: Partial<Draft>) => setD(x => ({ ...x, ...patch }));
   const linesTotal = jobLinesTotal(cleanLines(d.lineItems));
+  const subTotal = cleanLines(d.lineItems).length ? linesTotal : (parseFloat(d.amount) || 0);
+  const taxAmt = d.taxOn ? taxOf(subTotal, Number(d.taxRate)) : 0;
   const isNew = !job;
 
   const save = async () => {
@@ -66,7 +72,8 @@ export function WorkOrderEditor({
       workOrderNumber: d.workOrderNumber, workOrderClient: d.workOrderClient,
       lineItems: lines, equipment: d.equipment, photoRequirements: cleanReqs(d.photoRequirements),
       notes: d.notes, requiresManagerSignoff: d.requiresManagerSignoff, isNightJob: d.isNightJob,
-      amount: lines.length ? linesTotal : (parseFloat(d.amount) || 0),
+      amount: Math.round((subTotal + taxAmt) * 100) / 100,
+      tax: taxAmt, taxRate: d.taxOn ? Number(d.taxRate) || 0 : null,
     };
     const steps = d.checklist.filter(c => c.label.trim()).map(c => ({ id: c.id, label: c.label.trim(), done: false }));
     if (steps.length) patch.preChecklist = [...(job?.preChecklist || []), ...steps];
@@ -96,7 +103,7 @@ export function WorkOrderEditor({
         <div className="p-3 rounded-xl border border-purple-700/30 bg-purple-950/10 space-y-2.5">
           <div className="flex items-center justify-between gap-2">
             <div className="text-sm font-semibold text-white">Line items</div>
-            {cleanLines(d.lineItems).length > 0 && <div className="text-sm text-white/80" data-wo-total>Total <b>{fmt(linesTotal)}</b></div>}
+            {cleanLines(d.lineItems).length > 0 && <div className="text-sm text-white/80" data-wo-total>Total <b>{fmt(linesTotal + taxAmt)}</b></div>}
           </div>
           <WorkOrderTypePicker types={settings?.workOrderTypes || []} onPick={t => setD(x => ({ ...x, ...applyWorkOrderType(x, t) }))} />
           <JobLinesEditor lines={d.lineItems} services={services} setServices={setServices} onChange={lineItems => upd({ lineItems })} />
@@ -106,6 +113,7 @@ export function WorkOrderEditor({
               <GInput type="number" min="0" placeholder="0" value={d.amount} onChange={e => upd({ amount: e.target.value })} className="!w-40" />
             </div>
           )}
+          <SalesTaxControl on={d.taxOn} rate={d.taxRate} subtotal={subTotal} onChange={v => upd({ taxOn: v.on, taxRate: v.rate })} />
         </div>
 
         <div className="grid grid-cols-2 gap-2">

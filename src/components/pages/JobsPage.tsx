@@ -83,6 +83,8 @@ import { ServiceCatalogSection } from "../ui/ServiceCatalogSection";
 import { TemplateEditor } from "../ui/TemplateEditor";
 import { AIModelsSection } from "../ui/AIModelsSection";
 import { ChemicalModal } from "../ui/ChemicalModal";
+import { SalesTaxControl, defaultTaxRate } from "../ui/SalesTaxControl";
+import { tolerantJobWrite, taxOf } from "../../lib/jobWrite";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
@@ -430,7 +432,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
     // completely indistinguishable from a real save. .select("id") lets a
     // 0-row response be told apart from a genuine success, and both cases
     // now surface a real toast, matching every other write path in the app.
-    (supabase as any).from("jobs").update(patch).eq("id", jid).select("id")
+    tolerantJobWrite(patch, x => (supabase as any).from("jobs").update(x).eq("id", jid).select("id"), cols => toast?.("Saved, but the database is missing: " + cols.join(", ") + ". Run the latest SQL update (migration 0107).", "yellow"))
       .then((result: any) => {
         if (result?.error) { console.warn("[updateJob] full patch failed:", result.error.message); toast?.("Failed to save job changes — " + result.error.message, "red"); }
         else if (!result?.data || result.data.length === 0) { console.warn("[updateJob] full patch matched 0 rows — likely blocked by permissions"); toast?.("Couldn't save — the server rejected the change", "red"); }
@@ -785,6 +787,9 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
               </div>
             );
           })()}
+          {/* FEATURE (owner request) — add sales tax to a job / work order. */}
+          <SalesTaxControl on={!!(newJobForm as any).taxOn} rate={(newJobForm as any).taxRate ?? defaultTaxRate(settings)} subtotal={parseFloat(newJobForm.amount) || 0}
+            onChange={v => setNewJobForm(f => ({ ...f, taxOn: v.on, taxRate: v.rate } as any))} />
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-xs text-white/60 mb-1 block">Amount ($)</label>
@@ -1072,7 +1077,8 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 id: uid(), customerId: newJobForm.customerId,
                 address: newJobForm.address || customers.find(c => c.id === newJobForm.customerId)?.address || "",
                 ...(typeof newJobForm.lat === "number" && typeof newJobForm.lng === "number" ? { lat: newJobForm.lat, lng: newJobForm.lng } : {}),
-                amount: parseFloat(newJobForm.amount) || 0,
+                // amount is what the customer pays — sales tax included.
+                ...(() => { const sub = parseFloat(newJobForm.amount) || 0; const on = !!(newJobForm as any).taxOn; const rate = Number((newJobForm as any).taxRate ?? defaultTaxRate(settings)) || 0; const tax = on ? taxOf(sub, rate) : 0; return { amount: Math.round((sub + tax) * 100) / 100, ...(on ? { tax, taxRate: rate } : {}) }; })(),
                 status: "scheduled" as const,
                 scheduledDate: newJobForm.scheduledDate,
                 scheduledTime: newJobForm.scheduledTime,
@@ -1147,7 +1153,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 // don't show up" symptom. Every path out of this function
                 // must now end in either a success log or a toast.
                 try {
-                  const { error } = await withTimeout<any>((supabase as any).from("jobs").insert(job), 30000, "Save job");
+                  const { error } = await withTimeout<any>(tolerantJobWrite(job as any, x => (supabase as any).from("jobs").insert(x), cols => toast?.("Job saved, but the database is missing: " + cols.join(", ") + ". Run the latest SQL update (migration 0107).", "yellow")), 30000, "Save job");
                   if (error) {
                     // FIX G — recurring jobs add isRecurring/recurringMode/
                     // recurringFreq/recurringInterval/recurringWeekdays columns

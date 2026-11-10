@@ -1,4 +1,5 @@
 ﻿import React, { useState, useEffect, useRef } from "react";
+import { jobTaxSplit } from "../../lib/jobWrite";
 import { saveShiftDay, fetchShiftDays, shiftHoursByDay, extraShiftHours, isNetworkError, type ShiftDay } from "../../lib/shiftLog";
 import { queueClockChange, mergedPendingPatch, replayClockChanges, pendingClockChanges } from "../../lib/offlineClock";
 import {
@@ -1493,8 +1494,8 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
     try {
       const newInv = {
         id: uid(), customerId: job.customerId,
-        lineItems: [{ id: uid(), description: job.notes || job.address || "Service", quantity: 1, unitPrice: Number(job.amount) || 0 }],
-        subtotal: Number(job.amount) || 0, discount: 0, depositRequired: 0, tax: 0, total: Number(job.amount) || 0,
+        lineItems: [{ id: uid(), description: job.notes || job.address || "Service", quantity: 1, unitPrice: jobTaxSplit(job).subtotal }],
+        subtotal: jobTaxSplit(job).subtotal, discount: 0, depositRequired: 0, tax: jobTaxSplit(job).tax, total: jobTaxSplit(job).total,
         status: "approved" as const, createdAt: localDateStr(), validUntil: daysFromNow(30), invoiced: true, invoicedAt: localDateStr(),
         // The employee has no separate "ownerId" concept of their own here —
         // this invoice belongs to whichever owner the source job belongs to,

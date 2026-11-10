@@ -1117,7 +1117,7 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
                 ${(e.lineItems || []).map(li => `<tr><td>${li.description}${lineNoteHtml(li)}</td><td>${li.quantity}</td><td>$${Number(li.unitPrice).toFixed(2)}</td><td>$${(li.quantity * li.unitPrice).toFixed(2)}</td></tr>`).join("")}
                 </tbody></table>
                 ${e.discount > 0 ? `<div class="row"><span>Discount</span><span>-$${Number(e.discount).toFixed(2)}</span></div>` : ""}
-                <div class="row"><span>Tax (${settings?.taxRate || 6}%)</span><span>$${Number(e.tax || 0).toFixed(2)}</span></div>
+                ${Number(e.tax) > 0 ? `<div class="row"><span>Sales tax${(Number(e.subtotal) || 0) - (Number(e.discount) || 0) > 0 ? " (" + Math.round(Number(e.tax) / ((Number(e.subtotal) || 0) - (Number(e.discount) || 0)) * 10000) / 100 + "%)" : ""}</span><span>$${Number(e.tax).toFixed(2)}</span></div>` : ""}
                 <div class="row total"><span>TOTAL</span><span>$${Number(e.total).toFixed(2)}</span></div>
                 ${totalWithTip > e.total ? `<div class="row" style="color:green"><span>Tip</span><span>+$${tip.toFixed(2)}</span></div><div class="row total"><span>AMOUNT PAID</span><span>$${totalWithTip.toFixed(2)}</span></div>` : ""}
                 ${e.terms ? `<div style="margin-top:16px;padding:12px;background:#f9f9f9;border-radius:6px;font-size:11px;color:#555"><strong>Terms & Conditions:</strong><br>${e.terms}</div>` : ""}

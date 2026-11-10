@@ -9,6 +9,8 @@
 // A work order type saved in Settings holds those defaults; picking it on a
 // work order fills in the lines, materials, instructions, photo counts and
 // checklist in one go. Everything stays editable afterwards.
+import { SalesTaxControl, defaultTaxRate } from "./SalesTaxControl";
+import { jobTaxSplit, taxOf } from "../../lib/jobWrite";
 import { ServiceMultiPicker } from "./ServiceMultiPicker";
 import React, { useState } from "react";
 import { Plus, X } from "lucide-react";
@@ -98,7 +100,7 @@ export function JobLinesEditor({ lines = [], onChange, services = [], showPrices
           </div>
         )}
         <button type="button" data-add-line onClick={() => onChange([...lines, { id: uid(), description: "", quantity: 1, unitPrice: 0, notes: "" }])} className="text-[11px] text-purple-300 hover:text-purple-200 whitespace-nowrap">+ Custom line</button>
-        {showPrices && lines.length > 0 && <span className="ml-auto text-[11px] text-white/60">Total <b className="text-white">{fmt(jobLinesTotal(lines))}</b></span>}
+        {showPrices && lines.length > 0 && <span className="ml-auto text-[11px] text-white/60">Subtotal <b className="text-white">{fmt(jobLinesTotal(lines))}</b></span>}
       </div>
     </div>
   );
@@ -198,6 +200,7 @@ export function WorkOrderPanel({ job, updateJob, services = [], settings = {} as
     requiresManagerSignoff: !!job.requiresManagerSignoff, isNightJob: !!job.isNightJob,
     lineItems: (job.lineItems || []) as JobLine[], photoRequirements: (job.photoRequirements || []) as PhotoReq[],
     extra: null as null | { equipment: string[]; checklist: { id: string; label: string }[]; notes: string },
+    taxOn: Number(job.tax) > 0, taxRate: (job.taxRate != null && job.taxRate !== "" ? job.taxRate : defaultTaxRate(settings)) as number | string,
   });
   const [d, setD] = useState(fromJob);
   const [dirty, setDirty] = useState(false);
@@ -215,7 +218,12 @@ export function WorkOrderPanel({ job, updateJob, services = [], settings = {} as
       requiresManagerSignoff: d.requiresManagerSignoff, isNightJob: d.isNightJob,
       lineItems: lines, photoRequirements: cleanReqs(d.photoRequirements),
     };
-    if (lines.length) patch.amount = jobLinesTotal(lines);
+    const sub = lines.length ? jobLinesTotal(lines) : jobTaxSplit(job).subtotal;
+    const tax = d.taxOn ? taxOf(sub, Number(d.taxRate)) : 0;
+    if (lines.length || d.taxOn !== Number(job.tax) > 0 || tax !== (Number(job.tax) || 0)) {
+      patch.amount = Math.round((sub + tax) * 100) / 100;
+      patch.tax = tax; patch.taxRate = d.taxOn ? Number(d.taxRate) || 0 : null;
+    }
     if (d.extra) {
       patch.equipment = d.extra.equipment;
       patch.notes = d.extra.notes;
@@ -248,6 +256,7 @@ export function WorkOrderPanel({ job, updateJob, services = [], settings = {} as
         <label className="text-[10px] text-white/50 mb-1 block">Line items</label>
         <JobLinesEditor lines={d.lineItems} services={services} onChange={lineItems => upd({ lineItems })} />
       </div>
+      <SalesTaxControl on={d.taxOn} rate={d.taxRate} subtotal={cleanLines(d.lineItems).length ? jobLinesTotal(cleanLines(d.lineItems)) : jobTaxSplit(job).subtotal} onChange={v => upd({ taxOn: v.on, taxRate: v.rate })} />
       {d.isWorkOrder && (
         <div>
           <label className="text-[10px] text-white/50 mb-1 block">Required photos/videos</label>

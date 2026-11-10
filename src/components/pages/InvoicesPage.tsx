@@ -1,4 +1,6 @@
 // auto-extracted from Crew Boss OS monolith
+import { jobTaxSplit, taxOf } from "../../lib/jobWrite";
+import { SalesTaxControl, defaultTaxRate } from "../ui/SalesTaxControl";
 import { ServiceMultiPicker } from "../ui/ServiceMultiPicker";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -137,8 +139,8 @@ export function InvoicesPage({ services = [] as any[], estimates = [], setEstima
     try {
       const newInv = {
         id: uid(), customerId: job.customerId, jobId: job.id,
-        lineItems: [{ id: uid(), description: job.notes || job.address || "Service", quantity: 1, unitPrice: Number(job.amount) || 0 }],
-        subtotal: Number(job.amount) || 0, discount: 0, depositRequired: 0, tax: 0, total: Number(job.amount) || 0,
+        lineItems: [{ id: uid(), description: job.notes || job.address || "Service", quantity: 1, unitPrice: jobTaxSplit(job).subtotal }],
+        subtotal: jobTaxSplit(job).subtotal, discount: 0, depositRequired: 0, tax: jobTaxSplit(job).tax, total: jobTaxSplit(job).total,
         status: "approved" as const, createdAt: today(), validUntil: daysFromNow(30), invoiced: true, invoicedAt: today(),
         // BUG FIX — missing owner_id violated the owner_id-scoped RLS policy
         // added by the multi-tenant migration (WITH CHECK owner_id =
@@ -192,6 +194,10 @@ export function InvoicesPage({ services = [] as any[], estimates = [], setEstima
   const [newInvOpen, setNewInvOpen] = useState(false);
   const [newInvForm, setNewInvForm] = useState<{ customerId: string; title: string; items: { id: string; description: string; quantity: number; unitPrice: number }[] }>({ customerId: "", title: "", items: [{ id: uid(), description: "", quantity: 1, unitPrice: 0 }] });
   const newInvTotal = newInvForm.items.reduce((s, it) => s + (Number(it.quantity) || 0) * (Number(it.unitPrice) || 0), 0);
+  // FEATURE (owner request) — sales tax on a new invoice.
+  const [invTaxOn, setInvTaxOn] = useState(false);
+  const [invTaxRate, setInvTaxRate] = useState<number | string>(() => defaultTaxRate(settings));
+  const newInvTax = invTaxOn ? taxOf(newInvTotal, Number(invTaxRate)) : 0;
   // BUG FIX — "overdue invoices keep coming back / not staying deleted."
   // Root cause found via a live query: this was never a delete-persistence
   // bug at all — the SAME demo customer had 8-10 GENUINELY DUPLICATE
@@ -220,7 +226,7 @@ export function InvoicesPage({ services = [] as any[], estimates = [], setEstima
       id: uid(), customerId: newInvForm.customerId,
       title: newInvForm.title.trim() || "Invoice",
       lineItems: newInvForm.items.filter(it => it.description.trim() || (Number(it.unitPrice) || 0) > 0).map(it => ({ id: it.id, description: it.description || "Service", quantity: Number(it.quantity) || 1, unitPrice: Number(it.unitPrice) || 0 })),
-      subtotal: newInvTotal, discount: 0, depositRequired: 0, tax: 0, total: newInvTotal,
+      subtotal: newInvTotal, discount: 0, depositRequired: 0, tax: newInvTax, total: Math.round((newInvTotal + newInvTax) * 100) / 100,
       status: "approved" as const, createdAt: today(), validUntil: daysFromNow(30),
       invoiced: true, invoicedAt: today(), standalone: true,
       // BUG FIX — missing owner_id violated the owner_id-scoped RLS policy
@@ -241,6 +247,7 @@ export function InvoicesPage({ services = [] as any[], estimates = [], setEstima
       .finally(() => { creatingInvoiceRef.current = false; setCreatingInvoice(false); });
     setNewInvOpen(false);
     setNewInvForm({ customerId: "", title: "", items: [{ id: uid(), description: "", quantity: 1, unitPrice: 0 }] });
+    setInvTaxOn(false);
   };
   // FEATURE 3 — prefill the New Invoice form from a completed job that hasn't
   // been invoiced yet, so the owner can turn a finished job into an invoice in
@@ -1134,9 +1141,11 @@ export function InvoicesPage({ services = [] as any[], estimates = [], setEstima
             </div>
             <button onClick={() => setNewInvForm(f => ({ ...f, items: [...f.items, { id: uid(), description: "", quantity: 1, unitPrice: 0 }] }))} className="mt-2 text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1"><Plus size={12} />Add line item</button>
           </div>
+          <SalesTaxControl on={invTaxOn} rate={invTaxRate} subtotal={newInvTotal} showTotals={false} onChange={v => { setInvTaxOn(v.on); setInvTaxRate(v.rate); }} />
+          {invTaxOn && <div className="flex justify-between text-xs text-white/60"><span>Subtotal {fmt(newInvTotal)} + sales tax ({Number(invTaxRate) || 0}%)</span><span>{fmt(newInvTax)}</span></div>}
           <div className="flex items-center justify-between pt-2 border-t border-white/10">
             <span className="text-sm text-white/60">Total</span>
-            <span className="text-xl font-black text-green-400">{fmt(newInvTotal)}</span>
+            <span className="text-xl font-black text-green-400" data-inv-total>{fmt(newInvTotal + newInvTax)}</span>
           </div>
           <GBtn onClick={createStandaloneInvoice} disabled={creatingInvoice} className="w-full !justify-center !py-3">{creatingInvoice ? "Creating…" : "Create Invoice"}</GBtn>
           <div className="text-[10px] text-white/30 text-center">After creating, open the invoice to send it (Gmail / SMS) or take payment. It appears in the list and the customer can pay via the client portal.</div>

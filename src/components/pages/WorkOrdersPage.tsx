@@ -23,6 +23,7 @@ import { GTxt } from "../ui/GTxt";
 import { Badge } from "../ui/Badge";
 import { Modal } from "../ui/Modal";
 import { WorkOrderEditor } from "../ui/WorkOrderEditor";
+import { tolerantJobWrite } from "../../lib/jobWrite";
 
 type Extracted = {
   workOrderNumber: string; workOrderClient: string; address: string; requestedDate: string;
@@ -51,21 +52,20 @@ export function WorkOrdersPage({
   // with its line items far down the page.
   const [editing, setEditing] = useState<any | "new" | null>(null);
   const saveWorkOrder = async (job: any, isNew: boolean): Promise<boolean> => {
-    // jobs.lineItems needs migration 0105; without it, save the rest.
-    const withoutLines = (o: any) => { const { lineItems, ...rest } = o; return rest; };
+    // A newer column the database doesn't have yet (isNightJob, tax,
+    // lineItems…) is left out and the rest still saves — see lib/jobWrite.ts.
+    const warnDropped = (cols: string[]) => toast("Saved, but the database is missing: " + cols.join(", ") + ". Run the latest SQL update (migration 0107) so these save too.", "yellow");
     if (isNew) {
       const row = { ...job, owner_id: ownerId };
       setJobs?.((prev: any[]) => [...prev, row]);
-      let r: any = await (supabase as any).from("jobs").insert(row);
-      if (r?.error && /lineItems/i.test(r.error.message || "")) { r = await (supabase as any).from("jobs").insert(withoutLines(row)); if (!r?.error) toast("Saved, but line items need the database update (migration 0105).", "yellow"); }
+      const r: any = await tolerantJobWrite(row, x => (supabase as any).from("jobs").insert(x), warnDropped);
       if (r?.error) { toast("Couldn't save the work order — " + r.error.message, "red"); return false; }
       toast("Work order created ✓", "green");
       return true;
     }
     const id = (editing as any)?.id;
     setJobs?.((prev: any[]) => prev.map((j: any) => j.id === id ? { ...j, ...job } : j));
-    let r: any = await (supabase as any).from("jobs").update(job).eq("id", id).select("id");
-    if (r?.error && /lineItems/i.test(r.error.message || "")) { r = await (supabase as any).from("jobs").update(withoutLines(job)).eq("id", id).select("id"); if (!r?.error) toast("Saved, but line items need the database update (migration 0105).", "yellow"); }
+    const r: any = await tolerantJobWrite(job, x => (supabase as any).from("jobs").update(x).eq("id", id).select("id"), warnDropped);
     if (r?.error) { toast("Couldn't save the work order — " + r.error.message, "red"); return false; }
     if (!r?.data?.length) { toast("Couldn't save — the server rejected the change", "red"); return false; }
     toast("Work order saved ✓", "green");

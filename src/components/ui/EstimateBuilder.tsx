@@ -1,4 +1,5 @@
 // auto-extracted from Crew Boss OS monolith
+import { SalesTaxControl, defaultTaxRate } from "./SalesTaxControl";
 import { ServiceMultiPicker } from "./ServiceMultiPicker";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -81,7 +82,12 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
     { id: uid(), name: "Basic", description: "", lineItems: [{ id: uid(), description: "", quantity: 1, unitPrice: 0 }] },
     { id: uid(), name: "Premium", description: "", lineItems: [{ id: uid(), description: "", quantity: 1, unitPrice: 0 }] },
   ]);
-  const taxRate = Number((settings as any)?.taxRate || 6);
+  // FEATURE (owner request) — sales tax can be turned on or off per quote
+  // and its percent changed. It always used the Settings rate before (and
+  // 6% when that was 0), with no way to change it on the quote.
+  const [taxOn, setTaxOn] = useState(true);
+  const [taxRateInput, setTaxRateInput] = useState<number | string>(() => defaultTaxRate(settings));
+  const taxRate = taxOn ? Number(taxRateInput) || 0 : 0;
 
   // BUG FIX — "stays stuck on a client, super broken." This reset ran on
   // every change to `customers`, and the app refreshes that list every few
@@ -108,6 +114,13 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
       setVu(e.validUntil || daysFromNow(30));
       setDiscount(Number(e.discount) || 0);
       setDiscounts(Array.isArray(e.discounts) ? e.discounts : []);
+      {
+        const eSub = (Array.isArray(e.lineItems) ? e.lineItems : []).reduce((s2: number, i: any) => s2 + Number(i.quantity) * Number(i.unitPrice), 0) || Number(e.subtotal) || 0;
+        const eBase = Math.max(0, eSub - computeDiscountsTotal(Array.isArray(e.discounts) ? e.discounts : [], eSub) - (Number(e.discount) || 0));
+        const eTax = Number(e.tax) || 0;
+        setTaxOn(eTax > 0);
+        setTaxRateInput(e.taxRate != null ? e.taxRate : eTax > 0 && eBase > 0 ? Math.round(eTax / eBase * 10000) / 100 : defaultTaxRate(settings));
+      }
       setDepositRequired(Number(e.depositRequired) || 0);
       setDepositType(e.depositType === "percent" ? "percent" : "amount");
       setDepositMandatory(!!e.depositMandatory);
@@ -148,6 +161,8 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
       setVu(daysFromNow(30));
       setDiscount(Number(initialDraft?.discount) || 0);
       setDiscounts([]);
+      setTaxOn(true);
+      setTaxRateInput(defaultTaxRate(settings));
       setDepositRequired(Number(initialDraft?.depositRequired) || 0);
       setDepositType((initialDraft as any)?.depositType === "percent" ? "percent" : "amount");
       setDepositMandatory(!!(initialDraft as any)?.depositMandatory);
@@ -173,7 +188,7 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
   // FEATURE 7 — combined total of every stacked discount + the legacy flat field.
   const discountsTotal = computeDiscountsTotal(discounts, sub) + Number(discount);
   const afterDisc = Math.max(0, sub - discountsTotal);
-  const tax = afterDisc * (taxRate / 100);
+  const tax = Math.round(afterDisc * taxRate) / 100;
   const tot = afterDisc + tax;
   // FEATURE 6 — actual deposit dollar figure, whichever mode is selected.
   // A deposit can never be more than the estimate itself.
@@ -669,7 +684,8 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
               <div key={d.id} className="flex justify-between text-green-400"><span>{d.label || "Discount"}{d.type === "percent" ? ` (${d.value}%)` : ""}</span><span>− {fmt(d.type === "percent" ? sub * (Number(d.value) / 100) : Number(d.value))}</span></div>
             ))}
             {Number(discount) > 0 && <div className="flex justify-between text-green-400"><span>Discount</span><span>− {fmt(Number(discount))}</span></div>}
-            <div className="flex justify-between text-white/70"><span>Tax ({taxRate}%)</span><span>{fmt(tax)}</span></div>
+            <SalesTaxControl on={taxOn} rate={taxRateInput} subtotal={afterDisc} showTotals={false} onChange={v => { setTaxOn(v.on); setTaxRateInput(v.rate); }} />
+            {taxOn && <div className="flex justify-between text-white/70"><span>Sales tax ({taxRate}%)</span><span>{fmt(tax)}</span></div>}
             <div className="flex justify-between font-bold text-white text-base pt-2 border-t border-red-900/30"><span>Total</span><span className="text-red-400">{fmt(tot)}</span></div>
             {Number(depositRequired) > 0 && (
               <>

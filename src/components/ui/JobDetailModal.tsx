@@ -1,4 +1,5 @@
 // auto-extracted from Crew Boss OS monolith
+import { jobTaxSplit } from "../../lib/jobWrite";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -609,17 +610,19 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
       // FEATURE 7 — fold this job's manual discounts into the generated
       // invoice, so a discount applied on the job actually reduces what the
       // customer is asked to pay instead of silently being dropped.
-      const jobDiscountTotal = computeDiscountsTotal(job.discounts, Number(job.amount) || 0);
+      // A job's amount includes any sales tax added on it (job.tax).
+      const jobSplit = jobTaxSplit(job);
+      const jobDiscountTotal = computeDiscountsTotal(job.discounts, jobSplit.subtotal);
       const newInv = {
         id: uid(),
         customerId: job.customerId,
-        lineItems: [{ id: uid(), description: job.notes || job.address || "Service", quantity: 1, unitPrice: Number(job.amount) || 0 }],
-        subtotal: Number(job.amount) || 0,
+        lineItems: [{ id: uid(), description: job.notes || job.address || "Service", quantity: 1, unitPrice: jobSplit.subtotal }],
+        subtotal: jobSplit.subtotal,
         discount: jobDiscountTotal,
         discounts: job.discounts || [],
         depositRequired: 0,
-        tax: 0,
-        total: Math.max(0, (Number(job.amount) || 0) - jobDiscountTotal),
+        tax: jobSplit.tax,
+        total: Math.max(0, jobSplit.subtotal - jobDiscountTotal) + jobSplit.tax,
         status: "approved" as const,
         createdAt: today(),
         validUntil: daysFromNow(30),
