@@ -23,8 +23,8 @@ const normalizePhoneDigits = (p?: string | null): string => {
 
 export const onRequestPost = async (context: { request: Request; env: Record<string, string> }) => {
   try {
-    let { sid, token, to, from, body, ownerId, toOwner, kind } = await context.request.json() as {
-      sid?: string; token?: string; to?: string; from?: string; body?: string; ownerId?: string;
+    let { sid, token, to, from, body, ownerId, toOwner, kind, confirm } = await context.request.json() as {
+      sid?: string; token?: string; to?: string; from?: string; body?: string; ownerId?: string; confirm?: boolean;
       // toOwner: text the business owner's own phone (Settings → Your Mobile #),
       // looked up here so a crew member's phone never needs it. kind
       // "arrival" respects Settings → Arrival Texts → "Text me when the crew
@@ -114,15 +114,51 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     }
 
     const formData = new URLSearchParams({ To: to, From: from, Body: body });
-    const twilioRes = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${await twilioAccountSid(sid, token)}/Messages.json`, {
+    const acSid = await twilioAccountSid(sid, token);
+    const basic = `Basic ${btoa(`${sid}:${token}`)}`;
+    // FEATURE (owner report — quote "said sending" but never reached the
+    // customer, with no reason given) — failures now carry Twilio's own
+    // error code, its docs link and the account balance, so the app can say
+    // "Twilio is out of credit" instead of a vague message.
+    const balanceOf = async (): Promise<string | undefined> => {
+      try {
+        const r = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${acSid}/Balance.json`, { headers: { Authorization: basic } });
+        const b: any = await r.json().catch(() => null);
+        return b?.balance != null ? `${b.balance} ${b.currency || ""}`.trim() : undefined;
+      } catch { return undefined; }
+    };
+    const twilioRes = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${acSid}/Messages.json`, {
       method: "POST",
       headers: {
-        Authorization: `Basic ${btoa(`${sid}:${token}`)}`,
+        Authorization: basic,
         "Content-Type": "application/x-www-form-urlencoded",
       },
       body: formData.toString(),
     });
     const data = await twilioRes.json().catch(() => ({} as any));
+    if (twilioRes.ok && confirm && data?.sid) {
+      // Twilio says "queued" first and only fails a text a few seconds
+      // later (unregistered number, carrier block, out of credit). When the
+      // caller asks to confirm (quotes, invoices), check back twice so those
+      // failures are reported instead of showing as sent.
+      let last: any = data;
+      for (const wait of [1500, 2500]) {
+        await new Promise(r => setTimeout(r, wait));
+        const sr = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${acSid}/Messages/${data.sid}.json`, { headers: { Authorization: basic } }).catch(() => null);
+        const s: any = sr ? await sr.json().catch(() => null) : null;
+        if (s?.status) last = s;
+        if (s?.status === "failed" || s?.status === "undelivered" || s?.status === "delivered") break;
+      }
+      if (last.status === "failed" || last.status === "undelivered") {
+        return new Response(JSON.stringify({
+          error: `Twilio accepted the text, then it ${last.status}` + (last.error_message ? `: ${last.error_message}` : ""),
+          code: last.error_code ?? undefined, twilioStatus: last.status, messageSid: data.sid,
+          moreInfo: last.error_code ? `https://www.twilio.com/docs/api/errors/${last.error_code}` : undefined,
+          balance: await balanceOf(),
+        }), { status: 422, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ success: true, sid: data.sid, status: last.status }), { headers: { "Content-Type": "application/json" } });
+    }
     if (!twilioRes.ok) {
       // ITEM 32 — a 404 here almost always means the value saved as the
       // Twilio Account SID isn't actually an Account SID ("AC...") — most
@@ -133,11 +169,15 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       const hint = twilioRes.status === 404 && !sid.startsWith("AC")
         ? ` (this SID starts with "${sid.slice(0, 2)}", but a Twilio Account SID always starts with "AC" — check Settings → Integrations)`
         : "";
-      return new Response(JSON.stringify({ error: (data?.message || `Twilio error ${twilioRes.status}`) + hint }), {
+      return new Response(JSON.stringify({
+        error: (data?.message || `Twilio error ${twilioRes.status}`) + hint,
+        code: data?.code ?? undefined, moreInfo: data?.more_info ?? undefined, httpStatus: twilioRes.status,
+        balance: await balanceOf(),
+      }), {
         status: twilioRes.status, headers: { "Content-Type": "application/json" },
       });
     }
-    return new Response(JSON.stringify({ success: true, sid: data?.sid }), {
+    return new Response(JSON.stringify({ success: true, sid: data?.sid, status: data?.status }), {
       headers: { "Content-Type": "application/json" },
     });
   } catch (e: any) {

@@ -23,6 +23,8 @@ import {
 import { fmt, lineNote, lineNoteHtml, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, describeRecurringSchedule, buildChecklistFromServices, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, escapeHtml, computeDepositAmount } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, emailShell, emailButton, logOutboundSmsToInbox } from "../../lib/messaging";
+import { showSendReport, okResult, failResult, skipResult, type SendResult } from "../../lib/sendReport";
+import { CustomerLinkBox } from "../ui/SendReportHost";
 import { supabase } from "../../lib/supabase";
 import { deleteByIds } from "../../lib/dbBulk";
 import { seedWeather } from "../../lib/weather";
@@ -223,45 +225,51 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
 
   const doSend = async () => {
     if (!sendModalEst) return;
-    const cust = customers.find((c: any) => c.id === sendModalEst.customerId);
-    if (!cust) return;
+    const est = sendModalEst;
+    const cust = customers.find((c: any) => c.id === est.customerId);
+    if (!cust) { toast?.("This quote's customer wasn't found — open the quote and pick a customer.", "error"); return; }
     setSendBusy(true);
+    // FEATURE (owner report — "it said sending and didn't indicate whether it
+    // failed ... it never did send to my customer") — every channel is tried
+    // on its own and reported on its own: a missing email no longer counts
+    // as "sent", a Twilio failure says why (out of credit, unregistered
+    // number...), and the report always carries the customer's link to copy.
+    const results: SendResult[] = [];
+    const smsMsg = buildSendSms(est, cust);
     try {
-      if ((sendChannel === "email" || sendChannel === "both")) {
-        if (!cust.email) { toast?.("No email on file for " + cust.firstName, "error"); }
-        // A hung Gmail fetch with no timeout is exactly what left this button
-        // stuck on "Sending…" forever — same fix as invoice sends (FIX 4).
-        else await withTimeout(sendEmail(settings, { to: cust.email, subject: "Your quote from " + (settings?.companyName || "Crew Boss") + " — " + fmt(sendModalEst.total), body: buildSendHtml(sendModalEst, cust) }), 10000, "Quote email");
-      }
-      if ((sendChannel === "sms" || sendChannel === "both")) {
-        if (!cust.phone) { toast?.("No phone on file for " + cust.firstName, "error"); }
-        else if (settings?.twilioSid) {
-          const smsMsg = buildSendSms(sendModalEst, cust);
-          await withTimeout(twilioSend(settings, cust.phone, smsMsg), 10000, "Quote SMS");
-          logOutboundSmsToInbox({ contactName: `${cust.firstName} ${cust.lastName}`, contactPhone: cust.phone, customerId: cust.id, body: smsMsg }).catch(() => {});
+      if (sendChannel === "email" || sendChannel === "both") {
+        if (!cust.email) results.push(skipResult("email", `No email on file for ${cust.firstName}. Add one on their customer card, or send the link below.`));
+        else {
+          try {
+            const r = await withTimeout(sendEmail(settings, { to: cust.email, subject: "Your quote from " + (settings?.companyName || "Crew Boss") + (hasSelectableOptions(est) ? "" : " — " + fmt(est.total)), body: buildSendHtml(est, cust) }), 25000, "Quote email");
+            results.push(okResult("email", cust.email, r || undefined));
+          } catch (e: any) { console.error("[SendEstimate] email failed:", e?.message || e); results.push(failResult("email", cust.email, e)); }
         }
-        else { window.location.href = "sms:" + cust.phone.replace(/\D/g, "") + "?body=" + encodeURIComponent(buildSendSms(sendModalEst, cust)); }
       }
-      setEstimates((prev: any[]) => prev.map((x: any) => x.id === sendModalEst.id ? { ...x, sentAt: today(), sendChannel, templateId: sendTemplateId || undefined } : x));
-      // AUDIT FIX — was fully silent on failure (both handlers no-ops). The
-      // send itself already succeeded by this point, so this shouldn't read
-      // as "sending failed" — but a dropped sentAt write means the estimate
-      // can keep showing as un-sent with no explanation.
-      (supabase as any).from("estimates").update({ sentAt: today(), sendChannel }).eq("id", sendModalEst.id).select("id").then(
-        (r: any) => { if (!Array.isArray(r?.data) || r.data.length === 0) toast?.("Sent, but this quote may still show as un-sent — the update didn't confirm.", "yellow"); },
-        (e: any) => { console.warn("[SendEstimate] sentAt update failed:", e?.message); toast?.("Sent, but this quote may still show as un-sent.", "yellow"); }
-      );
-      toast?.(`📧 Quote sent to ${cust.firstName} ✓`, "green");
+      if (sendChannel === "sms" || sendChannel === "both") {
+        if (!cust.phone) results.push(skipResult("sms", `No phone on file for ${cust.firstName}. Add one on their customer card, or send the link below.`));
+        else if (!settings?.twilioSid) results.push(skipResult("sms", "Texting isn't set up (no Twilio account in Settings → Integrations). Copy the message below and text it yourself."));
+        else {
+          try {
+            const r = await withTimeout(twilioSend(settings, cust.phone, smsMsg, "sms", { confirm: true }), 30000, "Quote SMS");
+            results.push(okResult("sms", cust.phone, r));
+            if (!r?.testMode) logOutboundSmsToInbox({ contactName: `${cust.firstName} ${cust.lastName}`, contactPhone: cust.phone, customerId: cust.id, body: smsMsg }).catch(() => {});
+          } catch (e: any) { console.error("[SendEstimate] SMS failed:", e?.message || e); results.push(failResult("sms", cust.phone, e)); }
+        }
+      }
+      if (results.some(r => r.ok)) {
+        setEstimates((prev: any[]) => prev.map((x: any) => x.id === est.id ? { ...x, sentAt: today(), sendChannel, templateId: sendTemplateId || undefined } : x));
+        (supabase as any).from("estimates").update({ sentAt: today(), sendChannel }).eq("id", est.id).select("id").then(
+          (r: any) => { if (!Array.isArray(r?.data) || r.data.length === 0) toast?.("Sent, but this quote may still show as un-sent — the update didn't confirm.", "yellow"); },
+          (e: any) => { console.warn("[SendEstimate] sentAt update failed:", e?.message); toast?.("Sent, but this quote may still show as un-sent.", "yellow"); }
+        );
+      }
       setSendModalEst(null);
       setSendPreviewOn(false);
-    } catch (err: any) {
-      console.error("[SendEstimate] — error:", err?.message || err);
-      const msg = err?.message === "Quote email timed out"
-        ? "Send timed out — check your Gmail connection in Settings → Integrations"
-        : /expired|reconnect/i.test(err?.message || "")
-        ? "Google token expired — reconnect in Settings → Integrations"
-        : (err?.message || "Failed to send");
-      toast?.(msg, "error");
+      showSendReport({
+        title: "Send Quote", customerName: `${cust.firstName} ${cust.lastName || ""}`.trim(),
+        link: portalUrlFor(est.id), linkLabel: "Quote link", shareText: smsMsg, results,
+      });
     } finally {
       setSendBusy(false);
     }
@@ -505,11 +513,11 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
           {selected.length > 0 && <>
             <GBtn variant="ghost" onClick={downloadSelectedCsv} className="!text-xs"><Download size={12} className="inline mr-1" />Download ({selected.length})</GBtn>
             <GBtn variant="ghost" onClick={async () => {
-              let sent = 0;
+              let sent = 0; const bulk: SendResult[] = [];
               for (const id of selected) {
                 const est = estimates.find(x => x.id === id);
                 const c = est && customers.find(x => x.id === est.customerId);
-                if (!c?.phone || !settings?.twilioSid) continue;
+                if (!c?.phone || !settings?.twilioSid) { bulk.push(skipResult("sms", `${c ? c.firstName + " " + (c.lastName || "") : "Unknown customer"}: ${!settings?.twilioSid ? "texting isn't set up in Settings → Integrations" : "no phone on file"}.`)); continue; }
                 // BUG FIX (round 13) — this pointed to a hardcoded fake
                 // "smocks.com" domain that doesn't route anywhere real for
                 // any deployment; every other send path uses portalUrlFor()
@@ -517,20 +525,25 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
                 // amount-hiding rule as buildSendSms for options/package
                 // estimates.
                 const msg = buildSendSms(est, c);
-                await twilioSend(settings, c.phone, msg).then(() => {
+                // Failures used to be swallowed and still counted as sent.
+                try {
+                  const r = await withTimeout(twilioSend(settings, c.phone, msg, "sms", { confirm: true }), 30000, "Quote SMS");
+                  bulk.push({ ...okResult("sms", `${c.firstName} ${c.lastName || ""} · ${c.phone}`, r), details: "Quote link: " + portalUrlFor(est.id) });
+                  if (r?.testMode) continue;
                   logOutboundSmsToInbox({ contactName: `${c.firstName} ${c.lastName}`, contactPhone: c.phone, customerId: c.id, body: msg }).catch(() => {});
-                }).catch(() => {});
+                } catch (e: any) { const f = failResult("sms", `${c.firstName} ${c.lastName || ""} · ${c.phone}`, e); bulk.push({ ...f, details: f.details + "\nQuote link: " + portalUrlFor(est.id) }); continue; }
                 setEstimates(prev => prev.map(e => e.id === id ? { ...e, sentAt: today() } : e));
+                (supabase as any).from("estimates").update({ sentAt: today() }).eq("id", id).then(() => {}, () => {});
                 sent++;
               }
-              toast("SMS sent to " + sent + " customers ✓");
+              showSendReport({ title: `Text quotes — ${sent} of ${selected.length} sent`, results: bulk });
             }} className="!text-xs"><MessageSquare size={12} className="inline mr-1" />SMS ({selected.length})</GBtn>
             <GBtn variant="ghost" onClick={async () => {
-              let sent = 0;
+              let sent = 0; const bulk: SendResult[] = [];
               for (const id of selected) {
                 const est = estimates.find(x => x.id === id);
                 const c = est && customers.find(x => x.id === est.customerId);
-                if (!c?.email) continue;
+                if (!c?.email) { bulk.push(skipResult("email", `${c ? c.firstName + " " + (c.lastName || "") : "Unknown customer"}: no email on file.`)); continue; }
                 const estCoName = (settings as any)?.companyName || "Crew Boss";
                 const estCoPhone = (settings as any)?.companyPhone || "";
                 // BUG FIX (round 13) — same broken "smocks.com" domain + fixed-
@@ -541,11 +554,16 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
                   ? `Your ${est.estimateType === "package" ? "packages" : "service options"} are ready to review and sign.`
                   : `Your quote of <strong>${fmt(est.total)}</strong> is ready to review and sign.`;
                 const estHtml = emailShell(settings as any, "Your Quote", `<p>Hi ${c.firstName},</p><p>${priceLine}</p><p>Questions? Call ${estCoPhone}.</p>` + emailButton("View & Sign Quote", portalUrlFor(est.id)));
-                await sendEmail(settings, { to: c.email, subject: "Your quote from " + estCoName + (hasSelectableOptions(est) ? "" : " — " + fmt(est.total)), body: estHtml }).catch(() => {});
+                try {
+                  const r = await withTimeout(sendEmail(settings, { to: c.email, subject: "Your quote from " + estCoName + (hasSelectableOptions(est) ? "" : " — " + fmt(est.total)), body: estHtml }), 25000, "Quote email");
+                  bulk.push({ ...okResult("email", `${c.firstName} ${c.lastName || ""} · ${c.email}`, r || undefined), details: "Quote link: " + portalUrlFor(est.id) });
+                  if (r?.testMode) continue;
+                } catch (e: any) { const f = failResult("email", `${c.firstName} ${c.lastName || ""} · ${c.email}`, e); bulk.push({ ...f, details: f.details + "\nQuote link: " + portalUrlFor(est.id) }); continue; }
                 setEstimates(prev => prev.map(e => e.id === id ? { ...e, sentAt: today() } : e));
+                (supabase as any).from("estimates").update({ sentAt: today() }).eq("id", id).then(() => {}, () => {});
                 sent++;
               }
-              toast("Email sent to " + sent + " customers ✓");
+              showSendReport({ title: `Email quotes — ${sent} of ${selected.length} sent`, results: bulk });
             }} className="!text-xs"><Mail size={12} className="inline mr-1" />Email ({selected.length})</GBtn>
             <GBtn variant="danger" onClick={bulkDelete} className="!text-xs"><Trash2 size={12} className="inline mr-1" />Delete</GBtn>
           </>}
@@ -784,9 +802,11 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
                 </div>
               )}
 
+              <CustomerLinkBox link={portalUrlFor(sendModalEst.id)} label="Quote link" shareText={cust ? buildSendSms(sendModalEst, cust) : undefined} />
+
               <div className="flex gap-2 justify-end pt-2 border-t border-white/10">
                 <GBtn variant="ghost" onClick={() => setSendModalEst(null)}>Cancel</GBtn>
-                <GBtn onClick={doSend} disabled={sendBusy}><Send size={13} className="inline mr-1" />{sendBusy ? "Sending…" : "Send"}</GBtn>
+                <GBtn data-send-quote onClick={doSend} disabled={sendBusy}><Send size={13} className="inline mr-1" />{sendBusy ? (sendChannel === "email" ? "Sending email…" : "Sending… (checking with Twilio)") : "Send"}</GBtn>
               </div>
             </div>
           );

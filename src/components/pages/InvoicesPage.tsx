@@ -26,6 +26,7 @@ import {
 import { fmt, lineNote, lineNoteHtml, uid, today, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout } from "../../lib/utils";
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, emailShell, logOutboundSmsToInbox } from "../../lib/messaging";
+import { showSendReport, okResult, failResult } from "../../lib/sendReport";
 import { sendPushNotification } from "../../lib/push";
 import { seedWeather } from "../../lib/weather";
 import { seedCustomers, seedEstimates, seedJobs, seedEmployees, seedVehicles, seedExpenses, seedChemicals, seedServices, seedAutomations, seedEmailTemplates, seedSmsTemplates, seedRewardTiers, seedReferrals, seedMaintenance, campaignTemplates, seedSocialPosts, seedTimeline, seedGoals, seedReminders, seedAccountabilityEntries, seedMileage, seedLeadSrc, STEP_TYPES, AUTOMATION_TEMPLATES } from "../../lib/seed";
@@ -167,7 +168,17 @@ export function InvoicesPage({ services = [] as any[], estimates = [], setEstima
       const payLink = `${window.location.origin}${window.location.pathname}#/estimate/${newInv.id}`;
       const html = bodyHtml + `<div style="text-align:center;margin:22px 0 4px"><a href="${payLink}" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:13px 30px;border-radius:10px">View & Pay Invoice</a></div>`;
       console.log("[SendInvoice] sending via Gmail to", cust.email);
-      await withTimeout(sendEmail(settings as any, { to: cust.email, subject, body: html }), 10000, "Invoice email");
+      // FEATURE (owner report) — a failed email now opens the send report
+      // with the reason and the invoice's pay link to copy, instead of a
+      // short toast; the invoice itself is already saved, so the link works.
+      const invShare = `Hi ${cust.firstName}! Your invoice for ${fmt(newInv.total)} from ${(settings as any)?.companyName || "Crew Boss"} is ready: ${payLink}`;
+      let emailRes;
+      try { emailRes = okResult("email", cust.email, (await withTimeout(sendEmail(settings as any, { to: cust.email, subject, body: html }), 25000, "Invoice email")) || undefined); }
+      catch (err: any) {
+        console.error("[SendInvoice] email failed:", err?.message || err);
+        showSendReport({ title: "Send Invoice", customerName: `${cust.firstName} ${cust.lastName || ""}`.trim(), link: payLink, linkLabel: "Invoice link", shareText: invShare, results: [failResult("email", cust.email, err)] });
+        return;
+      }
       console.log("[SendInvoice] Gmail send resolved ✓");
       const jobPatch = { invoiceSentAt: today(), paymentType: "Invoice", paymentStatus: job.paymentStatus === "Paid" ? job.paymentStatus : "Pending" };
       setJobs((prev: any[]) => prev.map(j => j.id === job.id ? { ...j, ...jobPatch } : j));
@@ -177,7 +188,7 @@ export function InvoicesPage({ services = [] as any[], estimates = [], setEstima
           else if (!r?.data || r.data.length === 0) console.error("[SendInvoice] job patch (invoiceSentAt) matched 0 rows");
         })
         .catch((e: any) => console.error("[SendInvoice] job patch (invoiceSentAt) threw:", e?.message));
-      toast?.(`Invoice sent to ${cust.firstName} ✓`, "green");
+      showSendReport({ title: "Send Invoice", customerName: `${cust.firstName} ${cust.lastName || ""}`.trim(), link: payLink, linkLabel: "Invoice link", shareText: invShare, results: [emailRes] });
       setPreviewInvoiceJob(null);
     } catch (e: any) {
       console.error("[SendInvoice] sendInvoiceForJob — error:", e?.message || e);
@@ -910,7 +921,7 @@ export function InvoicesPage({ services = [] as any[], estimates = [], setEstima
                   const cv = customers.find(x => x.id === viewing?.customerId);
                   if (!cv?.phone) { toast("No phone for this customer"); return; }
                   const msg2 = "Hi " + cv.firstName + "! Your invoice for " + fmt(viewing.total) + " from Crew Boss is ready: " + portalUrlFor(viewing.id);
-                  if (settings?.twilioSid) twilioSend(settings, cv.phone, msg2).then(() => { logOutboundSmsToInbox({ contactName: `${cv.firstName} ${cv.lastName}`, contactPhone: cv.phone, customerId: cv.id, body: msg2 }).catch(() => {}); toast("Link sent ✓"); }).catch(e => toast(e.message, "error"));
+                  if (settings?.twilioSid) { const rep = (results: any[]) => showSendReport({ title: "Text Invoice Link", customerName: `${cv.firstName} ${cv.lastName || ""}`.trim(), link: portalUrlFor(viewing.id), linkLabel: "Invoice link", shareText: msg2, results }); toast("Sending text… (checking with Twilio)", "yellow"); withTimeout(twilioSend(settings, cv.phone, msg2, "sms", { confirm: true }), 30000, "Invoice SMS").then(r => { if (!r?.testMode) logOutboundSmsToInbox({ contactName: `${cv.firstName} ${cv.lastName}`, contactPhone: cv.phone, customerId: cv.id, body: msg2 }).catch(() => {}); rep([okResult("sms", cv.phone, r)]); }).catch(e => rep([failResult("sms", cv.phone, e)])); }
                   else window.location.href = "sms:" + cv.phone.replace(/\D/g,"") + "?body=" + encodeURIComponent(msg2);
                 }} className="!text-xs"><Send size={11} className="inline mr-1" />Text Link</GBtn>
                 <GBtn variant="ghost" onClick={() => {

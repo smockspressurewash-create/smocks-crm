@@ -278,14 +278,15 @@ export const twilioSend = async (
   settings: TwilioSettings,
   to: string,
   body: string,
-  channel: "sms" | "whatsapp" = "sms"
-): Promise<void> => {
+  channel: "sms" | "whatsapp" = "sms",
+  opts?: { confirm?: boolean }
+): Promise<SmsSendInfo> => {
   if (channel === "sms" && isPhoneOptedOut(to)) {
-    throw new Error("This contact has opted out of text messages (replied STOP) — SMS blocked.");
+    throw new SendError("This contact has opted out of text messages (replied STOP) — SMS blocked.", { code: 21610 });
   }
   if (isTestModeBlockedPhone(to)) {
     console.log("[TestMode] SMS to test client blocked — would have sent:", body);
-    return;
+    return { testMode: true };
   }
   const { twilioSid, twilioToken, twilioBackendUrl } = settings;
   const twilioPhone = settings.twilioFrom || settings.twilioPhone;
@@ -317,7 +318,7 @@ export const twilioSend = async (
     // ownerId (see setCurrentOwnerIdForSms above) lets the server re-check
     // opt-out status itself instead of trusting this browser-side check as
     // the only line of defense.
-    : { sid: twilioSid, token: twilioToken, to: toNum, from, body, ownerId: currentOwnerIdForSms };
+    : { sid: twilioSid, token: twilioToken, to: toNum, from, body, ownerId: currentOwnerIdForSms, confirm: !!opts?.confirm };
   // SECURITY FIX (audit finding) — /api/twilio-send had no auth check at
   // all: anyone who obtained an ownerId (several public endpoints return
   // one) could POST directly to it and send SMS through that business's
@@ -351,17 +352,36 @@ export const twilioSend = async (
       } catch { /* fall through — server will reject with no valid session */ }
     }
   }
-  const res = await fetch(endpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
-    body: JSON.stringify(payload),
-  });
+  let res: Response;
+  try {
+    res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
+      body: JSON.stringify(payload),
+    });
+  } catch (e: any) {
+    throw new SendError("Couldn't reach the CrewBoss text server — " + (e?.message || "network error"), { endpoint, to: toNum, from: fromE164 });
+  }
   const data = await res.json().catch(() => ({} as any));
   if (!res.ok) {
     console.error("[Twilio] send failed:", data?.error || res.status);
-    throw new Error(data?.error || `Twilio error ${res.status}`);
+    throw new SendError(data?.error || `Twilio error ${res.status}`, {
+      httpStatus: res.status, code: data?.code, moreInfo: data?.moreInfo, twilioStatus: data?.twilioStatus,
+      balance: data?.balance, messageSid: data?.messageSid, to: toNum, from: fromE164,
+      signedIn: !!accessToken || !!twilioBackendUrl,
+    });
   }
+  return { sid: data?.sid, status: data?.status };
 };
+
+export interface SmsSendInfo { sid?: string; status?: string; testMode?: boolean }
+
+// An error from a text or email send, with the raw facts behind it (Twilio
+// error code, HTTP status, balance...) kept for the "Full details" view.
+export class SendError extends Error {
+  info: Record<string, any>;
+  constructor(message: string, info: Record<string, any> = {}) { super(message); this.name = "SendError"; this.info = info; }
+}
 
 // Texts the business owner's own phone, from any signed-in device (a crew
 // member's phone doesn't have the owner's number or Twilio details — the
@@ -788,10 +808,10 @@ export const sendViaGmail = async (
   subject: string,
   html: string,
   opts?: { refreshToken?: string; tokenExpiresAt?: number; backendUrl?: string; onTokenRefreshed?: (token: string, expiresAt: number) => void; fromName?: string }
-): Promise<void> => {
+): Promise<{ testMode?: boolean }> => {
   if (isTestModeBlockedEmail(to)) {
     console.log("[TestMode] Email to test client blocked — would have sent:", subject);
-    return;
+    return { testMode: true };
   }
   let activeToken = googleProviderToken;
 
@@ -883,9 +903,10 @@ export const sendViaGmail = async (
     gmailRefreshFailureStreak = 0;
   }
   if (!res.ok) {
-    const err = await res.json().catch(() => ({})) as { error?: { message?: string } };
-    throw new Error(err.error?.message ?? `Gmail API error ${res.status}`);
+    const err = await res.json().catch(() => ({})) as { error?: { message?: string; status?: string; errors?: any[] } };
+    throw new SendError(err.error?.message ?? `Gmail API error ${res.status}`, { httpStatus: res.status, googleStatus: err.error?.status, reason: err.error?.errors?.[0]?.reason, to });
   }
+  return {};
 };
 
 // Gmail-only send — no Resend fallback, ever. Used by flows that must never
@@ -897,7 +918,7 @@ export const sendOwnerGmailOnly = async (
   to: string,
   subject: string,
   html: string
-): Promise<void> => {
+): Promise<{ testMode?: boolean }> => {
   // GoogleConnect ask #3 — settings.googleProviderToken is fed by React
   // state (App.tsx's applyGoogleIdentity / the app_settings cross-device
   // sync), which several rounds of testing showed can lag or race behind the
@@ -950,7 +971,7 @@ export const sendOwnerGmailOnly = async (
   if (!providerToken) {
     throw new Error("Gmail not connected — connect Google in Settings → Integrations to send email.");
   }
-  await sendViaGmail(providerToken, email || settings.googleEmail || "", to, subject, html, {
+  return await sendViaGmail(providerToken, email || settings.googleEmail || "", to, subject, html, {
     refreshToken,
     tokenExpiresAt,
     backendUrl: settings.googleBackendUrl,
@@ -975,7 +996,7 @@ export const sendEmail = async (
   toOrOpts: string | { to: string; subject: string; body: string; [key: string]: any },
   subject?: string,
   html?: string
-): Promise<void> => {
+): Promise<{ testMode?: boolean }> => {
   // Support both positional args and object form
   let to: string;
   let subj: string;
@@ -1020,7 +1041,7 @@ export const sendEmail = async (
   if (!providerToken) {
     throw new Error("Gmail not connected — connect Google in Settings → Integrations to send email.");
   }
-  await sendViaGmail(providerToken, email || settings.googleEmail || "", to, subj, body, {
+  return await sendViaGmail(providerToken, email || settings.googleEmail || "", to, subj, body, {
     refreshToken,
     tokenExpiresAt,
     backendUrl: settings.googleBackendUrl,

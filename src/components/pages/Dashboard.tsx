@@ -59,6 +59,7 @@ const DASH_POST_DEFAULTS = [
 ];
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendOwnerGmailOnly, logOutboundSmsToInbox, emailShell } from "../../lib/messaging";
+import { showSendReport, okResult, failResult } from "../../lib/sendReport";
 
 import { callModel, MODELS } from "../../lib/api";
 import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent, fetchDriveFiles, MOCK_GOOGLE_DATA, fmtSize, fmtDate, fileIcon } from "../../lib/google";
@@ -231,7 +232,17 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
       // (lib/messaging.ts) already auto-refreshes the Google session on a 401
       // and retries once before giving up.
       console.log("[SendInvoice] sending via Gmail to", cust.email);
-      await withTimeout(sendOwnerGmailOnly(settings as any, cust.email, subject, html), 10000, "Invoice email");
+      // FEATURE (owner report) — a failed email now opens the send report
+      // with the reason and the invoice's pay link to copy, instead of a
+      // short toast; the invoice itself is already saved, so the link works.
+      const invShare = `Hi ${cust.firstName}! Your invoice for ${fmt(newInv.total)} from ${(settings as any)?.companyName || "Crew Boss"} is ready: ${payLink}`;
+      let emailRes;
+      try { emailRes = okResult("email", cust.email, (await withTimeout(sendOwnerGmailOnly(settings as any, cust.email, subject, html), 25000, "Invoice email")) || undefined); }
+      catch (err: any) {
+        console.error("[SendInvoice] email failed:", err?.message || err);
+        showSendReport({ title: "Send Invoice", customerName: `${cust.firstName} ${cust.lastName || ""}`.trim(), link: payLink, linkLabel: "Invoice link", shareText: invShare, results: [failResult("email", cust.email, err)] });
+        return;
+      }
       console.log("[SendInvoice] Gmail send resolved ✓");
       const jobPatch = { invoiceSentAt: today(), paymentType: "Invoice", paymentStatus: job.paymentStatus === "Paid" ? job.paymentStatus : "Pending" };
       setJobs((prev: any[]) => prev.map((j: any) => j.id === job.id ? { ...j, ...jobPatch } : j));
@@ -247,7 +258,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
           if (!Array.isArray(r?.data) || r.data.length === 0) { console.error("[SendInvoice] job patch matched 0 rows"); toast?.("Invoice sent, but this job may still show as needing an invoice — the update didn't confirm.", "yellow"); }
         })
         .catch((e: any) => { console.error("[SendInvoice] job patch (invoiceSentAt) threw:", e?.message); toast?.("Invoice sent, but this job may still show as needing an invoice.", "yellow"); });
-      toast?.(`📧 Invoice sent to ${cust.firstName} ✓`, "green");
+      showSendReport({ title: "Send Invoice", customerName: `${cust.firstName} ${cust.lastName || ""}`.trim(), link: payLink, linkLabel: "Invoice link", shareText: invShare, results: [emailRes] });
       setPreviewInvoiceJob(null);
     } catch (e: any) {
       console.error("[SendInvoice] — error:", e?.message || e);

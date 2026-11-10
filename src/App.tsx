@@ -36,6 +36,7 @@ import { CockpitPage } from "./components/pages/CockpitPage";
 import { FeedbackPage } from "./components/pages/FeedbackPage";
 import { CustomersPage } from "./components/pages/CustomersPage";
 import { CustomerModal } from "./components/ui/CustomerModal";
+import { SendReportHost } from "./components/ui/SendReportHost";
 import { SopModal } from "./components/ui/SopModal";
 import { EstimatesPage } from "./components/pages/EstimatesPage";
 import { InvoicesPage } from "./components/pages/InvoicesPage";
@@ -5283,6 +5284,7 @@ export function App() {
           refetchEmployees={refetchEmployees}
           weatherData={weatherData}
         />
+        <SendReportHost />
         <div className="fixed bottom-20 left-4 right-4 md:bottom-4 md:right-auto z-[500] space-y-2 pointer-events-none">
           {toasts.map(t => (
             <div key={t.id} className={"pointer-events-auto flex items-center gap-2.5 px-4 py-3 rounded-xl shadow-xl text-sm font-medium backdrop-blur animate-fade-in border " + (t.tone === "red" ? "bg-red-950/90 border-red-700/50 text-red-200" : t.tone === "yellow" ? "bg-yellow-950/90 border-yellow-700/50 text-yellow-200" : "bg-black/90 border-green-700/50 text-green-200")}>
@@ -6737,6 +6739,7 @@ export function App() {
           including the "add an API key" warning and any real error, was
           completely covered and invisible. z-[500] keeps toasts above
           every other overlay in the app, video editor included. */}
+      <SendReportHost />
       <div className="fixed bottom-20 left-4 right-4 md:bottom-4 md:right-auto z-[500] space-y-2 pointer-events-none">
         {toasts.map(t => (
           <div key={t.id} className={"pointer-events-auto flex items-center gap-2.5 px-4 py-3 rounded-xl shadow-xl text-sm font-medium backdrop-blur animate-fade-in border " + (t.tone === "red" ? "bg-red-950/90 border-red-700/50 text-red-200" : t.tone === "yellow" ? "bg-yellow-950/90 border-yellow-700/50 text-yellow-200" : "bg-black/90 border-green-700/50 text-green-200")}>
