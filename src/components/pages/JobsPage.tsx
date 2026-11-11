@@ -83,8 +83,8 @@ import { ServiceCatalogSection } from "../ui/ServiceCatalogSection";
 import { TemplateEditor } from "../ui/TemplateEditor";
 import { AIModelsSection } from "../ui/AIModelsSection";
 import { ChemicalModal } from "../ui/ChemicalModal";
-import { SalesTaxControl, defaultTaxRate } from "../ui/SalesTaxControl";
-import { tolerantJobWrite, taxOf } from "../../lib/jobWrite";
+import { SalesTaxControl, defaultTaxRate, defaultTaxOn, TaxSplitNote } from "../ui/SalesTaxControl";
+import { jobTaxSplit, tolerantJobWrite, taxOf } from "../../lib/jobWrite";
 import { WeeklyBusinessReview } from "../ui/WeeklyBusinessReview";
 import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 
@@ -668,7 +668,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
               <div className="flex-1 min-w-0 pb-2">
                 <div className="flex items-center justify-between">
                   <div className="font-semibold text-sm">{c?.firstName} {c?.lastName}</div>
-                  <div className="text-xs text-red-400 font-semibold">{fmt(j.amount)}</div>
+                  <div className="text-right"><div className="text-xs text-red-400 font-semibold">{fmt(j.amount)}</div><TaxSplitNote {...jobTaxSplit(j)} rate={(j as any).taxRate} /></div>
                 </div>
                 <div className="text-[11px] text-white/60 truncate">{j.address}</div>
                 <div className="flex gap-2 mt-1 flex-wrap">
@@ -788,7 +788,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
             );
           })()}
           {/* FEATURE (owner request) — add sales tax to a job / work order. */}
-          <SalesTaxControl on={!!(newJobForm as any).taxOn} rate={(newJobForm as any).taxRate ?? defaultTaxRate(settings)} subtotal={parseFloat(newJobForm.amount) || 0}
+          <SalesTaxControl on={(newJobForm as any).taxOn ?? defaultTaxOn(settings)} rate={(newJobForm as any).taxRate ?? defaultTaxRate(settings)} subtotal={parseFloat(newJobForm.amount) || 0}
             onChange={v => setNewJobForm(f => ({ ...f, taxOn: v.on, taxRate: v.rate } as any))} />
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -1078,7 +1078,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 address: newJobForm.address || customers.find(c => c.id === newJobForm.customerId)?.address || "",
                 ...(typeof newJobForm.lat === "number" && typeof newJobForm.lng === "number" ? { lat: newJobForm.lat, lng: newJobForm.lng } : {}),
                 // amount is what the customer pays — sales tax included.
-                ...(() => { const sub = parseFloat(newJobForm.amount) || 0; const on = !!(newJobForm as any).taxOn; const rate = Number((newJobForm as any).taxRate ?? defaultTaxRate(settings)) || 0; const tax = on ? taxOf(sub, rate) : 0; return { amount: Math.round((sub + tax) * 100) / 100, ...(on ? { tax, taxRate: rate } : {}) }; })(),
+                ...(() => { const sub = parseFloat(newJobForm.amount) || 0; const on = (newJobForm as any).taxOn ?? defaultTaxOn(settings); const rate = Number((newJobForm as any).taxRate ?? defaultTaxRate(settings)) || 0; const tax = on ? taxOf(sub, rate) : 0; return { amount: Math.round((sub + tax) * 100) / 100, ...(on ? { tax, taxRate: rate } : {}) }; })(),
                 status: "scheduled" as const,
                 scheduledDate: newJobForm.scheduledDate,
                 scheduledTime: newJobForm.scheduledTime,
@@ -1567,6 +1567,7 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 </div>
                 <div className="text-right flex-shrink-0">
                   <div className="text-lg font-bold text-red-400">{fmt(j.amount)}</div>
+                  <TaxSplitNote {...jobTaxSplit(j)} rate={(j as any).taxRate} />
                   {j.scheduledDate ? <div className="text-xs text-white/50">{j.scheduledDate}</div> : <div className="text-[10px] px-2 py-0.5 rounded-full bg-amber-900/40 border border-amber-600/50 text-amber-300 font-medium inline-block mt-0.5">Needs Scheduling</div>}
                   {j.isCash && <div className="text-[10px] text-green-400 font-semibold mt-0.5">💵 Cash</div>}
                   {jobMargin !== null && <div className={"text-[10px] font-semibold mt-0.5 " + (jobMargin >= 60 ? "text-green-400" : jobMargin >= 40 ? "text-yellow-400" : "text-red-400")}>{jobMargin}% margin</div>}

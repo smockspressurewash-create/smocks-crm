@@ -19,7 +19,7 @@ import { GInput } from "./GInput";
 import { GDate } from "./GDate";
 import { GTxt } from "./GTxt";
 import { CustomerPicker } from "./CustomerPicker";
-import { SalesTaxControl, defaultTaxRate } from "./SalesTaxControl";
+import { SalesTaxControl, defaultTaxRate, defaultTaxOn, TaxSplitNote } from "./SalesTaxControl";
 import { jobTaxSplit, taxOf } from "../../lib/jobWrite";
 import { JobLinesEditor, PhotoReqsEditor, TextListEditor, WorkOrderTypePicker, applyWorkOrderType, jobLinesTotal, cleanLines, cleanReqs, type JobLine, type PhotoReq } from "./WorkOrderFields";
 
@@ -37,7 +37,7 @@ const fromJob = (j: any, settings?: any): Draft => ({
   lineItems: j?.lineItems || [], equipment: j?.equipment || [], photoRequirements: j?.photoRequirements || [], checklist: [],
   notes: j?.notes || "", requiresManagerSignoff: !!j?.requiresManagerSignoff, isNightJob: !!j?.isNightJob,
   amount: j?.amount ? String(jobTaxSplit(j).subtotal) : "",
-  taxOn: Number(j?.tax) > 0, taxRate: j?.taxRate != null && j?.taxRate !== "" ? j.taxRate : defaultTaxRate(settings),
+  taxOn: j ? Number(j?.tax) > 0 : defaultTaxOn(settings), taxRate: j?.taxRate != null && j?.taxRate !== "" ? j.taxRate : defaultTaxRate(settings),
 });
 
 export function WorkOrderEditor({
@@ -103,7 +103,7 @@ export function WorkOrderEditor({
         <div className="p-3 rounded-xl border border-purple-700/30 bg-purple-950/10 space-y-2.5">
           <div className="flex items-center justify-between gap-2">
             <div className="text-sm font-semibold text-white">Line items</div>
-            {cleanLines(d.lineItems).length > 0 && <div className="text-sm text-white/80" data-wo-total>Total <b>{fmt(linesTotal + taxAmt)}</b></div>}
+            {subTotal > 0 && <div className="text-right"><div className="text-sm text-white/80" data-wo-total>Total <b>{fmt(subTotal + taxAmt)}</b></div><TaxSplitNote subtotal={subTotal} tax={taxAmt} rate={d.taxOn ? d.taxRate : null} always /></div>}
           </div>
           <WorkOrderTypePicker types={settings?.workOrderTypes || []} onPick={t => setD(x => ({ ...x, ...applyWorkOrderType(x, t) }))} />
           <JobLinesEditor lines={d.lineItems} services={services} setServices={setServices} onChange={lineItems => upd({ lineItems })} />

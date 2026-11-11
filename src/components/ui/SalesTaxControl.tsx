@@ -11,6 +11,18 @@ import { fmt } from "../../lib/utils";
 import { taxOf } from "../../lib/jobWrite";
 
 export const defaultTaxRate = (settings: any) => { const r = Number(settings?.taxRate); return r > 0 ? r : 6; };
+// New quotes, work orders, jobs and invoices start with sales tax ticked
+// (owner request: "sales tax still isn't calculating in work orders").
+export const defaultTaxOn = (_settings: any) => true;
+
+// "Before tax $X · Sales tax (6%) $Y" under a total, so both numbers show on
+// cards and detail views. With no tax it says so only when `always` is set.
+export function TaxSplitNote({ subtotal, tax, rate, always = false, className = "" }: { subtotal: number; tax: number; rate?: number | string | null; always?: boolean; className?: string }) {
+  const t = Number(tax) || 0, sub = Number(subtotal) || 0;
+  if (t <= 0) return always ? <div data-tax-split className={"text-[10px] text-white/40 " + className}>Before tax {fmt(sub)} · no sales tax</div> : null;
+  const r = Number(rate) > 0 ? Number(rate) : sub > 0 ? Math.round(t / sub * 10000) / 100 : 0;
+  return <div data-tax-split className={"text-[10px] text-white/50 " + className}>Before tax {fmt(sub)} · Sales tax{r ? ` (${r}%)` : ""} {fmt(t)}</div>;
+}
 
 export function SalesTaxControl({ on, rate, onChange, subtotal, showTotals = true }: {
   on: boolean; rate: number | string; onChange: (v: { on: boolean; rate: number | string }) => void; subtotal: number; showTotals?: boolean;
@@ -33,7 +45,7 @@ export function SalesTaxControl({ on, rate, onChange, subtotal, showTotals = tru
       </div>
       {showTotals && (
         <div className="text-xs space-y-0.5 pt-1 border-t border-white/5">
-          <div className="flex justify-between text-white/60"><span>Subtotal</span><span>{fmt(subtotal)}</span></div>
+          <div className="flex justify-between text-white/60"><span>Before tax</span><span data-tax-subtotal>{fmt(subtotal)}</span></div>
           {on && <div className="flex justify-between text-white/60" data-tax-amount><span>Sales tax ({Number(rate) || 0}%)</span><span>{fmt(tax)}</span></div>}
           <div className="flex justify-between text-white font-bold text-sm"><span>Total</span><span data-tax-total>{fmt(subtotal + tax)}</span></div>
         </div>

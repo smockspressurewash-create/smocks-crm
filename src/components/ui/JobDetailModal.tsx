@@ -1,4 +1,5 @@
 // auto-extracted from Crew Boss OS monolith
+import { TaxSplitNote } from "./SalesTaxControl";
 import { jobTaxSplit } from "../../lib/jobWrite";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -1275,6 +1276,9 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
                 </div>
               ) : <div className="text-lg font-bold text-green-400 flex-shrink-0">{fmt(job.amount)}</div>;
             })()}
+          </div>
+          <div className="flex justify-end -mt-1">
+            <TaxSplitNote {...jobTaxSplit(job)} rate={(job as any).taxRate} always />
           </div>
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-white/60">
             {c?.phone && (

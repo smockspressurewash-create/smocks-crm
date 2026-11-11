@@ -1,4 +1,5 @@
 // auto-extracted from Crew Boss OS monolith
+import { TaxSplitNote } from "../ui/SalesTaxControl";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -624,6 +625,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
                 </div>
               </div>
               <div className="text-2xl font-bold cursor-pointer" onClick={() => openPreview(e)}>{fmt(e.total)}</div>
+              <TaxSplitNote subtotal={Math.max(0, (Number(e.subtotal) || 0) - (Number(e.discount) || 0))} tax={Number(e.tax) || 0} always className="!text-[11px]" />
               <div className="text-xs text-white/50 mt-1 space-y-0.5">
                 <div>{e.lineItems.length} items · {e.createdAt}</div>
                 {e.discount > 0 && <div className="text-green-400">Discount: {fmt(e.discount)}</div>}

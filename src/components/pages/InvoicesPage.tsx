@@ -1,6 +1,6 @@
 // auto-extracted from Crew Boss OS monolith
 import { jobTaxSplit, taxOf } from "../../lib/jobWrite";
-import { SalesTaxControl, defaultTaxRate } from "../ui/SalesTaxControl";
+import { SalesTaxControl, defaultTaxRate, defaultTaxOn } from "../ui/SalesTaxControl";
 import { ServiceMultiPicker } from "../ui/ServiceMultiPicker";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
@@ -206,7 +206,7 @@ export function InvoicesPage({ services = [] as any[], estimates = [], setEstima
   const [newInvForm, setNewInvForm] = useState<{ customerId: string; title: string; items: { id: string; description: string; quantity: number; unitPrice: number }[] }>({ customerId: "", title: "", items: [{ id: uid(), description: "", quantity: 1, unitPrice: 0 }] });
   const newInvTotal = newInvForm.items.reduce((s, it) => s + (Number(it.quantity) || 0) * (Number(it.unitPrice) || 0), 0);
   // FEATURE (owner request) — sales tax on a new invoice.
-  const [invTaxOn, setInvTaxOn] = useState(false);
+  const [invTaxOn, setInvTaxOn] = useState(() => defaultTaxOn(settings));
   const [invTaxRate, setInvTaxRate] = useState<number | string>(() => defaultTaxRate(settings));
   const newInvTax = invTaxOn ? taxOf(newInvTotal, Number(invTaxRate)) : 0;
   // BUG FIX — "overdue invoices keep coming back / not staying deleted."
@@ -1153,7 +1153,7 @@ export function InvoicesPage({ services = [] as any[], estimates = [], setEstima
             <button onClick={() => setNewInvForm(f => ({ ...f, items: [...f.items, { id: uid(), description: "", quantity: 1, unitPrice: 0 }] }))} className="mt-2 text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1"><Plus size={12} />Add line item</button>
           </div>
           <SalesTaxControl on={invTaxOn} rate={invTaxRate} subtotal={newInvTotal} showTotals={false} onChange={v => { setInvTaxOn(v.on); setInvTaxRate(v.rate); }} />
-          {invTaxOn && <div className="flex justify-between text-xs text-white/60"><span>Subtotal {fmt(newInvTotal)} + sales tax ({Number(invTaxRate) || 0}%)</span><span>{fmt(newInvTax)}</span></div>}
+          {invTaxOn && <div className="flex justify-between text-xs text-white/60"><span>Before tax {fmt(newInvTotal)} + sales tax ({Number(invTaxRate) || 0}%)</span><span>{fmt(newInvTax)}</span></div>}
           <div className="flex items-center justify-between pt-2 border-t border-white/10">
             <span className="text-sm text-white/60">Total</span>
             <span className="text-xl font-black text-green-400" data-inv-total>{fmt(newInvTotal + newInvTax)}</span>

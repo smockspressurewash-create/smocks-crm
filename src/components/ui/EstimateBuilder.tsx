@@ -684,6 +684,7 @@ export function EstimateBuilder({ open, onClose, customers = [], services = [], 
               <div key={d.id} className="flex justify-between text-green-400"><span>{d.label || "Discount"}{d.type === "percent" ? ` (${d.value}%)` : ""}</span><span>− {fmt(d.type === "percent" ? sub * (Number(d.value) / 100) : Number(d.value))}</span></div>
             ))}
             {Number(discount) > 0 && <div className="flex justify-between text-green-400"><span>Discount</span><span>− {fmt(Number(discount))}</span></div>}
+            {afterDisc !== sub && <div className="flex justify-between text-white/70"><span>Before tax</span><span>{fmt(afterDisc)}</span></div>}
             <SalesTaxControl on={taxOn} rate={taxRateInput} subtotal={afterDisc} showTotals={false} onChange={v => { setTaxOn(v.on); setTaxRateInput(v.rate); }} />
             {taxOn && <div className="flex justify-between text-white/70"><span>Sales tax ({taxRate}%)</span><span>{fmt(tax)}</span></div>}
             <div className="flex justify-between font-bold text-white text-base pt-2 border-t border-red-900/30"><span>Total</span><span className="text-red-400">{fmt(tot)}</span></div>

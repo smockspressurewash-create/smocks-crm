@@ -7,6 +7,8 @@
 // button reuses (autoOpenNewWorkOrder), and EmployeePortal.tsx's Work Order
 // Requirements card for how the field crew sees the photo/video
 // requirements created here.
+import { jobTaxSplit } from "../../lib/jobWrite";
+import { TaxSplitNote } from "../ui/SalesTaxControl";
 import React, { useState } from "react";
 import { ClipboardCheck, Upload, X, Plus, CheckCircle, AlertTriangle, FileText, Camera, Trash2 } from "lucide-react";
 import { fmt, uid, today, compressImageFile, dataUrlToBlob, uploadJobMedia } from "../../lib/utils";
@@ -274,7 +276,8 @@ export function WorkOrdersPage({
                   {((j as any).lineItems || []).length > 0 && (
                     <div className="text-[11px] text-white/60 mt-1 truncate">{(j as any).lineItems.slice(0, 3).map((l: any) => (Number(l.quantity) > 1 ? l.quantity + "× " : "") + l.description).join(" · ")}{(j as any).lineItems.length > 3 ? ` +${(j as any).lineItems.length - 3} more` : ""}</div>
                   )}
-                  <div className="text-[11px] text-white/40 mt-0.5">{j.scheduledDate || "Not scheduled yet"}{((j as any).lineItems || []).length > 0 ? ` · ${(j as any).lineItems.length} line${(j as any).lineItems.length > 1 ? "s" : ""} · ${fmt(Number(j.amount) || 0)}` : ""}{(j.crew || []).length > 0 ? ` · ${(j.crew || []).map((id: string) => employees.find((e: any) => e.id === id)?.firstName).filter(Boolean).join(", ")}` : ""}</div>
+                  <div className="text-[11px] text-white/40 mt-0.5">{j.scheduledDate || "Not scheduled yet"}{((j as any).lineItems || []).length > 0 ? ` · ${(j as any).lineItems.length} line${(j as any).lineItems.length > 1 ? "s" : ""}` : ""}{Number(j.amount) > 0 ? ` · ${fmt(Number(j.amount) || 0)}${Number((j as any).tax) > 0 ? " incl. tax" : ""}` : ""}{(j.crew || []).length > 0 ? ` · ${(j.crew || []).map((id: string) => employees.find((e: any) => e.id === id)?.firstName).filter(Boolean).join(", ")}` : ""}</div>
+                  {Number(j.amount) > 0 && <TaxSplitNote {...jobTaxSplit(j)} rate={(j as any).taxRate} className="mt-0.5" />}
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
                   {prog && (
