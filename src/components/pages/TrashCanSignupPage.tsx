@@ -29,6 +29,8 @@ export function TrashCanSignupPage() {
   const [companyName, setCompanyName] = useState(decodeURIComponent(hashParam("co") || "") || "Trash Can Cleaning");
   const [companyPhone, setCompanyPhone] = useState(decodeURIComponent(hashParam("ph") || ""));
   const [costPerCan, setCostPerCan] = useState(Number(hashParam("cost")) || 5);
+  // Sales tax the owner charges on trash can cleanings (0 = none).
+  const [taxRate, setTaxRate] = useState(0);
   const [minutesPerCan, setMinutesPerCan] = useState(Number(hashParam("min")) || 5);
   const [defaultFreq, setDefaultFreq] = useState((hashParam("freq") || "weekly") as "weekly" | "monthly" | "quarterly");
   const [publishableKey, setPublishableKey] = useState(hashParam("pk"));
@@ -60,6 +62,7 @@ export function TrashCanSignupPage() {
         const data = await res.json().catch(() => null);
         if (!res.ok || !data || data.error) return;
         if (data.cost != null) setCostPerCan(Number(data.cost) || costPerCan);
+        if (data.taxRate != null) setTaxRate(Number(data.taxRate) || 0);
         if (data.minutes != null) setMinutesPerCan(Number(data.minutes) || minutesPerCan);
         if (data.freq) setDefaultFreq(data.freq);
         if (data.co) setCompanyName(data.co);
@@ -92,6 +95,7 @@ export function TrashCanSignupPage() {
   const cardMountRef = React.useRef<HTMLDivElement | null>(null);
 
   const price = Math.max(0, Number(f.cans) || 0) * costPerCan;
+  const tax = Math.round(price * taxRate) / 100;
 
   const startCardSetup = async () => {
     if (!publishableKey) { setCardError("Card on file isn't available — this business hasn't connected Stripe."); return; }
@@ -147,7 +151,7 @@ export function TrashCanSignupPage() {
       const recurringFreq = frequency === "onetime" ? undefined : frequency;
       const newJob: any = {
         id: uid(), customerId, address: f.address.trim(), status: "scheduled", scheduledDate: startDate,
-        amount: price, serviceCategory: "trash_can", cansCount: Number(f.cans) || 1,
+        amount: Math.round((price + tax) * 100) / 100, ...(tax > 0 ? { tax, taxRate } : {}), serviceCategory: "trash_can", cansCount: Number(f.cans) || 1,
         notes: `Trash can cleaning — ${f.cans} can(s) — signed up via public form`,
         tags: [], commLog: [], chemicalsUsed: [], equipment: [], crew: [],
         isRecurring, ...(recurringFreq ? { recurringFreq, recurringMode: "preset" } : {}),
@@ -218,7 +222,8 @@ export function TrashCanSignupPage() {
         <div><label className="text-xs text-white/60 mb-1 block">First cleaning date</label><input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="w-full bg-white/5 border border-white/15 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-red-500/50" /></div>
 
         <div className="p-4 rounded-xl bg-gradient-to-br from-red-950/40 to-black/60 border border-red-600/40 text-center">
-          <div className="text-3xl font-bold">${price.toFixed(2)}</div>
+          <div className="text-3xl font-bold">${(price + tax).toFixed(2)}</div>
+          {tax > 0 && <div className="text-[11px] text-white/50">${price.toFixed(2)} + ${tax.toFixed(2)} sales tax ({taxRate}%)</div>}
           <div className="text-xs text-white/60 mt-1">per cleaning ({f.cans} can{Number(f.cans) !== 1 ? "s" : ""} × ${costPerCan.toFixed(2)})</div>
         </div>
 

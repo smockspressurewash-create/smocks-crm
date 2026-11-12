@@ -335,6 +335,8 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       const stripeAcct = Array.isArray(stripeAcctRow.data) ? stripeAcctRow.data[0] : null;
       return json({
         cost: data.trashCanCostPerCan, minutes: data.trashCanMinutesPerCan, freq: data.trashCanDefaultFrequency,
+        // Sales tax on trash can cleanings (Trash Cans → Settings), 0 = none.
+        taxRate: data.trashCanTaxOn === false ? 0 : (Number(data.taxRate) > 0 ? Number(data.taxRate) : 6),
         co: data.companyName, ph: data.companyPhone,
         // FIX — the inconvenience fee (Settings → Trash Cans → "Cans Not Out
         // Fee") was never sent to this public page at all, so a signup that

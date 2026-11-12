@@ -7,7 +7,9 @@
 // (see lib/utils.ts's buildOptimizedRoute), and the public signup link.
 import React, { useState, useEffect } from "react";
 import { Trash2, Copy, DollarSign, Clock, Route as RouteIcon, Users, Calendar, GripVertical, Send, Plus, X, Check, Edit2, ChevronUp, ChevronDown, CreditCard, AlertTriangle, FileText, MapPin } from "lucide-react";
-import { fmt, uid, today, daysFromNow, buildOptimizedRoute, computeNextRecurringDate } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, buildOptimizedRoute, computeNextRecurringDate, computeDiscountsTotal } from "../../lib/utils";
+import { SalesTaxControl, defaultTaxRate } from "../ui/SalesTaxControl";
+import { jobTaxSplit, taxOf, tolerantJobWrite } from "../../lib/jobWrite";
 import type { Job, Customer, AppSettings } from "../../types";
 import { supabase } from "../../lib/supabase";
 import { deleteByIds } from "../../lib/dbBulk";
@@ -57,7 +59,7 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
   // Planning board below for a drag-to-day placement.
   const [newCustOpen, setNewCustOpen] = useState(false);
   const [bulkImportOpen, setBulkImportOpen] = useState(false);
-  const emptyNewCustForm = () => ({ firstName: "", lastName: "", phone: "", email: "", address: "", lat: undefined as number | undefined, lng: undefined as number | undefined, cansCount: 1, freq: ((settings as any)?.trashCanDefaultFrequency || "weekly") as string, firstDate: "" });
+  const emptyNewCustForm = () => ({ firstName: "", lastName: "", phone: "", email: "", address: "", lat: undefined as number | undefined, lng: undefined as number | undefined, cansCount: "1" as string, price: "" as string, discType: "amount" as "amount" | "percent", discValue: "" as string, freq: ((settings as any)?.trashCanDefaultFrequency || "weekly") as string, firstDate: "" });
   const [newCustForm, setNewCustForm] = useState(emptyNewCustForm());
   const [addingCustomer, setAddingCustomer] = useState(false);
   // "dated" = owner picked an exact first service date, so skip both
@@ -73,9 +75,10 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
       };
       const jobPayload = {
         customerId: customerPayload.id,
-        address: newCustForm.address.trim(), amount: costPerCan * Math.max(1, newCustForm.cansCount),
+        address: newCustForm.address.trim(),
+        ...priceJob(newCustForm.price.trim() !== "" ? Number(newCustForm.price) : costPerCan * Math.max(1, parseInt(newCustForm.cansCount) || 1), { type: newCustForm.discType, value: Number(newCustForm.discValue) || 0 }, trashTaxOn, trashTaxRate),
         status: "scheduled", scheduledDate: mode === "dated" ? newCustForm.firstDate : today(), scheduledTime: "", priority: "normal",
-        serviceCategory: "trash_can", cansCount: Math.max(1, newCustForm.cansCount),
+        serviceCategory: "trash_can", cansCount: Math.max(1, parseInt(newCustForm.cansCount) || 1),
         crew: [], checklist: [], photos: [], commLog: [], chemicalsUsed: [], equipment: [], tags: [],
         loggedHours: 0, createdAt: today(),
         // BUG FIX — the picked map location went on the customer, but the
@@ -98,7 +101,7 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
       } else {
         const { data: savedCust, error: custErr } = await (supabase as any).from("customers").insert({ ...customerPayload, owner_id: ownerId }).select().single();
         if (custErr || !savedCust) throw new Error(custErr?.message || "Couldn't save customer");
-        const { data: savedJob, error: jobErr } = await (supabase as any).from("jobs").insert({ id: uid(), ...jobPayload, customerId: savedCust.id, owner_id: ownerId }).select().single();
+        const { data: savedJob, error: jobErr } = await tolerantJobWrite({ id: uid(), ...jobPayload, customerId: savedCust.id, owner_id: ownerId }, row => (supabase as any).from("jobs").insert(row).select().single());
         if (jobErr || !savedJob) throw new Error(jobErr?.message || "Couldn't save job");
         setCustomers?.((prev: any[]) => [...prev, savedCust]);
         setJobs?.((prev: any[]) => [...prev, savedJob]);
@@ -115,6 +118,25 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
 
   const costPerCan = Number((settings as any)?.trashCanCostPerCan) || 5;
   const minutesPerCan = Number((settings as any)?.trashCanMinutesPerCan) || 5;
+  // FEATURE (owner request) — "I want the option to put the price in there
+  // ... add a discount ... make sure it's adding sales tax." A trash can job
+  // now has its own price (starts at cans × cost per can), an optional
+  // discount ($ or %) and sales tax (on by default, Settings tab). Stored
+  // the same way as every other job: `amount` = price + tax, `tax` = the tax
+  // part, the discount in `discounts`; what the customer pays is
+  // amount − discount, which is what invoices already charge.
+  const trashTaxOn = (settings as any)?.trashCanTaxOn !== false;
+  const trashTaxRate = defaultTaxRate(settings);
+  const priceJob = (price: number, disc: { type: "amount" | "percent"; value: number }, taxOn: boolean, rate: number) => {
+    const p = Math.max(0, Math.round((Number(price) || 0) * 100) / 100);
+    const v = Math.max(0, Number(disc.value) || 0);
+    const discounts = v > 0 ? [{ id: uid(), label: "Discount", type: disc.type, value: v }] : [];
+    const base = Math.max(0, p - computeDiscountsTotal(discounts, p));
+    const tax = taxOn ? taxOf(base, rate) : 0;
+    return { amount: Math.round((p + tax) * 100) / 100, tax, taxRate: taxOn ? Number(rate) || 0 : 0, discounts };
+  };
+  // What the customer pays for one visit.
+  const chargedOf = (j: any) => { const sp = jobTaxSplit(j); return Math.max(0, Math.round((sp.total - computeDiscountsTotal(j?.discounts, sp.subtotal)) * 100) / 100); };
   // ITEM 10 — `oid` (owner id) lets TrashCanSignupPage.tsx do a live, narrow
   // refetch of just the pricing/schedule fields on load (see that file's
   // comment), so this link keeps working correctly even after the owner
@@ -245,21 +267,30 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
   const [routeBuilding, setRouteBuilding] = useState(false);
   const [routeNote, setRouteNote] = useState("");
   const [savingRouteTimes, setSavingRouteTimes] = useState(false);
+  // The route starts from the owner's shop or home (Settings tab) when set,
+  // so the first stop is the one nearest where the crew leaves from.
+  const routeStartAddress = String((settings as any)?.routeStartAddress || (settings as any)?.companyAddress || "").trim();
+  const startCoords = async (): Promise<{ lat: number; lng: number } | null> => {
+    if (!routeStartAddress) return null;
+    const key = (settings as any)?.googleGeocodingKey || (settings as any)?.googleMapsKey || (settings as any)?.mapsKey || "";
+    const res = await geocodeAddresses([routeStartAddress], key).catch(() => null);
+    return res?.found?.[routeStartAddress] || null;
+  };
   const buildRoute = async () => {
     const dayJobs = trashJobs.filter(j => j.scheduledDate === routeDate && j.status !== "cancelled" && j.status !== "completed");
     if (dayJobs.length === 0) { toast?.("No trash-can jobs scheduled that day", "yellow"); return; }
     setRouteBuilding(true);
-    const { coords, missing, error } = await coordsForJobs(dayJobs);
+    const [{ coords, missing, error }, start] = await Promise.all([coordsForJobs(dayJobs), startCoords()]);
     setRouteBuilding(false);
     const entries = buildOptimizedRoute(
       dayJobs.map(j => ({ id: j.id, ...(coords[j.id] || {}), scheduledTime: j.scheduledTime, estMinutes: ((j as any).cansCount || 1) * minutesPerCan })),
-      { lunchMinutes: Number((settings as any)?.routeLunchMinutes) || 0, lunchEarliestMinutes: 240 }
+      { lunchMinutes: Number((settings as any)?.routeLunchMinutes) || 0, lunchEarliestMinutes: 240, start }
     );
     // The day starts at the earliest time already on that day's stops (the
     // owner's own start), else 9:00.
     const times = dayJobs.map(j => hhmmToMin(j.scheduledTime)).filter((n): n is number => n != null);
     setRouteStart(times.length ? Math.min(...times) : 540);
-    setRouteNote(missing ? `${missing} stop${missing !== 1 ? "s" : ""} couldn't be placed on the map${error ? " (" + error + ")" : ""} — they're at the end.` : "");
+    setRouteNote(missing ? `${missing} stop${missing !== 1 ? "s" : ""} couldn't be placed on the map${error ? " (" + error + ")" : ""} — they're at the end. Check the address on the customer.` : "");
     if (missing) toast?.(`${missing} address${missing !== 1 ? "es" : ""} couldn't be found on the map${error ? " — " + error : ""}`, "yellow");
     setRoute(entries);
     toast?.(`Route built — ${dayJobs.length} stop${dayJobs.length !== 1 ? "s" : ""}`, "green");
@@ -384,10 +415,10 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
     const routeJobs = ids.map(cid => trashJobs.find(x => x.customerId === cid)).filter(Boolean) as Job[];
     if (routeJobs.length === 0) { toast?.("No assigned customers with a trash-can job to optimize", "yellow"); return; }
     setOptimizingRouteId(route.id);
-    const { coords, missing, error } = await coordsForJobs(routeJobs);
+    const [{ coords, missing, error }, start] = await Promise.all([coordsForJobs(routeJobs), startCoords()]);
     if (missing) toast?.(`${missing} address${missing !== 1 ? "es" : ""} couldn't be found on the map${error ? " — " + error : ""}`, "yellow");
     const stops = routeJobs.map(j => ({ id: j.customerId as string, ...(coords[j.id] || {}), scheduledTime: j.scheduledTime, estMinutes: ((j as any).cansCount || 1) * minutesPerCan }));
-    const entries = buildOptimizedRoute(stops, { lunchMinutes: Number(route.lunch_minutes) || 0, lunchEarliestMinutes: 240 });
+    const entries = buildOptimizedRoute(stops, { lunchMinutes: Number(route.lunch_minutes) || 0, lunchEarliestMinutes: 240, start });
     const newOrder = entries.filter((e: any) => e.kind === "job").map((e: any) => e.jobId as string);
     const ok = await persistRouteCustomerIds(route.id, newOrder);
     setOptimizingRouteId(null);
@@ -476,12 +507,24 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
   // ── Editing an already-confirmed schedule (round 15) — pencil action on
   // the read-only "Upcoming Trash Can Jobs" list below. ────────────────────
   const [editingJob, setEditingJob] = useState<Job | null>(null);
-  const [editForm, setEditForm] = useState<{ scheduledDate: string; recurringFreq: string; cansCount: number }>({ scheduledDate: "", recurringFreq: "weekly", cansCount: 1 });
+  type EditForm = { scheduledDate: string; recurringFreq: string; cansCount: string; price: string; priceAuto: boolean; discType: "amount" | "percent"; discValue: string; taxOn: boolean; taxRate: number | string };
+  const [editForm, setEditForm] = useState<EditForm>({ scheduledDate: "", recurringFreq: "weekly", cansCount: "1", price: "", priceAuto: true, discType: "amount", discValue: "", taxOn: true, taxRate: 6 });
   const [savingEdit, setSavingEdit] = useState(false);
 
   const openEditJob = (j: Job) => {
     setEditingJob(j);
-    setEditForm({ scheduledDate: j.scheduledDate && j.status !== "cancelled" ? j.scheduledDate : today(), recurringFreq: j.isRecurring ? (j.recurringFreq || "weekly") : "one_time", cansCount: (j as any).cansCount || 1 });
+    const cans = Number((j as any).cansCount) || 1;
+    const sp = jobTaxSplit(j);
+    const price = sp.subtotal > 0 ? sp.subtotal : cans * costPerCan;
+    const d0: any = ((j as any).discounts || [])[0];
+    // Tax stays off only on a job where the owner turned it off (taxRate 0).
+    const taxOn = sp.tax > 0 || ((j as any).taxRate !== 0 && trashTaxOn);
+    setEditForm({
+      scheduledDate: j.scheduledDate && j.status !== "cancelled" ? j.scheduledDate : today(), recurringFreq: j.isRecurring ? (j.recurringFreq || "weekly") : "one_time",
+      cansCount: String(cans), price: price.toFixed(2), priceAuto: Math.abs(price - cans * costPerCan) < 0.005,
+      discType: d0?.type === "percent" ? "percent" : "amount", discValue: d0 ? String(d0.value) : "",
+      taxOn, taxRate: Number((j as any).taxRate) > 0 ? Number((j as any).taxRate) : trashTaxRate,
+    });
   };
 
   // The job a customer card manages: their open one, else their most recent
@@ -494,7 +537,8 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
 
   const patchJobs = async (ids: string[], patch: any): Promise<boolean> => {
     setJobs?.((prev: any[]) => prev.map(j => ids.includes(j.id) ? { ...j, ...patch } : j));
-    const r = await (supabase as any).from("jobs").update(patch).in("id", ids).select("id");
+    const r = await tolerantJobWrite(patch, row => (supabase as any).from("jobs").update(row).in("id", ids).select("id"),
+      cols => toast?.(`Saved, but ${cols.join(", ")} need a database update first (migration 0107) — sales tax won't stick until it runs.`, "yellow"));
     if (r?.error) { toast?.(`Couldn't save — ${r.error.message}`, "red"); return false; }
     if (!Array.isArray(r?.data) || r.data.length === 0) { toast?.("Couldn't save — the server didn't confirm the change.", "red"); return false; }
     return true;
@@ -506,7 +550,8 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
     setSavingEdit(true);
     const reactivating = editingJob.status === "cancelled" || editingJob.status === "completed";
     const patch: any = {
-      scheduledDate: editForm.scheduledDate, cansCount: Number(editForm.cansCount) || 1,
+      scheduledDate: editForm.scheduledDate, cansCount: Math.max(1, parseInt(editForm.cansCount) || 1),
+      ...priceJob(Number(editForm.price) || 0, { type: editForm.discType, value: Number(editForm.discValue) || 0 }, editForm.taxOn, Number(editForm.taxRate) || 0),
       ...freqPatch(editForm.recurringFreq, editForm.scheduledDate),
       ...(reactivating ? { status: "scheduled", dayAssignmentConfirmed: true, completedAt: null } : {}),
     };
@@ -716,7 +761,7 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
               const { date, stops } = selected;
               const projected = stops.every(s => s.projected);
               const cans = stops.reduce((n, s) => n + ((s.job as any).cansCount || 1), 0);
-              const revenue = stops.reduce((n, s) => n + (Number(s.job.amount) || 0), 0);
+              const revenue = stops.reduce((n, s) => n + chargedOf(s.job), 0);
               const ordered = [...stops].sort((a, b) => (a.job.scheduledTime || "99").localeCompare(b.job.scheduledTime || "99"));
               const showRoute = route && routeDate === date;
               return (
@@ -774,7 +819,7 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
                               <div className="text-[10px] text-white/40 truncate">{job.address}</div>
                             </div>
                             <div className="text-right flex-shrink-0 text-[10px] text-white/50">
-                              <div>{fmt(Number(job.amount) || 0)}</div>
+                              <div data-stop-price>{fmt(chargedOf(job))}{Number((job as any).tax) > 0 ? <span className="text-white/30"> incl. tax</span> : null}</div>
                               <div>{(job as any).cansCount || 1} can{((job as any).cansCount || 1) !== 1 ? "s" : ""}{rep ? " · repeat" : ""}</div>
                             </div>
                             <button onClick={() => openEditJob(job)} className="p-1.5 rounded bg-white/5 text-white/50 hover:text-white flex-shrink-0" title="Edit"><Edit2 size={11} /></button>
@@ -1091,6 +1136,28 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
           </div>
           <div><label className="text-xs text-white/60 mb-1 block">Inconvenience fee name</label><GInput value={(settings as any)?.trashCanInconvenienceFeeName || "Cans Not Out Fee"} onChange={(e: any) => setSettings((s: any) => ({ ...s, trashCanInconvenienceFeeName: e.target.value }))} className="!text-xs" /></div>
           <div><label className="text-xs text-white/60 mb-1 block">Inconvenience fee amount</label><GInput type="number" step="0.5" value={(settings as any)?.trashCanInconvenienceFeeAmount ?? 15} onChange={(e: any) => setSettings((s: any) => ({ ...s, trashCanInconvenienceFeeAmount: Number(e.target.value) || 0 }))} className="!text-xs" /></div>
+          <div className="sm:col-span-2"><label className="text-xs text-white/60 mb-1 block">Route start address <span className="text-white/30">(your shop or home — routes start nearest here)</span></label><GInput value={(settings as any)?.routeStartAddress ?? ""} placeholder={(settings as any)?.companyAddress || "123 Main St, York PA"} onChange={(e: any) => setSettings((s: any) => ({ ...s, routeStartAddress: e.target.value }))} className="!text-xs" data-route-start /></div>
+          <div className="sm:col-span-2 rounded-xl border border-white/10 bg-white/[0.03] p-2.5 space-y-2">
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input type="checkbox" checked={trashTaxOn} onChange={e => setSettings((s: any) => ({ ...s, trashCanTaxOn: e.target.checked }))} className="accent-red-600 w-4 h-4" data-trash-tax-on />
+              <span className="text-xs text-white/80 font-semibold">Charge sales tax on trash can cleanings ({trashTaxRate}%)</span>
+            </label>
+            {(() => {
+              const untaxed = trashJobs.filter((j: any) => j.status !== "cancelled" && j.status !== "completed" && !(Number(j.tax) > 0) && j.taxRate !== 0);
+              if (!trashTaxOn || untaxed.length === 0) return <div className="text-[10px] text-white/40">New trash can customers get it automatically. Change the percent in Settings → Business.</div>;
+              return <GBtn variant="ghost" className="!text-xs" data-apply-tax onClick={async () => {
+                if (!window.confirm(`Add ${trashTaxRate}% sales tax to ${untaxed.length} trash can job${untaxed.length !== 1 ? "s" : ""} that don't have it? Their price stays the same; the tax is added on top.`)) return;
+                let ok = 0;
+                for (const j of untaxed as any[]) {
+                  const sp = jobTaxSplit(j);
+                  const d0: any = (j.discounts || [])[0];
+                  const patch = priceJob(sp.subtotal, { type: d0?.type === "percent" ? "percent" : "amount", value: Number(d0?.value) || 0 }, true, trashTaxRate);
+                  if (await patchJobs([j.id], { ...patch, discounts: j.discounts || patch.discounts })) ok++;
+                }
+                toast?.(`Sales tax added to ${ok} of ${untaxed.length} job${untaxed.length !== 1 ? "s" : ""}`, ok === untaxed.length ? "green" : "yellow");
+              }}>Add sales tax to {untaxed.length} current job{untaxed.length !== 1 ? "s" : ""}</GBtn>;
+            })()}
+          </div>
           <div><label className="text-xs text-white/60 mb-1 block">Route lunch break (minutes) <span className="text-white/30">(0 = none)</span></label><GInput type="number" value={(settings as any)?.routeLunchMinutes ?? 30} onChange={(e: any) => setSettings((s: any) => ({ ...s, routeLunchMinutes: Number(e.target.value) || 0 }))} className="!text-xs" /></div>
         </div>
         <div className="pt-2 border-t border-white/10">
@@ -1127,7 +1194,7 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
           <div className="grid grid-cols-3 gap-2">
             <div>
               <label className="text-[10px] text-white/50 mb-1 block">Cans</label>
-              <GInput type="number" min="1" value={newCustForm.cansCount} onChange={e => setNewCustForm(f => ({ ...f, cansCount: Math.max(1, Number(e.target.value) || 1) }))} />
+              <GInput type="number" min="1" inputMode="numeric" value={newCustForm.cansCount} onChange={e => setNewCustForm(f => ({ ...f, cansCount: e.target.value }))} onBlur={() => setNewCustForm(f => ({ ...f, cansCount: String(Math.max(1, parseInt(f.cansCount) || 1)) }))} data-new-cans />
             </div>
             <div className="col-span-2">
               <label className="text-[10px] text-white/50 mb-1 block">Service</label>
@@ -1136,6 +1203,32 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
               </GSel>
             </div>
           </div>
+          {(() => {
+            const cans = Math.max(1, parseInt(newCustForm.cansCount) || 1);
+            const price = newCustForm.price.trim() !== "" ? Number(newCustForm.price) || 0 : cans * costPerCan;
+            const pj = priceJob(price, { type: newCustForm.discType, value: Number(newCustForm.discValue) || 0 }, trashTaxOn, trashTaxRate);
+            return (
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] text-white/50 mb-1 block">Price per visit</label>
+                  <GInput type="number" inputMode="decimal" step="0.01" min="0" placeholder={(cans * costPerCan).toFixed(2)} value={newCustForm.price} onChange={e => setNewCustForm(f => ({ ...f, price: e.target.value }))} data-new-price />
+                </div>
+                <div>
+                  <label className="text-[10px] text-white/50 mb-1 block">Discount</label>
+                  <div className="flex gap-1">
+                    <GInput type="number" inputMode="decimal" step="0.01" min="0" placeholder="0" value={newCustForm.discValue} onChange={e => setNewCustForm(f => ({ ...f, discValue: e.target.value }))} className="flex-1 min-w-0" data-new-discount />
+                    <GSel value={newCustForm.discType} onChange={(e: any) => setNewCustForm(f => ({ ...f, discType: e.target.value }))} className="!w-14 flex-shrink-0">
+                      <option value="amount" className="bg-black">$</option>
+                      <option value="percent" className="bg-black">%</option>
+                    </GSel>
+                  </div>
+                </div>
+                <div className="col-span-2 text-[10px] text-white/50" data-new-total>
+                  Customer pays <b className="text-white/80">{fmt(chargedOf(pj))}</b> a visit{pj.tax > 0 ? ` (incl. ${fmt(pj.tax)} sales tax at ${trashTaxRate}%)` : " · no sales tax"}
+                </div>
+              </div>
+            );
+          })()}
           <div>
             <label className="text-[10px] text-white/50 mb-1 block">{newCustForm.freq === "one_time" ? "Cleaning date" : "First service date"} <span className="text-white/30">(optional)</span></label>
             <GInput type="date" value={newCustForm.firstDate} onChange={e => setNewCustForm(f => ({ ...f, firstDate: e.target.value }))} />
@@ -1181,7 +1274,7 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
           mobile, matching this session's other flex-col sm:flex-row fixes. */}
       {editingJob && (
         <div className="fixed inset-0 z-[999] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setEditingJob(null)}>
-          <div onClick={(e) => e.stopPropagation()} className="w-full max-w-sm bg-neutral-950 border border-red-900/40 rounded-2xl p-4 space-y-3">
+          <div onClick={(e) => e.stopPropagation()} className="w-full max-w-sm max-h-[90vh] overflow-y-auto bg-neutral-950 border border-red-900/40 rounded-2xl p-4 space-y-3">
             {(() => {
               const c = cf(editingJob.customerId);
               const offSchedule = editingJob.status === "cancelled" || editingJob.status === "completed";
@@ -1199,10 +1292,57 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
                     <label className="text-xs text-white/60 mb-1 block">{editForm.recurringFreq === "one_time" ? "Cleaning date" : "Next service date"}</label>
                     <GInput type="date" value={editForm.scheduledDate} onChange={(e: any) => setEditForm(f => ({ ...f, scheduledDate: e.target.value }))} className="!text-xs w-full" />
                   </div>
-                  <div>
-                    <label className="text-xs text-white/60 mb-1 block">Can Count</label>
-                    <GInput type="number" min={1} value={editForm.cansCount} onChange={(e: any) => setEditForm(f => ({ ...f, cansCount: Number(e.target.value) || 1 }))} className="!text-xs w-full" />
+                  {/* BUG FIX (owner report) — "it doesn't let me delete that
+                      one and do two cans": the box turned an empty value back
+                      into 1 on every keystroke, so the 1 could never be
+                      cleared. It now holds what was typed and only falls back
+                      to 1 when you leave the box. */}
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-xs text-white/60 mb-1 block">Cans</label>
+                      <GInput type="number" min={1} inputMode="numeric" value={editForm.cansCount} data-edit-cans
+                        onChange={(e: any) => { const v = e.target.value; setEditForm(f => ({ ...f, cansCount: v, ...(f.priceAuto && parseInt(v) > 0 ? { price: (parseInt(v) * costPerCan).toFixed(2) } : {}) })); }}
+                        onBlur={() => setEditForm(f => { const n = Math.max(1, parseInt(f.cansCount) || 1); return { ...f, cansCount: String(n), ...(f.priceAuto ? { price: (n * costPerCan).toFixed(2) } : {}) }; })}
+                        className="!text-xs w-full" />
+                    </div>
+                    <div>
+                      <label className="text-xs text-white/60 mb-1 block">Price per visit</label>
+                      <GInput type="number" min={0} step="0.01" inputMode="decimal" value={editForm.price} data-edit-price
+                        onChange={(e: any) => setEditForm(f => ({ ...f, price: e.target.value, priceAuto: false }))} className="!text-xs w-full" />
+                    </div>
                   </div>
+                  {!editForm.priceAuto && (
+                    <button className="text-[10px] text-white/40 hover:text-white/70 -mt-2" onClick={() => setEditForm(f => { const n = Math.max(1, parseInt(f.cansCount) || 1); return { ...f, priceAuto: true, price: (n * costPerCan).toFixed(2) }; })}>
+                      Use {Math.max(1, parseInt(editForm.cansCount) || 1)} × {fmt(costPerCan)} = {fmt(Math.max(1, parseInt(editForm.cansCount) || 1) * costPerCan)}
+                    </button>
+                  )}
+                  <div>
+                    <label className="text-xs text-white/60 mb-1 block">Discount</label>
+                    <div className="flex gap-1.5">
+                      <GInput type="number" min={0} step="0.01" inputMode="decimal" placeholder="0" value={editForm.discValue} data-edit-discount
+                        onChange={(e: any) => setEditForm(f => ({ ...f, discValue: e.target.value }))} className="!text-xs flex-1 min-w-0" />
+                      <GSel value={editForm.discType} onChange={(e: any) => setEditForm(f => ({ ...f, discType: e.target.value }))} className="!text-xs !w-16 flex-shrink-0">
+                        <option value="amount" className="bg-black">$</option>
+                        <option value="percent" className="bg-black">%</option>
+                      </GSel>
+                    </div>
+                  </div>
+                  {(() => {
+                    const price = Number(editForm.price) || 0;
+                    const pj = priceJob(price, { type: editForm.discType, value: Number(editForm.discValue) || 0 }, editForm.taxOn, Number(editForm.taxRate) || 0);
+                    const disc = computeDiscountsTotal(pj.discounts, price);
+                    return <>
+                      <SalesTaxControl on={editForm.taxOn} rate={editForm.taxRate} subtotal={Math.max(0, price - disc)} showTotals={false}
+                        onChange={v => setEditForm(f => ({ ...f, taxOn: v.on, taxRate: v.rate }))} />
+                      <div className="text-xs space-y-0.5 rounded-xl border border-white/10 bg-white/[0.03] p-2.5" data-edit-totals>
+                        <div className="flex justify-between text-white/60"><span>Price</span><span>{fmt(price)}</span></div>
+                        {disc > 0 && <div className="flex justify-between text-white/60"><span>Discount</span><span>−{fmt(disc)}</span></div>}
+                        <div className="flex justify-between text-white/60"><span>Before tax</span><span data-edit-before-tax>{fmt(Math.max(0, price - disc))}</span></div>
+                        <div className="flex justify-between text-white/60"><span>Sales tax{pj.tax > 0 ? ` (${Number(editForm.taxRate) || 0}%)` : ""}</span><span data-edit-tax>{fmt(pj.tax)}</span></div>
+                        <div className="flex justify-between text-white font-bold text-sm"><span>Customer pays</span><span data-edit-total>{fmt(chargedOf(pj))}</span></div>
+                      </div>
+                    </>;
+                  })()}
                 </div>
                 <div className="flex flex-col sm:flex-row gap-2 pt-1">
                   <GBtn onClick={saveEditJob} disabled={savingEdit} className="flex-1 !text-xs !justify-center">{savingEdit ? "Saving…" : offSchedule ? "Put Back on Schedule" : "Save Changes"}</GBtn>

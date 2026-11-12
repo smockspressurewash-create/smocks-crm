@@ -1556,31 +1556,71 @@ export interface RouteStop { jobId: string; kind: "job"; startMinutes?: number; 
 export interface RouteLunchStop { kind: "lunch"; afterMinutes: number; durationMinutes: number }
 export type RouteEntry = (RouteStop & { estMinutes: number }) | RouteLunchStop;
 
+// Shortest open path through the stops (straight-line miles): nearest stop
+// first from `start` (or from each possible first stop when there is no
+// start), then 2-opt swaps until nothing improves.
+export function orderStopsShortest<T extends { lat: number; lng: number }>(stops: T[], start: { lat: number; lng: number } | null): T[] {
+  if (stops.length <= 1) return [...stops];
+  const d = (a: { lat: number; lng: number }, b: { lat: number; lng: number }) => haversineMiles(a.lat, a.lng, b.lat, b.lng);
+  const length = (path: T[]) => path.reduce((sum, p, i) => sum + (i ? d(path[i - 1], p) : start ? d(start, p) : 0), 0);
+  const greedy = (from: { lat: number; lng: number } | null, first?: T): T[] => {
+    const rest = [...stops];
+    const out: T[] = [];
+    let cur: { lat: number; lng: number } | null = from;
+    if (first) { rest.splice(rest.indexOf(first), 1); out.push(first); cur = first; }
+    while (rest.length) {
+      let bi = 0, bd = Infinity;
+      for (let i = 0; i < rest.length; i++) { const x = cur ? d(cur, rest[i]) : 0; if (x < bd) { bd = x; bi = i; } }
+      cur = rest.splice(bi, 1)[0];
+      out.push(cur as T);
+    }
+    return out;
+  };
+  const untangle = (path: T[]): T[] => {
+    let best = [...path], bestLen = length(best), improved = true, guard = 0;
+    while (improved && guard++ < 200) {
+      improved = false;
+      for (let i = start ? 0 : 1; i < best.length - 1; i++) {
+        for (let k = i + 1; k < best.length; k++) {
+          const cand = [...best.slice(0, i), ...best.slice(i, k + 1).reverse(), ...best.slice(k + 1)];
+          const len = length(cand);
+          if (len < bestLen - 1e-9) { best = cand; bestLen = len; improved = true; }
+        }
+      }
+    }
+    return best;
+  };
+  if (start) return untangle(greedy(start));
+  let best: T[] = [], bestLen = Infinity;
+  for (const first of stops.slice(0, 40)) {
+    const path = untangle(greedy(null, first));
+    const len = length(path);
+    if (len < bestLen) { best = path; bestLen = len; }
+  }
+  return best;
+}
+
 // Builds a same-day route order for a set of jobs, each needing lat/lng and
 // an estimated on-site duration (minutes). Inserts a lunch break entry once
 // cumulative elapsed time crosses lunchEarliestMinutes (minutes since route
 // start, e.g. 240 = 4 hours in) — 0/undefined lunchMinutes skips it entirely.
+// BUG FIX (owner report) — "I clicked optimize route and it put him at the
+// very bottom... he's in Mechanicsburg ... he would have been before." The
+// order used to start at whichever stop had the earliest saved time and then
+// hop to the nearest stop each time, so once times were saved the same stop
+// always came first, and an out-of-the-way stop was simply left for last
+// even when it sat on the way. Now the route starts from the owner's start
+// address when there is one (else the best end of the route), is built
+// nearest-stop-first, and is then untangled (2-opt) until no swap of two
+// legs makes the total drive shorter.
 export function buildOptimizedRoute(
   jobs: Array<{ id: string; lat?: number; lng?: number; scheduledTime?: string; estMinutes: number }>,
-  opts: { lunchMinutes?: number; lunchEarliestMinutes?: number } = {}
+  opts: { lunchMinutes?: number; lunchEarliestMinutes?: number; start?: { lat: number; lng: number } | null } = {}
 ): RouteEntry[] {
   const withCoords = jobs.filter(j => typeof j.lat === "number" && typeof j.lng === "number");
   const withoutCoords = jobs.filter(j => !(typeof j.lat === "number" && typeof j.lng === "number"))
     .sort((a, b) => (a.scheduledTime || "23:59").localeCompare(b.scheduledTime || "23:59"));
-
-  const ordered: typeof jobs = [];
-  const remaining = [...withCoords].sort((a, b) => (a.scheduledTime || "23:59").localeCompare(b.scheduledTime || "23:59"));
-  let current = remaining.shift();
-  if (current) ordered.push(current);
-  while (remaining.length > 0 && current) {
-    let bestIdx = 0, bestDist = Infinity;
-    for (let i = 0; i < remaining.length; i++) {
-      const d = haversineMiles(current.lat!, current.lng!, remaining[i].lat!, remaining[i].lng!);
-      if (d < bestDist) { bestDist = d; bestIdx = i; }
-    }
-    current = remaining.splice(bestIdx, 1)[0];
-    ordered.push(current);
-  }
+  const ordered = orderStopsShortest(withCoords as Array<{ lat: number; lng: number } & (typeof jobs)[number]>, opts.start || null);
   const fullOrder = [...ordered, ...withoutCoords];
 
   const lunchMinutes = opts.lunchMinutes || 0;
