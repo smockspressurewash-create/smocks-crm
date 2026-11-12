@@ -27,6 +27,7 @@ import { BulkJobImportModal } from "../ui/BulkJobImportModal";
 import { recurrenceFor } from "../../lib/bulkImportCore";
 import { geocodeAddresses } from "../../lib/geocode";
 import { useIsMobile } from "../../hooks/useIsMobile";
+import { showSendReport, okResult, failResult, skipResult, type SendResult } from "../../lib/sendReport";
 
 const FREQ_OPTIONS = [
   { key: "one_time", label: "One-time" },
@@ -625,6 +626,83 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
     });
   })();
 
+  // ── Text customers their scheduled day (owner request: "I need to send
+  // out this text pronto so people know when they're scheduled"). The owner
+  // picks who gets it, edits the wording, sees each customer's real message,
+  // and presses Send; every text is confirmed with Twilio and the result is
+  // shown per customer (sent / failed and why). Customers who replied STOP
+  // or have no phone are left out and listed.
+  type SchedTextRow = { customer: any; job: Job; date: string; on: boolean };
+  const [schedText, setSchedText] = useState<{ title: string; rows: SchedTextRow[]; template: string } | null>(null);
+  const [schedSending, setSchedSending] = useState<{ done: number; total: number } | null>(null);
+  const SCHED_TEMPLATE = "Hi {first}! Your trash can cleaning with {company} is scheduled for {day}{time}{repeat}. Please have your cans out. Reply STOP to opt out.";
+  const longDay = (date: string) => new Date(date + "T12:00:00").toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+  const fillSchedText = (template: string, r: SchedTextRow) => template
+    .replace(/\{first\}/g, r.customer?.firstName || "there")
+    .replace(/\{company\}/g, (settings as any)?.companyName || "us")
+    .replace(/\{day\}/g, longDay(r.date))
+    .replace(/\{time\}/g, r.job.scheduledTime && r.date === r.job.scheduledDate ? ` around ${clock(hhmmToMin(r.job.scheduledTime) ?? 0)}` : "")
+    .replace(/\{repeat\}/g, r.job.isRecurring ? `, then ${freqLabel(r.job).toLowerCase()} after that` : "");
+  const openSchedText = (title: string, list: { job: Job; date: string }[]) => {
+    const seen = new Set<string>();
+    const rows: SchedTextRow[] = [];
+    for (const { job, date } of list) {
+      const c = cf(job.customerId);
+      if (!c || seen.has(c.id)) continue;
+      seen.add(c.id);
+      rows.push({ customer: c, job, date, on: !!c.phone && !c.smsOptOut });
+    }
+    if (rows.length === 0) { toast?.("Nobody to text on that day", "yellow"); return; }
+    setSchedText({ title, rows, template: SCHED_TEMPLATE });
+  };
+  // Each active customer with their next day.
+  const openSchedTextAll = () => {
+    const list: { job: Job; date: string }[] = [];
+    for (const c of trashCanCustomers as any[]) {
+      const next = upcomingDays.find(d => d.stops.some(s => s.job.customerId === c.id));
+      const st = next?.stops.find(s => s.job.customerId === c.id);
+      if (next && st) list.push({ job: st.job, date: next.date });
+    }
+    openSchedText("Text everyone their next cleaning day", list);
+  };
+  const sendSchedTexts = async () => {
+    if (!schedText) return;
+    const picked = schedText.rows.filter(r => r.on);
+    if (picked.length === 0) { toast?.("Tick at least one customer", "yellow"); return; }
+    if (!window.confirm(`Send ${picked.length} text${picked.length !== 1 ? "s" : ""} now?`)) return;
+    setSchedSending({ done: 0, total: picked.length });
+    const results: SendResult[] = [];
+    for (const r of schedText.rows.filter(x => !x.on)) {
+      const name = `${r.customer.firstName} ${r.customer.lastName}`.trim();
+      if (!r.customer.phone) results.push({ ...skipResult("sms", "Not sent: no phone number on file."), to: name });
+      else if (r.customer.smsOptOut) results.push({ ...skipResult("sms", "Not sent: this customer replied STOP."), to: name });
+    }
+    let i = 0;
+    for (const r of picked) {
+      const name = `${r.customer.firstName} ${r.customer.lastName}`.trim();
+      const body = fillSchedText(schedText.template, r);
+      try {
+        const info = await twilioSend(settings as any, r.customer.phone, body, "sms", { confirm: true });
+        results.push({ ...okResult("sms", r.customer.phone, info), to: name + " · " + r.customer.phone });
+        if (!info?.testMode) logOutboundSmsToInbox({ via: "trash cans", contactName: name, contactPhone: r.customer.phone, customerId: r.customer.id, body }).catch(() => {});
+      } catch (e: any) {
+        results.push({ ...failResult("sms", r.customer.phone, e), to: name + " · " + r.customer.phone });
+        // Out of credit or bad login fails every text the same way: stop.
+        const sum = results[results.length - 1].summary;
+        if (/out of credit|rejected your login|suspended|isn't set up/.test(sum)) {
+          for (const rest of picked.slice(i + 1)) results.push({ ...skipResult("sms", "Not sent: stopped after the error above."), to: `${rest.customer.firstName} ${rest.customer.lastName}`.trim() });
+          break;
+        }
+      }
+      i++;
+      setSchedSending({ done: i, total: picked.length });
+    }
+    setSchedSending(null);
+    setSchedText(null);
+    const sent = results.filter(r => r.ok).length;
+    showSendReport({ title: "Schedule texts", customerName: `${sent} of ${picked.length} sent`, results });
+  };
+
   // ── Page layout: one tab at a time ──────────────────────────────────────
   const [tab, setTab] = useState<"schedule" | "customers" | "routes" | "planning" | "settings">("schedule");
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
@@ -725,7 +803,10 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
 
       {tab === "schedule" && <>
       <Glass className="p-4 space-y-3">
-        <div className="font-semibold text-sm flex items-center gap-2"><Calendar size={14} className="text-green-400" />Schedule</div>
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="font-semibold text-sm flex items-center gap-2"><Calendar size={14} className="text-green-400" />Schedule</div>
+          {upcomingDays.length > 0 && <GBtn onClick={openSchedTextAll} className="!text-xs" data-sched-text-all><Send size={12} className="inline mr-1" />Text everyone their day</GBtn>}
+        </div>
         {upcomingDays.length === 0 ? (
           <div className="text-center py-6 text-white/30 text-xs">No trash can days scheduled yet — add customers on the Customers tab.</div>
         ) : (
@@ -771,7 +852,10 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
                       <div className="text-base font-semibold">{new Date(date + "T12:00:00").toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })}</div>
                       <div className="text-[11px] text-white/50">{stops.length} stop{stops.length !== 1 ? "s" : ""} · {cans} can{cans !== 1 ? "s" : ""} · {fmt(revenue)} · ~{cans * minutesPerCan} min on site</div>
                     </div>
-                    {!projected && <GBtn onClick={buildRoute} disabled={routeBuilding} className="!text-xs"><RouteIcon size={12} className="inline mr-1" />{routeBuilding ? "Finding addresses…" : "Optimize this day"}</GBtn>}
+                    <div className="flex gap-1.5 flex-wrap">
+                      <GBtn variant="ghost" onClick={() => openSchedText("Text " + dayLabel(date) + " customers", stops.map(s => ({ job: s.job, date })))} className="!text-xs" data-sched-text-day><Send size={12} className="inline mr-1" />Text these customers</GBtn>
+                      {!projected && <GBtn onClick={buildRoute} disabled={routeBuilding} className="!text-xs"><RouteIcon size={12} className="inline mr-1" />{routeBuilding ? "Finding addresses…" : "Optimize this day"}</GBtn>}
+                    </div>
                   </div>
                   {projected && <div className="text-[10px] text-white/40">Repeat visits. They become real jobs (and get times) when the visit before them is completed.</div>}
                   {showRoute ? (
@@ -1245,6 +1329,45 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
             </>
           )}
         </div>
+      </Modal>
+
+      <Modal open={!!schedText} onClose={() => { if (!schedSending) setSchedText(null); }} title={schedText?.title || "Text customers"} maxW="max-w-lg">
+        {schedText && (() => {
+          const on = schedText.rows.filter(r => r.on).length;
+          const first = schedText.rows.find(r => r.on) || schedText.rows[0];
+          return (
+            <div className="space-y-3" data-sched-modal>
+              <div>
+                <label className="text-[10px] text-white/50 mb-1 block">Message <span className="text-white/30">— {"{first}"} {"{day}"} {"{time}"} {"{repeat}"} {"{company}"} fill in for each customer</span></label>
+                <textarea value={schedText.template} onChange={e => setSchedText(t => t && ({ ...t, template: e.target.value }))} rows={4} data-sched-template
+                  className="w-full bg-black/40 border border-white/10 rounded-xl p-2.5 text-[16px] md:text-xs text-white focus:outline-none focus:border-white/30" />
+              </div>
+              {first && <div className="text-[11px] rounded-xl border border-white/10 bg-white/[0.03] p-2.5"><div className="text-white/40 mb-1">{first.customer.firstName} will get:</div><div className="text-white/85" data-sched-preview>{fillSchedText(schedText.template, first)}</div></div>}
+              <div className="flex items-center justify-between text-[11px] text-white/50">
+                <span>{on} of {schedText.rows.length} ticked</span>
+                <span className="flex gap-3">
+                  <button className="hover:text-white" onClick={() => setSchedText(t => t && ({ ...t, rows: t.rows.map(r => ({ ...r, on: !!r.customer.phone && !r.customer.smsOptOut })) }))}>All</button>
+                  <button className="hover:text-white" onClick={() => setSchedText(t => t && ({ ...t, rows: t.rows.map(r => ({ ...r, on: false })) }))}>None</button>
+                </span>
+              </div>
+              <div className="max-h-64 overflow-y-auto space-y-1">
+                {schedText.rows.map((r, idx) => {
+                  const blocked = !r.customer.phone ? "no phone" : r.customer.smsOptOut ? "replied STOP" : "";
+                  return (
+                    <label key={r.customer.id} className={"flex items-center gap-2 p-1.5 rounded-lg text-[11px] " + (blocked ? "opacity-50" : "hover:bg-white/5 cursor-pointer")} data-sched-row>
+                      <input type="checkbox" disabled={!!blocked} checked={r.on} onChange={e => setSchedText(t => t && ({ ...t, rows: t.rows.map((x, k) => k === idx ? { ...x, on: e.target.checked } : x) }))} />
+                      <span className="flex-1 min-w-0 truncate">{r.customer.firstName} {r.customer.lastName}</span>
+                      <span className="text-white/40 flex-shrink-0">{blocked || dayLabel(r.date)}</span>
+                    </label>
+                  );
+                })}
+              </div>
+              <GBtn onClick={sendSchedTexts} disabled={!!schedSending || on === 0} className="w-full !justify-center" data-sched-send>
+                <Send size={12} className="inline mr-1" />{schedSending ? `Sending ${schedSending.done + 1} of ${schedSending.total}…` : `Send ${on} text${on !== 1 ? "s" : ""}`}
+              </GBtn>
+            </div>
+          );
+        })()}
       </Modal>
 
       <BulkJobImportModal
