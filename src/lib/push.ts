@@ -12,7 +12,12 @@ import { withTimeout } from "./utils";
 // Pages environment variable (functions/api/send-push.ts). Regenerating
 // this pair would invalidate every existing subscriber, so treat it as
 // fixed once real users have subscribed.
-export const VAPID_PUBLIC_KEY = "BFqKy2PtHrcVhocXAUh9rCTn6C1PEXIk0X_jyY7xwWBeH6r8w7ybe7lQEtNdtA8luYVn2s0j77XPYJiTCyTfAYA";
+// SECURITY FIX (integration audit 2026-11-13) — the old private half was
+// written into a code comment in this public repo, so the pair was replaced.
+// Devices subscribed with the old key are re-subscribed automatically
+// (see sameKey below); the old pair never worked live because the server
+// key was never set.
+export const VAPID_PUBLIC_KEY = "BClLCG2hdw-NBLcryKxD2tfwCVPKXXse8V6cIlTYix9U0omp8qdgRC3mAb_bxttrR1kdNw37r18QPFeUDrefVrE";
 
 const urlBase64ToUint8Array = (base64: string): Uint8Array => {
   const padding = "=".repeat((4 - (base64.length % 4)) % 4);
@@ -21,6 +26,17 @@ const urlBase64ToUint8Array = (base64: string): Uint8Array => {
   const out = new Uint8Array(raw.length);
   for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
   return out;
+};
+
+// True when a subscription was made with the current public key. An older
+// subscription made with the replaced key can never receive a push.
+const sameKey = (sub: PushSubscription): boolean => {
+  try {
+    const k = sub.options?.applicationServerKey;
+    if (!k) return true;
+    const a = new Uint8Array(k as ArrayBuffer), b = urlBase64ToUint8Array(VAPID_PUBLIC_KEY);
+    return a.length === b.length && a.every((v, i) => v === b[i]);
+  } catch { return true; }
 };
 
 export type PushSupportState = "unsupported" | "ios-needs-install" | "denied" | "ready";
@@ -44,7 +60,7 @@ export const isPushSubscribed = async (): Promise<boolean> => {
   try {
     const reg = await navigator.serviceWorker.ready;
     const sub = await reg.pushManager.getSubscription();
-    return !!sub;
+    return !!sub && sameKey(sub);
   } catch { return false; }
 };
 
@@ -63,6 +79,7 @@ export const subscribeToPush = async (opts: { ownerId: string; employeeId?: stri
   try {
     const reg = await navigator.serviceWorker.ready;
     let sub = await reg.pushManager.getSubscription();
+    if (sub && !sameKey(sub)) { await sub.unsubscribe().catch(() => {}); sub = null; }
     if (!sub) {
       sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY) as any });
     }

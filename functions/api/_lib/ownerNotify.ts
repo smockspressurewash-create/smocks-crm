@@ -12,7 +12,7 @@ import { getOwnerSecrets } from "./ownerSecrets";
 import { sendWebPush } from "./webPush";
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
-const VAPID_PUBLIC_KEY = "BFqKy2PtHrcVhocXAUh9rCTn6C1PEXIk0X_jyY7xwWBeH6r8w7ybe7lQEtNdtA8luYVn2s0j77XPYJiTCyTfAYA";
+const VAPID_PUBLIC_KEY = "BClLCG2hdw-NBLcryKxD2tfwCVPKXXse8V6cIlTYix9U0omp8qdgRC3mAb_bxttrR1kdNw37r18QPFeUDrefVrE";
 
 export type InvoiceEventType = "paid" | "refunded" | "disputed" | "failed";
 

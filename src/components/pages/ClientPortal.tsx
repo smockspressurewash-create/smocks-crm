@@ -246,7 +246,12 @@ export function ClientPortal({ estimate: e, customer: c, jobs = [], invoices = [
   // means the customer is back to settle up — offer the actual remainder
   // instead of making them pay the deposit or full total a second time.
   const alreadyPaid = Number(e?.paidDeposit) || 0;
-  const remainingAmt = Math.max(0, effectiveTotal - alreadyPaid);
+  // BUG FIX (integration audit 2026-11-13) — a coupon used on the deposit
+  // also comes off the balance (same rule as the server's amountDue.ts), so
+  // the balance shown matches what the customer is charged.
+  const priorDiscount = (Array.isArray(e?.paymentLog) ? e.paymentLog : [])
+    .reduce((sum: number, x: any) => sum + (x?.type === "paid" ? Number(x?.discount) || 0 : 0), 0);
+  const remainingAmt = Math.max(0, effectiveTotal - priorDiscount - alreadyPaid);
   const hasRemainingBalance = alreadyPaid > 0 && !e?.paidFull && remainingAmt > 0;
   // FEATURE (round 13, item 4) — mandatory deposit only applies before the
   // job exists/is invoiced and before any partial payment is already on record.

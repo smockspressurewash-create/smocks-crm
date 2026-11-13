@@ -35,6 +35,7 @@ import { createGCalEvent as createGCalEventApi, updateGCalEvent as updateGCalEve
 import { usePersistent } from "../../hooks/usePersistent";
 import { usePersistentRaw } from "../../hooks/usePersistentRaw";
 import { supabase } from "../../lib/supabase";
+import { removeCrewEventsForJobs } from "../../lib/calendarSync";
 import { Glass } from "./Glass";
 import { GBtn } from "./GBtn";
 import { GInput } from "./GInput";
@@ -445,6 +446,32 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
         const endDt = new Date(startDt.getTime() + (Number(job.duration) || 2) * 3600000);
         updateGCalEventApi(tok, job.googleEventId!, { start: startDt.toISOString(), end: endDt.toISOString(), location: job.address }).catch(() => {});
       });
+    }
+    // BUG FIX (integration audit 2026-11-13) — rescheduling or cancelling a
+    // job only moved the shared event above; each crew member's OWN calendar
+    // copy (employee-calendar-sync.ts) stayed at the old time, or stayed
+    // after the job was cancelled. Same server endpoint toggleCrew uses.
+    const crewIds: string[] = job.crew || [];
+    if (justCancelled) {
+      removeCrewEventsForJobs([jobId], { [jobId]: (job as any).crewGoogleEventIds });
+    } else if (crewIds.length > 0 && job.scheduledDate && job.status !== "cancelled" && job.status !== "completed" && changes.length > 0) {
+      const cust = customers.find(x => x.id === job.customerId);
+      (async () => {
+        const { data: { session: syncSession } } = await supabase.auth.getSession();
+        if (!syncSession?.access_token) return;
+        for (const eid of crewIds) {
+          await fetch("/api/employee-calendar-sync", {
+            method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${syncSession.access_token}` },
+            body: JSON.stringify({
+              employeeId: eid, jobId, action: "upsert",
+              title: (cust?.firstName ? cust.firstName + " " + cust.lastName + " — " : "") + "Pressure Washing",
+              date: job.scheduledDate, time: job.scheduledTime, durationMinutes: (Number(job.duration) || 2) * 60,
+              location: job.address,
+              notes: buildJobCalendarDescription(job, cust, `${window.location.origin}${window.location.pathname}#/portal?job=${encodeURIComponent(job.id)}`, "View job in Crew Portal"),
+            }),
+          }).catch(() => null);
+        }
+      })().catch(() => {});
     }
   }, [job?.scheduledDate, job?.scheduledTime, job?.address, job?.status, jobId]); // eslint-disable-line react-hooks/exhaustive-deps
 

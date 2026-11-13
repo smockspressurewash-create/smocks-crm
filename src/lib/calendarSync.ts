@@ -44,8 +44,35 @@ const failedAt = new Map<string, number>();
 const eventWhen = new Map<string, string>();
 const whenOf = (j: any) => `${j.scheduledDate || ""}|${j.scheduledTime || ""}`;
 
+// BUG FIX (integration audit 2026-11-13) — job id -> crew members' own
+// calendar event ids (crewGoogleEventIds), remembered for the same reason as
+// knownEvents: a deleted job is already gone from the database by the time
+// the crew's copies are removed.
+const knownCrewEvents = new Map<string, Record<string, string>>();
+
+// Removes every crew member's own-calendar event for these jobs (server-
+// side; see functions/api/employee-calendar-sync.ts "deleteAllForJob").
+// Fire-and-forget: never blocks the delete/cancel itself.
+export function removeCrewEventsForJobs(jobIds: string[], knownByJob?: Record<string, Record<string, string> | undefined>) {
+  const todo = jobIds.map(id => ({ id, known: knownByJob?.[id] || knownCrewEvents.get(id) }))
+    .filter(x => x.known && Object.keys(x.known).length > 0);
+  jobIds.forEach(id => knownCrewEvents.delete(id));
+  if (todo.length === 0) return;
+  (async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) return;
+    for (const { id, known } of todo) {
+      await fetch("/api/employee-calendar-sync", {
+        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({ action: "deleteAllForJob", jobId: id, knownEventIds: known }),
+      }).catch(() => null);
+    }
+  })().catch(() => {});
+}
+
 export function rememberJobEvents(jobs: any[]) {
   for (const j of jobs) {
+    if (j?.id && j.crewGoogleEventIds && typeof j.crewGoogleEventIds === "object" && Object.keys(j.crewGoogleEventIds).length > 0) knownCrewEvents.set(j.id, j.crewGoogleEventIds);
     if (!j?.id || !isRealEventId(j.googleEventId)) continue;
     knownEvents.set(j.id, j.googleEventId);
     if (!eventWhen.has(j.googleEventId)) eventWhen.set(j.googleEventId, whenOf(j));
@@ -55,6 +82,9 @@ export function rememberJobEvents(jobs: any[]) {
 const syncOn = (settings: any) => !!settings?.googleConnected && (settings?.autoSyncCalendar ?? true) !== false;
 
 export async function removeJobsFromGoogle(jobIds: string[], settings: any): Promise<number> {
+  // BUG FIX (integration audit 2026-11-13) — deleting a job left it on every
+  // assigned crew member's own Google Calendar; remove those copies too.
+  removeCrewEventsForJobs(jobIds);
   const eventIds = jobIds.map(id => knownEvents.get(id)).filter(isRealEventId);
   jobIds.forEach(id => knownEvents.delete(id));
   if (eventIds.length === 0 || !settings?.googleConnected) return 0;
@@ -123,8 +153,10 @@ export async function ensureJobsOnGoogle(opts: { jobs: any[]; customers: any[]; 
     } catch (e: any) { console.warn("[calendarSync] cancelled job's event delete failed:", e?.message || e); }
   }
   for (const j of moved.slice(0, MAX_PER_RUN)) {
-    eventWhen.set(j.googleEventId, whenOf(j));
-    try { await updateGCalEvent(token, j.googleEventId, eventTimes(j)); }
+    // BUG FIX (integration audit 2026-11-13) — the new time used to be
+    // recorded BEFORE the update, so a failed move was never retried and the
+    // event stayed at the old time. Record it only once Google accepts it.
+    try { await updateGCalEvent(token, j.googleEventId, eventTimes(j)); eventWhen.set(j.googleEventId, whenOf(j)); }
     catch (e: any) { console.warn("[calendarSync] event move failed:", e?.message || e); }
   }
   let linked = 0;
@@ -149,7 +181,17 @@ export async function ensureJobsOnGoogle(opts: { jobs: any[]; customers: any[]; 
         failedAt.set(j.id, Date.now());
         console.warn("[calendarSync] event create failed for job", j.id, "—", e?.message || e);
       }
-      await (supabase as any).from("jobs").update({ googleEventId: eventId || null }).eq("id", j.id);
+      // BUG FIX (integration audit 2026-11-13) — this save's result was never
+      // checked: if it failed, the job kept its "pending:" claim, which
+      // expires and creates a second event for the same job. On failure,
+      // take the new event back off the calendar and retry later.
+      const { error: saveErr } = await (supabase as any).from("jobs").update({ googleEventId: eventId || null }).eq("id", j.id);
+      if (saveErr && eventId) {
+        console.warn("[calendarSync] couldn't save event id for job", j.id, "—", saveErr.message || saveErr);
+        await deleteGCalEvent(token, eventId).catch(() => {});
+        failedAt.set(j.id, Date.now());
+        continue;
+      }
       if (eventId) { knownEvents.set(j.id, eventId); eventWhen.set(eventId, whenOf(j)); onLinked(j.id, eventId); linked++; }
     } finally {
       inFlight.delete(j.id);

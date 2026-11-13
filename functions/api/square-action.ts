@@ -98,7 +98,19 @@ const resolveCallerIsOwnerOrManager = async (accessToken: string): Promise<{ own
   });
   const empRows = await empRes.json().catch(() => []);
   const row = Array.isArray(empRows) ? empRows[0] : null;
-  if (!row) return { ownerId: uid, role: "owner" };
+  if (!row) {
+    // BUG FIX (integration audit 2026-11-13) — "no employees row" used to
+    // mean "owner" for ANY signed-in account, including customer-portal
+    // logins, which could then save webhook/payment secrets. Now the account
+    // must have its own business (an app_settings row), the same test
+    // resolveStaffOwnerId uses. Read with the caller's own session, so RLS
+    // only ever shows the caller's own row.
+    const ownRes = await fetch(`${SUPABASE_URL}/rest/v1/app_settings?owner_id=eq.${encodeURIComponent(uid)}&select=owner_id&limit=1`, {
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${accessToken}` },
+    });
+    const ownRows = await ownRes.json().catch(() => []);
+    return Array.isArray(ownRows) && ownRows.length > 0 ? { ownerId: uid, role: "owner" } : null;
+  }
   const role = (row.role || "").toLowerCase();
   if (role !== "owner" && role !== "manager") return null;
   return { ownerId: row.owner_id || uid, role };
@@ -210,6 +222,15 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       }
       const amountCents = (due ? due.baseCents : Math.round(Number(body.amountCents) || 0)) + tip;
       if (amountCents <= 0) return json({ error: "Invalid amount" }, 400);
+      // BUG FIX (integration audit 2026-11-13) — the invoice key had no card
+      // token in it, so a retry with a NEW card after a decline replayed the
+      // declined result. A short hash of the token (plus invoice, pay type
+      // and amount) keeps it unique per card and within Square's 45-char cap.
+      let invoiceIdemKey = "";
+      if (due) {
+        const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${invoiceId}|${due.payType}|${amountCents}|${sourceId}`));
+        invoiceIdemKey = "inv-" + Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 40);
+      }
 
       const sqRes = await fetch(`${squareApiBase()}/v2/payments`, {
         method: "POST",
@@ -230,11 +251,13 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           // (field-portal tips/fees, no invoiceId) have no stable id to key
           // on, so they keep a random key — narrower risk (typically small
           // amounts, no auto-retry in the client today).
-          idempotency_key: due ? `${invoiceId}-${due.payType[0]}${amountCents}`.slice(0, 45) : crypto.randomUUID(),
+          idempotency_key: due ? invoiceIdemKey : crypto.randomUUID(),
           amount_money: { amount: amountCents, currency: "USD" },
           location_id: acct.locationId,
           // {promo:ID} before the [payType:cents] tag, which must stay last.
-          note: ((body.description || "").slice(0, 400) + (due?.promoId ? ` {promo:${due.promoId}}` : "") + (due ? ` [${due.payType}:${due.baseCents}]` : "")).trim(),
+          // BUG FIX (integration audit 2026-11-13) — {disc:cents} records the
+          // discount taken, so a later balance doesn't charge it back.
+          note: ((body.description || "").slice(0, 400) + (due?.promoId ? ` {promo:${due.promoId}}` : "") + (due && due.discountCents > 0 ? ` {disc:${due.discountCents}}` : "") + (due ? ` [${due.payType}:${due.baseCents}]` : "")).trim(),
           ...(invoiceId ? { reference_id: invoiceId } : {}),
         }),
       });
@@ -338,6 +361,14 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         return json({ error: "Square isn't configured for this business yet — add keys in Settings → Integrations → Square." }, 500);
       }
       const sqHeaders = { Authorization: `Bearer ${acct.accessToken}`, "Content-Type": "application/json", "Square-Version": "2024-10-17" };
+      // BUG FIX (integration audit 2026-11-13) — the customer is checked
+      // against the caller's business BEFORE any card is saved or plan
+      // started; the old code never checked and later patched any id.
+      {
+        const own = await fetch(`${SUPABASE_URL}/rest/v1/customers?id=eq.${encodeURIComponent(crmCustomerId)}&owner_id=eq.${encodeURIComponent(callerOwnerId)}&select=id&limit=1`, { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } });
+        const ownRows = await own.json().catch(() => []);
+        if (!Array.isArray(ownRows) || ownRows.length === 0) return json({ error: "That customer doesn't belong to your business." }, 403);
+      }
 
       try {
         // 1. Create (or reuse) a Square Customer for this CRM customer.
@@ -408,10 +439,17 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           provider: "square", status: "active", amountCents: amt, interval: planCadence.toLowerCase() === "annual" ? "year" : planCadence.toLowerCase() === "weekly" ? "week" : "month",
           description: description || "Recurring service", squareSubscriptionId: subData?.subscription?.id, squareCustomerId, squareCardId, squarePlanId: planId, squareVariationId: variationId,
         };
-        await fetch(`${SUPABASE_URL}/rest/v1/customers?id=eq.${encodeURIComponent(crmCustomerId)}`, {
-          method: "PATCH", headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+        // BUG FIX (integration audit 2026-11-13) — patched any customer id
+        // with no owner filter and never checked a row changed. Now limited to
+        // the caller's business and the result is checked.
+        const planRes = await fetch(`${SUPABASE_URL}/rest/v1/customers?id=eq.${encodeURIComponent(crmCustomerId)}&owner_id=eq.${encodeURIComponent(callerOwnerId)}&select=id`, {
+          method: "PATCH", headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}`, "Content-Type": "application/json", Prefer: "return=representation" },
           body: JSON.stringify({ recurringPlan: patch }),
         });
+        const planRows = await planRes.json().catch(() => []);
+        if (!planRes.ok || !Array.isArray(planRows) || planRows.length === 0) {
+          return json({ error: "The Square plan was started, but it couldn't be saved on the customer record. Check Square's dashboard before trying again.", subscriptionId: subData?.subscription?.id }, 500);
+        }
 
         return json({ success: true, subscriptionId: subData?.subscription?.id, status: subData?.subscription?.status || "ACTIVE" });
       } catch (e: any) {
@@ -458,7 +496,11 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       const rows = await getRes.json().catch(() => []);
       const existingLog = Array.isArray(rows) && Array.isArray(rows[0]?.paymentLog) ? rows[0].paymentLog : [];
       const alreadyLogged = existingLog.some((e: any) => e?.type === "paid" && e?.squarePaymentId === paymentId);
-      const newLog = alreadyLogged ? existingLog : [...existingLog, { id: crypto.randomUUID(), at: new Date().toISOString(), type: "paid", amount: (payData.payment.amount_money?.amount || 0) / 100, squarePaymentId: paymentId, note: "Paid via Square (customer portal)" }];
+      // BUG FIX (integration audit 2026-11-13) — the discount taken on this
+      // payment ({disc:cents} in the note) is saved on its log entry.
+      const discTag = String(payData?.payment?.note || "").match(/\{disc:(\d+)\}/);
+      const loggedDiscount = discTag ? Number(discTag[1]) / 100 : 0;
+      const newLog = alreadyLogged ? existingLog : [...existingLog, { id: crypto.randomUUID(), at: new Date().toISOString(), type: "paid", amount: (payData.payment.amount_money?.amount || 0) / 100, squarePaymentId: paymentId, note: "Paid via Square (customer portal)", ...(loggedDiscount > 0 ? { discount: loggedDiscount } : {}) }];
       const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/estimates?id=eq.${encodeURIComponent(invoiceId)}&select=id`, {
         method: "PATCH",
         headers: { ...authHeaders, "Content-Type": "application/json", Prefer: "return=representation" },

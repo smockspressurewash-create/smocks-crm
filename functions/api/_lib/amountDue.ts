@@ -44,7 +44,15 @@ export async function computeAmountDue(opts: {
   if (!est || !total || total <= 0) throw new Error("Could not verify invoice amount — invoice not found or has no total.");
 
   const paidDeposit = Number(est.paidDeposit) || 0;
-  const hasRemainingBalance = paidDeposit > 0 && !Number(est.paidFull) && total - paidDeposit > 0;
+  // BUG FIX (integration audit 2026-11-13) — paidDeposit is what the customer
+  // actually paid AFTER a coupon/referral discount, so "total - paidDeposit"
+  // charged the discount back on the balance. Discounts already taken are
+  // saved on the paid log entries (`discount`, written by stripe-webhook.ts /
+  // stripe-action.ts / square-action.ts) and now come off the balance too:
+  // balance = total - discount - paid.
+  const priorDiscount = (Array.isArray(est.paymentLog) ? est.paymentLog : [])
+    .reduce((sum: number, e: any) => sum + (e?.type === "paid" ? Number(e?.discount) || 0 : 0), 0);
+  const hasRemainingBalance = paidDeposit > 0 && !Number(est.paidFull) && total - priorDiscount - paidDeposit > 0;
   if (est.paidAt && !hasRemainingBalance) throw new Error("This has already been paid in full — nothing is due.");
 
   let payType: PayType = opts.payType === "deposit" ? "deposit" : opts.payType === "remaining" ? "remaining" : "full";
@@ -55,7 +63,7 @@ export async function computeAmountDue(opts: {
   if (payType === "remaining" && !hasRemainingBalance) payType = "full";
 
   let base: number;
-  if (payType === "remaining") base = total - paidDeposit;
+  if (payType === "remaining") base = total - priorDiscount - paidDeposit;
   else if (payType === "deposit") {
     // Same rule as computeDepositAmount (src/lib/utils.ts) + ClientPortal's
     // 25% fallback when the owner never configured a deposit.
@@ -67,7 +75,12 @@ export async function computeAmountDue(opts: {
 
   let discount = 0;
   let appliedPromoId: string | undefined;
-  if (opts.promoId) {
+  // One discount per invoice: a balance after a discounted deposit doesn't
+  // take a second coupon/referral on top.
+  const discountAlreadyUsed = payType === "remaining" && priorDiscount > 0;
+  if (discountAlreadyUsed) {
+    // nothing more to take off
+  } else if (opts.promoId) {
     const [promo] = await sbGet(`promotions?id=eq.${encodeURIComponent(opts.promoId)}&select=*`, serviceRoleKey);
     // Same rule the portal shows (src/lib/promoRules.ts): started, not
     // expired, not used up, and — for a coupon made for one customer — only

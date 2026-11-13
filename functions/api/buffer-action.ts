@@ -8,7 +8,15 @@
 // server-side (no CORS restriction applies) and is called same-origin (no
 // CORS restriction applies to calling IT from the browser), so it proxies
 // the real Buffer GraphQL call through.
+import { resolveCallerOwnerId } from "./_lib/ownerSecrets";
+
 export const onRequestPost = async (context: { request: Request }) => {
+  // BUG FIX (integration audit 2026-11-13) — anyone on the internet could
+  // use this as a relay to Buffer. Signed-in users only.
+  const auth = context.request.headers.get("Authorization") || "";
+  if (!(await resolveCallerOwnerId(auth.startsWith("Bearer ") ? auth.slice(7) : "").catch(() => null))) {
+    return new Response(JSON.stringify({ error: "Sign in again to post to Buffer." }), { status: 401, headers: { "Content-Type": "application/json" } });
+  }
   try {
     const { apiKey, query, variables } = await context.request.json() as {
       apiKey?: string; query?: string; variables?: Record<string, unknown>;

@@ -23,7 +23,7 @@
 import { twilioAccountSid } from "./_lib/twilioAccount";
 import { runModelWatch } from "./_lib/modelWatch";
 import { getOwnerSecrets } from "./_lib/ownerSecrets";
-import { continueBulkSends } from "./_lib/bulkTextSend";
+import { continueBulkSends, toE164 } from "./_lib/bulkTextSend";
 import { runBirthdayOffers } from "./_lib/birthdayOffers";
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
@@ -143,21 +143,55 @@ export const onRequest = async (context: { request: Request; env: Record<string,
     const claimed = await claim.json().catch(() => []);
     if (!Array.isArray(claimed) || claimed.length === 0) continue; // another run already claimed it
 
+    // BUG FIX (integration audit 2026-11-13) — the next due time used to be
+    // "old due + 1 day/week" once, which after downtime could still be in
+    // the past and fire a burst of catch-up texts. Step forward until it's
+    // actually in the future.
+    const isRecurring = r.recurring === "daily" || r.recurring === "weekly";
+    const nextOccurrence = (): string => {
+      const next = new Date(r.due_at);
+      const now = Date.now();
+      do { next.setDate(next.getDate() + (r.recurring === "daily" ? 1 : 7)); } while (next.getTime() <= now);
+      return next.toISOString();
+    };
+    // BUG FIX (integration audit 2026-11-13) — the row is claimed (sent:true)
+    // before sending, so a failed send used to leave it "sent" forever and a
+    // recurring reminder never came back. On failure, a recurring reminder
+    // moves to its next occurrence and a one-off is unclaimed and retried in
+    // ~15 minutes.
+    // retryOneOff=false: Twilio isn't set up at all, so a one-off reminder
+    // would just fail again every 15 minutes forever; leave it claimed.
+    const releaseAfterFailure = async (retryOneOff = true) => {
+      if (!isRecurring && !retryOneOff) return;
+      const patch = isRecurring
+        ? { sent: false, due_at: nextOccurrence() }
+        : { sent: false, due_at: new Date(Date.now() + 15 * 60 * 1000).toISOString() };
+      await fetch(`${SUPABASE_URL}/rest/v1/alfred_reminders?id=eq.${encodeURIComponent(r.id)}`, {
+        method: "PATCH", headers: { ...headers, "Content-Type": "application/json", Prefer: "return=minimal" },
+        body: JSON.stringify(patch),
+      }).catch(() => {});
+    };
+
     // SECURITY FIX — Twilio auth token moved out of app_settings.data into
     // owner_secrets (migration 0085); getSettings() above now only ever
     // returns a masked placeholder for it.
     const ownerSecrets = await getOwnerSecrets(r.owner_id, context.env.SUPABASE_SERVICE_ROLE_KEY);
     if (!ownerSecrets?.twilioAccountSid || !ownerSecrets?.twilioAuthToken || !ownerSecrets?.twilioFromNumber) {
       errors.push(`${r.id}: Twilio not configured for owner ${r.owner_id}`);
+      await releaseAfterFailure(false);
       continue;
     }
     const auth = `Basic ${btoa(`${ownerSecrets.twilioAccountSid}:${ownerSecrets.twilioAuthToken}`)}`;
-    const params = new URLSearchParams({ To: r.phone, From: ownerSecrets.twilioFromNumber, Body: `⏰ Reminder: ${r.message}` });
-    const smsRes = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${await twilioAccountSid(ownerSecrets.twilioAccountSid, ownerSecrets.twilioAuthToken)}/Messages.json`, {
+    // BUG FIX (integration audit 2026-11-13) — send to the E.164 form of the
+    // stored number (e.g. "+1" added to a 10-digit US number); Twilio rejects
+    // most other formats.
+    const params = new URLSearchParams({ To: toE164(r.phone) || r.phone, From: ownerSecrets.twilioFromNumber, Body: `⏰ Reminder: ${r.message}` });
+    const smsRes = await (async () => fetch(`https://api.twilio.com/2010-04-01/Accounts/${await twilioAccountSid(ownerSecrets.twilioAccountSid, ownerSecrets.twilioAuthToken)}/Messages.json`, {
       method: "POST", headers: { Authorization: auth, "Content-Type": "application/x-www-form-urlencoded" }, body: params.toString(),
-    });
-    if (!smsRes.ok) {
-      errors.push(`${r.id}: Twilio send failed (${smsRes.status})`);
+    }))().catch(() => null);
+    if (!smsRes?.ok) {
+      errors.push(`${r.id}: Twilio send failed (${smsRes?.status ?? "network"})`);
+      await releaseAfterFailure();
       continue;
     }
     sentCount++;
@@ -166,12 +200,10 @@ export const onRequest = async (context: { request: Request; env: Record<string,
     // themselves for the next occurrence instead of staying done forever —
     // same row, new due_at, unclaimed again. A daily/weekly reminder is
     // meant to repeat indefinitely until the owner cancels it.
-    if (r.recurring === "daily" || r.recurring === "weekly") {
-      const next = new Date(r.due_at);
-      next.setDate(next.getDate() + (r.recurring === "daily" ? 1 : 7));
+    if (isRecurring) {
       await fetch(`${SUPABASE_URL}/rest/v1/alfred_reminders?id=eq.${encodeURIComponent(r.id)}`, {
         method: "PATCH", headers: { ...headers, "Content-Type": "application/json", Prefer: "return=minimal" },
-        body: JSON.stringify({ sent: false, due_at: next.toISOString() }),
+        body: JSON.stringify({ sent: false, due_at: nextOccurrence() }),
       }).catch(() => {});
     }
   }

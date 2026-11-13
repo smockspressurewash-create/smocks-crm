@@ -7,6 +7,7 @@
 import { twilioAccountSid } from "./twilioAccount";
 import { recListAllOwners, recPut } from "./ownerRecords";
 import { stripMarkdownForSms } from "./textFormat";
+import { toE164 } from "./bulkTextSend";
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 
@@ -56,7 +57,9 @@ export async function runBirthdayOffers(authHeaders: Record<string, string>, get
         .replace(/{{percent}}/g, String(Number(cfg.discountPercent) || 10)).replace(/{{expires}}/g, expiresLabel).replace(/{{company}}/g, company));
       const sms = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${await twilioAccountSid(tw.sid, tw.token)}/Messages.json`, {
         method: "POST", headers: { Authorization: auth, "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ To: c.phone, From: tw.from, Body: body }).toString(),
+        // BUG FIX (integration audit 2026-11-13) — send to the E.164 form of
+        // the stored number; Twilio rejects most other formats.
+        body: new URLSearchParams({ To: toE164(c.phone) || c.phone, From: tw.from, Body: body }).toString(),
       }).catch(() => null);
       if (!sms?.ok) { errors.push(`${c.id}: text failed`); continue; }
       cfg.sent[c.id] = year;

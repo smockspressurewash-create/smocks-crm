@@ -18,7 +18,7 @@
 // tenant (returns "employee not found" rather than syncing).
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_8aEa3wsYJ7ghVPcGbtHymw_ugj0aEfm";
-import { syncEmployeeJobToCalendar } from "./_lib/employeeCalendarSync";
+import { syncEmployeeJobToCalendar, removeAllCrewEventsForJob } from "./_lib/employeeCalendarSync";
 
 const resolveCallerOwnerId = async (accessToken: string): Promise<string | null> => {
   if (!accessToken) return null;
@@ -44,9 +44,20 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       return new Response(JSON.stringify({ error: "Not authenticated — sign in and try again." }), { status: 401, headers: { "Content-Type": "application/json" } });
     }
     const body = await context.request.json() as {
-      employeeId?: string; jobId?: string; action?: "upsert" | "delete";
+      employeeId?: string; jobId?: string; action?: "upsert" | "delete" | "deleteAllForJob";
       title?: string; date?: string; time?: string; durationMinutes?: number; location?: string; notes?: string;
+      knownEventIds?: Record<string, string>;
     };
+    // BUG FIX (integration audit 2026-11-13) — cancelling or deleting a job
+    // never removed it from the crew's own calendars. "deleteAllForJob"
+    // removes every crew member's event for this job (knownEventIds is the
+    // caller's last-known map, used only if the job row is already deleted).
+    if (body.action === "deleteAllForJob") {
+      if (!body.jobId) return new Response(JSON.stringify({ error: "jobId required" }), { status: 400, headers: { "Content-Type": "application/json" } });
+      const known = body.knownEventIds && typeof body.knownEventIds === "object" ? body.knownEventIds : undefined;
+      const r = await removeAllCrewEventsForJob(context.env, { ownerId: callerOwnerId, jobId: body.jobId, knownEventIds: known, origin: new URL(context.request.url).origin });
+      return new Response(JSON.stringify({ success: true, ...r }), { headers: { "Content-Type": "application/json" } });
+    }
     if (!body.employeeId || !body.jobId || !body.action) {
       return new Response(JSON.stringify({ error: "employeeId, jobId, and action required" }), { status: 400, headers: { "Content-Type": "application/json" } });
     }

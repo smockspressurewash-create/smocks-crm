@@ -89,7 +89,19 @@ export const resolveCallerIsOwnerOrManager = async (accessToken: string): Promis
   // No employees row at all (the owner's very first login, before their
   // self-assign row exists yet) still counts as the owner — their own uid
   // IS the tenant id in that case, same fallback current_owner_id() uses.
-  if (!row) return { ownerId: uid, role: "owner" };
+  if (!row) {
+    // BUG FIX (integration audit 2026-11-13) — "no employees row" used to
+    // mean "owner" for ANY signed-in account, including customer-portal
+    // logins, which could then save webhook/payment secrets. Now the account
+    // must have its own business (an app_settings row), the same test
+    // resolveStaffOwnerId uses. Read with the caller's own session, so RLS
+    // only ever shows the caller's own row.
+    const ownRes = await fetch(`${SUPABASE_URL}/rest/v1/app_settings?owner_id=eq.${encodeURIComponent(uid)}&select=owner_id&limit=1`, {
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${accessToken}` },
+    });
+    const ownRows = await ownRes.json().catch(() => []);
+    return Array.isArray(ownRows) && ownRows.length > 0 ? { ownerId: uid, role: "owner" } : null;
+  }
   const role = (row.role || "").toLowerCase();
   if (role !== "owner" && role !== "manager") return null;
   return { ownerId: row.owner_id || uid, role };

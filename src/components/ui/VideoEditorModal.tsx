@@ -1247,9 +1247,13 @@ export function VideoEditorModal({ open, onClose, onExported, toast, settings, s
         if (!url) throw new Error(`Failed to upload ${c.file.name}`);
         uploaded.push({ url, startSec: c.startSec, endSec: c.endSec });
       }
+      // BUG FIX (integration audit 2026-11-13) — video-autoedit.ts now
+      // requires a signed-in session; send the caller's own token.
+      const { supabase } = await import("../../lib/supabase");
+      const { data: { session: aeSession } } = await supabase.auth.getSession();
       const resp = await fetch("/api/video-autoedit", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(aeSession?.access_token ? { Authorization: `Bearer ${aeSession.access_token}` } : {}) },
         body: JSON.stringify({
           apiKey: settings.videoAutoEditApiKey,
           clips: uploaded,

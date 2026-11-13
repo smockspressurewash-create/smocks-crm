@@ -55,9 +55,13 @@ export interface BufferSettings {
 }
 
 const bufferGraphQL = async <T = any>(apiKey: string, query: string, variables: Record<string, unknown>): Promise<T> => {
+  // BUG FIX (integration audit 2026-11-13) — the server now only relays for
+  // signed-in users, so send the session token.
+  let accessToken: string | undefined;
+  try { accessToken = (await withTimeout(supabase.auth.getSession(), 8000, "Get session")).data?.session?.access_token; } catch { /* server answers 401 */ }
   const res = await fetch("/api/buffer-action", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
     body: JSON.stringify({ apiKey, query, variables }),
   });
   const json = await res.json().catch(() => ({}));
@@ -426,9 +430,14 @@ export const checkA2pCampaignStatus = async (settings: TwilioSettings): Promise<
     // from owner_secrets, overriding whatever (now-masked) value is sent
     // here as `token` — see migration 0085's comment.
     : { sid: twilioSid, token: twilioToken, messagingServiceSid: twilioMessagingServiceSid, ownerId: currentOwnerIdForSms };
+  // BUG FIX (integration audit 2026-11-13) — this call sent no login token,
+  // so the server answered 401 every time. Attach the Supabase session token
+  // the same way twilioSend does.
+  let accessToken: string | undefined;
+  try { const { data } = await withTimeout(supabase.auth.getSession(), 8000, "Get session"); accessToken = data?.session?.access_token; } catch { /* server answers 401 */ }
   const res = await fetch(endpoint, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
     body: JSON.stringify(payload),
   });
   const data = await res.json().catch(() => ({} as any));
@@ -464,9 +473,14 @@ export const checkTwilioAccountStatus = async (settings: TwilioSettings): Promis
   // SECURITY FIX — ownerId lets the server resolve the REAL credentials
   // from owner_secrets — see migration 0085's comment / checkA2pCampaignStatus above.
   const payload = twilioBackendUrl ? { sid: twilioSid, token: twilioToken } : { sid: twilioSid, token: twilioToken, ownerId: currentOwnerIdForSms };
+  // BUG FIX (integration audit 2026-11-13) — this call sent no login token,
+  // so the server answered 401 every time. Attach the Supabase session token
+  // the same way twilioSend does.
+  let accessToken: string | undefined;
+  try { const { data } = await withTimeout(supabase.auth.getSession(), 8000, "Get session"); accessToken = data?.session?.access_token; } catch { /* server answers 401 */ }
   const res = await fetch(endpoint, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
     body: JSON.stringify(payload),
   });
   const data = await res.json().catch(() => ({} as any));
@@ -710,11 +724,19 @@ export const refreshGoogleAccessToken = async (
   backendUrl?: string
 ): Promise<{ token: string; expiresAt: number; configMissing: boolean } | null> => {
   const endpoint = backendUrl ? `${backendUrl}/google/refresh` : "/api/google-refresh";
+  // BUG FIX (integration audit 2026-11-13) — after saving settings the
+  // stored refresh token is the "••••••••" mask, so Google refused it and
+  // Gmail/Calendar stopped working on other devices after an hour. Never
+  // send the mask; send the sign-in token so the server uses the real
+  // refresh token it keeps for the owner.
+  const realRefresh = refreshToken && !/^[•\s]*$/.test(refreshToken) ? refreshToken : undefined;
+  let accessToken: string | undefined;
+  try { accessToken = (await withTimeout(supabase.auth.getSession(), 8000, "Get session")).data?.session?.access_token; } catch { /* server falls back */ }
   try {
     const res = await withTimeout(fetch(endpoint, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ refresh_token: refreshToken }),
+      headers: { "Content-Type": "application/json", ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
+      body: JSON.stringify(realRefresh ? { refresh_token: realRefresh } : {}),
     }), 8000, "Google token refresh");
     const data = await res.json().catch(() => ({} as any));
     if (!res.ok || !data?.access_token) {
@@ -747,15 +769,18 @@ export const getFreshOwnerGoogleToken = async (
 ): Promise<string | null> => {
   const stored = getStoredGoogleConnection();
   let token = stored?.token || settings.googleProviderToken || "";
-  let refreshToken = stored?.refreshToken || settings.googleRefreshToken;
+  const unmask = (v?: string) => (v && !/^[•\s]*$/.test(v) ? v : undefined);
+  let refreshToken = unmask(stored?.refreshToken) || unmask(settings.googleRefreshToken);
   let expiresAt = stored?.expiresAt || settings.googleTokenExpiresAt;
 
   if (!token && !refreshToken) {
     const cloud = await fetchOwnerGoogleToken();
-    if (cloud?.token) { token = cloud.token; refreshToken = cloud.refreshToken; expiresAt = cloud.expiresAt; }
+    if (cloud?.token) { token = cloud.token; refreshToken = unmask(cloud.refreshToken); expiresAt = cloud.expiresAt; }
   }
-  if (refreshToken && (!expiresAt || Date.now() > expiresAt - 2 * 60 * 1000)) {
-    const refreshed = await refreshGoogleAccessToken(refreshToken, settings.googleBackendUrl);
+  // Refresh when expired even with no usable refresh token here: the server
+  // holds the real one and uses it for a signed-in owner.
+  if ((refreshToken || token) && (!expiresAt || Date.now() > expiresAt - 2 * 60 * 1000)) {
+    const refreshed = await refreshGoogleAccessToken(refreshToken || "", settings.googleBackendUrl);
     if (refreshed?.token) {
       token = refreshed.token;
       onTokenRefreshed?.(refreshed.token, refreshed.expiresAt);

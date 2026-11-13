@@ -16,14 +16,42 @@
 // different API shape entirely (raw audio bytes, not multipart form-data,
 // its own response schema) — added so an owner isn't locked into one
 // vendor if OpenAI's is down, rate-limited, or they'd rather not use it.
+//
+// BUG FIX (integration audit 2026-11-13) — the browser sent
+// settings.modelKeys.openai/groq, which is only the masked "••••••••"
+// placeholder since keys moved to owner_secrets, so every OpenAI/Groq
+// caption call failed with a bad-key error (and this endpoint needed no
+// sign-in at all). Now requires a signed-in session and loads the real key
+// server-side, like alfred-transcribe.ts. Deepgram's key still lives in
+// app_settings.data.deepgramApiKey, so it's read from there server-side.
+import { getOwnerSecrets, resolveCallerOwnerId } from "./_lib/ownerSecrets";
+import { SUPABASE_URL } from "./_lib/env";
+
+const loadServerKey = async (ownerId: string, provider: string, serviceRoleKey: string): Promise<string> => {
+  if (provider === "deepgram") {
+    const rows = await fetch(`${SUPABASE_URL}/rest/v1/app_settings?owner_id=eq.${encodeURIComponent(ownerId)}&select=data&limit=1`, { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } })
+      .then(r => r.json()).catch(() => []);
+    const k = Array.isArray(rows) ? rows[0]?.data?.deepgramApiKey : "";
+    return typeof k === "string" && !/^•+$/.test(k.trim()) ? k.trim() : "";
+  }
+  const secrets = await getOwnerSecrets(ownerId, serviceRoleKey).catch(() => null);
+  const k = secrets?.modelKeys?.[provider === "groq" ? "groq" : "openai"];
+  return typeof k === "string" ? k.trim() : "";
+};
+
 export const onRequestPost = async (context: { request: Request; env: Record<string, string> }) => {
   try {
+    const token = (context.request.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
+    const ownerId = await resolveCallerOwnerId(token).catch(() => null);
+    if (!ownerId) return json({ error: "Sign in again to use auto-captions." }, 401);
+    const serviceRoleKey = context.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (!serviceRoleKey) return json({ error: "SUPABASE_SERVICE_ROLE_KEY isn't set on the server" }, 500);
     const incomingForm = await context.request.formData();
     const audioFile = incomingForm.get("audio");
-    const apiKey = incomingForm.get("apiKey");
     const provider = String(incomingForm.get("provider") || "openai");
     if (!(audioFile instanceof File)) return json({ error: "Missing audio file" }, 400);
-    if (!apiKey || typeof apiKey !== "string") return json({ error: noKeyMessage(provider) }, 400);
+    const apiKey = await loadServerKey(ownerId, provider, serviceRoleKey);
+    if (!apiKey) return json({ error: noKeyMessage(provider) }, 400);
 
     if (provider === "deepgram") {
       const audioBuf = await audioFile.arrayBuffer();

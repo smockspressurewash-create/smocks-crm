@@ -32,12 +32,23 @@ import { SopModal } from "../ui/SopModal";
 import { chargeSavedPaymentMethod, sendPaymentReceipt, listCustomerPaymentMethods } from "../../lib/stripe";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
 import { fmt, uid, today, localDateStr, localDateKey, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields, reconcileCrewAfterAssign, getPollIntervalMs, getPayPeriodBounds, haversineMiles, resolveTermsForJobType, buildJobCalendarDescription, haptic, queueOfflineJobPatch, getPendingJobPatches, clearPendingJobPatch, fetchDriveDistance } from "../../lib/utils";
+import { computeDiscountsTotal } from "../../lib/utils";
 import { useOnlineStatus } from "../../hooks/useOnlineStatus";
 import { callModel, MODELS } from "../../lib/api";
 import { matchVoiceCommand } from "../../lib/voiceCommands";
 import { usePollGate } from "../../hooks/usePollGate";
 import { usePersistent } from "../../hooks/usePersistent";
 import type { Job, Employee, Customer, AppSettings, JobChecklistItem, EmployeeOnboarding } from "../../types";
+
+// BUG FIX (integration audit 2026-11-13) — card charges and invoices from
+// the field portal used job.amount and ignored the job's discounts, so a
+// discounted job was charged (and invoiced) at full price. What the customer
+// pays = amount − discounts, the same rule as TrashCanPage.tsx's chargedOf
+// and JobDetailModal's invoice.
+const jobChargedOf = (j: any): number => {
+  const sp = jobTaxSplit(j);
+  return Math.max(0, Math.round((sp.total - computeDiscountsTotal(j?.discounts, sp.subtotal)) * 100) / 100);
+};
 
 const PRE_DEFAULTS: JobChecklistItem[] = [
   { id: "pre1", label: "Take photos of existing damage", done: false },
@@ -1492,10 +1503,14 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
     }
     setSendingCompleteInvoice(true);
     try {
+      // BUG FIX (integration audit 2026-11-13) — discounts carried onto the
+      // invoice (was discount: 0), same shape as JobDetailModal's invoice.
+      const portalSplit = jobTaxSplit(job);
+      const portalDiscount = computeDiscountsTotal(job.discounts, portalSplit.subtotal);
       const newInv = {
         id: uid(), customerId: job.customerId,
-        lineItems: [{ id: uid(), description: job.notes || job.address || "Service", quantity: 1, unitPrice: jobTaxSplit(job).subtotal }],
-        subtotal: jobTaxSplit(job).subtotal, discount: 0, depositRequired: 0, tax: jobTaxSplit(job).tax, total: jobTaxSplit(job).total,
+        lineItems: [{ id: uid(), description: job.notes || job.address || "Service", quantity: 1, unitPrice: portalSplit.subtotal }],
+        subtotal: portalSplit.subtotal, discount: portalDiscount, discounts: job.discounts || [], depositRequired: 0, tax: portalSplit.tax, total: Math.max(0, portalSplit.subtotal - portalDiscount) + portalSplit.tax,
         status: "approved" as const, createdAt: localDateStr(), validUntil: daysFromNow(30), invoiced: true, invoicedAt: localDateStr(),
         // The employee has no separate "ownerId" concept of their own here —
         // this invoice belongs to whichever owner the source job belongs to,
@@ -1857,11 +1872,11 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
                   if (!autoEligible) { setCompleteStep("payment"); return; }
                   setChargingCardNow(true);
                   try {
-                    await chargeSavedPaymentMethod(customer.stripeCustomerId!, customer.savedPaymentMethodId!, Math.round((Number(job.amount) || 0) * 100), "usd", `Recurring job — ${job.address || ""}`, undefined, (job as any).owner_id);
-                    toast(`Auto-charged ${fmt(job.amount)} to card on file ✓`, "green");
+                    await chargeSavedPaymentMethod(customer.stripeCustomerId!, customer.savedPaymentMethodId!, Math.round(jobChargedOf(job) * 100), "usd", `Recurring job — ${job.address || ""}`, undefined, (job as any).owner_id);
+                    toast(`Auto-charged ${fmt(jobChargedOf(job))} to card on file ✓`, "green");
                     sendPaymentReceipt({
                       customerPhone: customer?.phone, customerEmail: customer?.email, customerFirstName: customer?.firstName, customerId: customer?.id,
-                      amountCents: Math.round((Number(job.amount) || 0) * 100), description: `Job at ${job.address || ""}`, ownerId: (job as any).owner_id,
+                      amountCents: Math.round(jobChargedOf(job) * 100), description: `Job at ${job.address || ""}`, ownerId: (job as any).owner_id,
                     }).catch((e: any) => console.warn("[PaymentReceipt] failed:", e?.message));
                     setPaidChoice("yes");
                     setCompleteStep("tip");
@@ -1886,7 +1901,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
           {completeStep === "payment" && (
             <>
               <div className="text-lg font-bold">Has the customer paid yet?</div>
-              <div className="text-sm text-white/50">Amount due: <span className="text-green-400 font-semibold">{fmt(job.amount)}</span></div>
+              <div className="text-sm text-white/50">Amount due: <span className="text-green-400 font-semibold">{fmt(jobChargedOf(job))}</span></div>
               <div className="grid grid-cols-2 gap-3">
                 <button onClick={() => { setPaidChoice("yes"); setCompleteStep("method"); }} className="py-4 rounded-xl border-2 border-green-600/50 bg-green-950/30 text-green-300 font-semibold hover:bg-green-900/40 transition">Yes</button>
                 <button onClick={() => { setPaidChoice("no"); setCompleteStep("invoice"); }} className="py-4 rounded-xl border-2 border-white/10 bg-black/40 text-white/70 font-semibold hover:border-white/30 transition">No</button>
@@ -1933,8 +1948,8 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
                         // the real business from and fell back to the
                         // platform-wide key — the wrong Stripe account, or a
                         // hard failure if no platform key is set at all.
-                        await chargeSavedPaymentMethod(customer.stripeCustomerId!, chargeCardId, Math.round((Number(job.amount) || 0) * 100), "usd", `Job payment — ${job.address || ""}`, undefined, (job as any).owner_id);
-                        toast(`Charged ${fmt(job.amount)} to card on file ✓`, "green");
+                        await chargeSavedPaymentMethod(customer.stripeCustomerId!, chargeCardId, Math.round(jobChargedOf(job) * 100), "usd", `Job payment — ${job.address || ""}`, undefined, (job as any).owner_id);
+                        toast(`Charged ${fmt(jobChargedOf(job))} to card on file ✓`, "green");
                         setCompleteStep("tip");
                       } catch (e: any) {
                         toast("Charge failed: " + (e?.message || "unknown error"), "red");
@@ -1945,7 +1960,7 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
                     disabled={chargingCardNow}
                     className="w-full py-3 rounded-xl border-2 border-emerald-600/50 bg-emerald-950/30 text-emerald-300 font-semibold hover:bg-emerald-900/40 transition flex items-center justify-center gap-1.5"
                   >
-                    <CreditCard size={14} />{chargingCardNow ? "Charging…" : `Charge ${fmt(job.amount)} to card on file${jobCards.length <= 1 ? ` (${customer.savedPaymentMethodLabel || "saved"})` : ""}`}
+                    <CreditCard size={14} />{chargingCardNow ? "Charging…" : `Charge ${fmt(jobChargedOf(job))} to card on file${jobCards.length <= 1 ? ` (${customer.savedPaymentMethodLabel || "saved"})` : ""}`}
                   </button>
                 </div>
               )}

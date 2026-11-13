@@ -179,8 +179,32 @@ export async function runModelWatch(env: Record<string, string>, opts: { force?:
   const anyKeyForProvider = (p: Provider) => { for (const [slot, def] of Object.entries(MODELS)) if (def.provider === p) { const k = keyFor(slot); if (k) return { slot, key: k }; } return null; };
 
   const catalogs: Partial<Record<Provider, string[]>> = {};
+  // BUG FIX (integration audit 2026-11-13) — key-only providers' model lists
+  // were read with whichever business came first, so one business's
+  // restricted key could make a model look "gone" and swap it for everyone.
+  // Key-read lists are now the union over several businesses' keys and only
+  // count as proof in a full (not single-business) run; the NVIDIA and
+  // OpenRouter lists are public and always count.
+  const PUBLIC_CATALOG = new Set<Provider>(["nvidia", "openrouter"]);
+  const catalogAuthoritative: Partial<Record<Provider, boolean>> = {};
+  const keysForProvider = (p: Provider, max = 5): string[] => {
+    const out = new Set<string>();
+    for (const o of owners) for (const [slot, def] of Object.entries(MODELS)) {
+      if (def.provider !== p) continue;
+      const k = o.model_keys?.[slot];
+      if (typeof k === "string" && k.trim()) out.add(k.trim());
+      if (out.size >= max) return Array.from(out);
+    }
+    return Array.from(out);
+  };
   const providers = Array.from(new Set(Object.values(MODELS).map(d => d.provider)));
-  await Promise.all(providers.map(async p => { const c = await readCatalog(p, anyKeyForProvider(p)?.key); if (c?.length) catalogs[p] = c; }));
+  await Promise.all(providers.map(async p => {
+    if (PUBLIC_CATALOG.has(p)) { const c = await readCatalog(p); if (c?.length) { catalogs[p] = c; catalogAuthoritative[p] = true; } return; }
+    const lists = (await Promise.all(keysForProvider(p).map(k => readCatalog(p, k)))).filter((c): c is string[] => !!c?.length);
+    if (!lists.length) return;
+    catalogs[p] = Array.from(new Set(lists.flat()));
+    catalogAuthoritative[p] = !opts.onlyOwner;
+  }));
 
   const current = (slot: string) => doc.overrides![slot]?.model || MODELS[slot].modelId;
   const replace = async (slot: string, reason: string, key?: string) => {
@@ -208,6 +232,7 @@ export async function runModelWatch(env: Record<string, string>, opts: { force?:
   for (const [slot, def] of Object.entries(MODELS)) {
     const catalog = catalogs[def.provider];
     if (!catalog || def.provider === "openrouter") continue; // OpenRouter picks live free models per request
+    if (!catalogAuthoritative[def.provider]) continue; // BUG FIX (integration audit 2026-11-13) — see catalogAuthoritative above
     if (!catalog.includes(current(slot))) await replace(slot, "the provider no longer offers it", keyFor(slot) || undefined);
   }
   // An override whose original model is back and listed again is kept — it was verified working.
@@ -241,12 +266,13 @@ export async function runModelWatch(env: Record<string, string>, opts: { force?:
     await Promise.all(Object.entries(MODELS).map(async ([slot, base]) => {
       const key = String(o.model_keys?.[slot] || "").trim();
       if (!key) return;
-      let def: ModelDef = { ...base, modelId: current(slot), endpoint: base.provider === "google" ? base.endpoint.replace(/models\/[^:/]+:/, `models/${current(slot)}:`) : base.endpoint };
-      let p = await pingModel(def, key);
-      if (!p.ok && p.kind === "gone" && await replace(slot, "it stopped working (model gone)", key)) {
-        def = { ...def, modelId: current(slot), endpoint: base.provider === "google" ? base.endpoint.replace(/models\/[^:/]+:/, `models/${current(slot)}:`) : base.endpoint };
-        p = await pingModel(def, key);
-      }
+      const def: ModelDef = { ...base, modelId: current(slot), endpoint: base.provider === "google" ? base.endpoint.replace(/models\/[^:/]+:/, `models/${current(slot)}:`) : base.endpoint };
+      // BUG FIX (integration audit 2026-11-13) — one business's "model not
+      // found" (often a key without access to that model) used to swap the
+      // SHARED model for every business. A per-key failure now only lands in
+      // this business's own health record; the shared model changes only in
+      // step 1, when the provider's model list says it's gone.
+      const p = await pingModel(def, key);
       const was = prev?.slots?.[slot];
       health.slots[slot] = { provider: base.provider, model: def.modelId, ok: p.ok, kind: p.kind, ms: p.ms, error: p.ok ? undefined : p.error, since: was && was.kind === p.kind ? was.since : now };
       // Tell the owner once when something starts failing in a way they must fix.

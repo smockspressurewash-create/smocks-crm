@@ -30,4 +30,7 @@ jobs:
           code=$(curl -s -o out.json -w "%{http_code}" --max-time 300 "$url")
           echo "HTTP $code"
           cat out.json | head -c 2000; echo
+          # 403 = MODEL_WATCH_KEY not set up yet; the app's own scheduler
+          # still runs model watch, so warn instead of failing every day.
+          if [ "$code" = "403" ]; then echo "::warning::model-watch refused (403). Set the MODEL_WATCH_KEY secret here and in Cloudflare."; exit 0; fi
           test "$code" = "200"

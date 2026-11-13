@@ -621,11 +621,16 @@ export const requestTranscription = async (
   onProgress?: (msg: string) => void
 ): Promise<{ text: string; start: number; end: number }[]> => {
   if (isLocalCaptionProvider(provider)) return transcribeAudioLocally(audioBlob, onProgress, provider === "local-fast" ? "fast" : "balanced");
+  // BUG FIX (integration audit 2026-11-13) — apiKey here is only the masked
+  // "••••••••" placeholder (real keys live server-side), so it's no longer
+  // sent; the server loads the owner's real key from the signed-in session.
+  void apiKey;
   const form = new FormData();
   form.append("audio", audioBlob, "audio.mp3");
-  form.append("apiKey", apiKey);
   form.append("provider", provider);
-  const res = await fetch("/api/transcribe-audio", { method: "POST", body: form });
+  const { supabase } = await import("./supabase");
+  const { data: { session } } = await supabase.auth.getSession();
+  const res = await fetch("/api/transcribe-audio", { method: "POST", body: form, headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {} });
   const data = await res.json();
   if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
   return data.segments || [];

@@ -6,10 +6,8 @@
 //
 // One-time setup (Cloudflare Pages -> this project -> Settings ->
 // Environment variables):
-//   VAPID_PRIVATE_KEY = 5YrGMxaqOkp0pLxMRfq0yjzkd4ZL05_jGDLOjT2mBi4
-//   (matches the public key hardcoded in src/lib/push.ts — this is the
-//   private half, generated once as a real P-256 key pair; never rotate one
-//   half without the other or every subscriber breaks)
+//   VAPID_PRIVATE_KEY = (the private half of the pair whose public half is
+//   in src/lib/push.ts; never write it in this file or anywhere in the repo)
 //   VAPID_SUBJECT = mailto:you@yourdomain.com  (any contact address — push
 //   services use this only if they need to reach the app operator, e.g.
 //   about a misbehaving sender; optional, falls back to a generic address)
@@ -29,7 +27,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
   const vapidPrivateKey = context.env.VAPID_PRIVATE_KEY;
   if (!serviceRoleKey) return json({ error: "Server missing SUPABASE_SERVICE_ROLE_KEY env var." }, 500);
   if (!vapidPrivateKey) return json({ error: "Server missing VAPID_PRIVATE_KEY env var — see this file's header comment for the value to set." }, 500);
-  const vapidPublicKey = "BFqKy2PtHrcVhocXAUh9rCTn6C1PEXIk0X_jyY7xwWBeH6r8w7ybe7lQEtNdtA8luYVn2s0j77XPYJiTCyTfAYA";
+  const vapidPublicKey = "BClLCG2hdw-NBLcryKxD2tfwCVPKXXse8V6cIlTYix9U0omp8qdgRC3mAb_bxttrR1kdNw37r18QPFeUDrefVrE";
   const vapidSubject = context.env.VAPID_SUBJECT || "mailto:support@crewboss.app";
 
   try {

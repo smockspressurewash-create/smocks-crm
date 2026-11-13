@@ -11,11 +11,23 @@
 // already live), matching the values already in Supabase's Google provider
 // config. Without a real refresh_token AND these two env vars, this always
 // fails cleanly — callers fall back to prompting the owner to reconnect.
-import { getOwnerSecrets, resolveCallerOwnerId } from "./_lib/ownerSecrets";
+import { getOwnerSecrets, resolveCallerIsOwnerOrManager, resolveCallerOwnerId } from "./_lib/ownerSecrets";
 
 export const onRequestPost = async (context: { request: Request; env: Record<string, string> }) => {
   try {
     let { refresh_token } = await context.request.json() as { refresh_token?: string };
+    // BUG FIX (integration audit 2026-11-13) — a masked "••••••••" placeholder
+    // read back out of settings is not a token; treat it as absent so the
+    // caller gets the server-side owner path (or a clean no_refresh_token).
+    if (typeof refresh_token === "string" && /^[•\s]*$/.test(refresh_token)) refresh_token = undefined;
+    const callerToken = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+    // BUG FIX (integration audit 2026-11-13) — a bearer token that is sent
+    // must be a real session; a bad one is rejected instead of ignored.
+    if (callerToken && !(await resolveCallerOwnerId(callerToken).catch(() => null))) {
+      return new Response(JSON.stringify({ error: "Not signed in — sign in again and retry.", code: "not_signed_in" }), {
+        status: 401, headers: { "Content-Type": "application/json" },
+      });
+    }
     // SECURITY FIX — the OWNER's own Google refresh_token used to have to be
     // sent by the client on every call, meaning it had to live in browser-
     // readable state (app_settings.data) — see migration 0085's comment for
@@ -28,11 +40,19 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // token for an unrelated business), and owner_secrets holds the real
     // refresh_token for that tenant.
     const serviceRoleKey = context.env.SUPABASE_SERVICE_ROLE_KEY;
-    if (!refresh_token && serviceRoleKey) {
-      const accessToken = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
-      const ownerId = await resolveCallerOwnerId(accessToken);
-      if (ownerId) {
-        const secrets = await getOwnerSecrets(ownerId, serviceRoleKey);
+    if (!refresh_token) {
+      // BUG FIX (integration audit 2026-11-13) — any signed-in EMPLOYEE used
+      // to get the owner's live Google access token (full Gmail/Calendar/
+      // Drive) here. The business's own Google connection is now limited to
+      // the owner or a manager, and always needs a session.
+      const caller = await resolveCallerIsOwnerOrManager(callerToken).catch(() => null);
+      if (!caller) {
+        return new Response(JSON.stringify({ error: callerToken ? "Only the owner or a manager can use the business's Google connection." : "Not signed in — sign in again and retry.", code: callerToken ? "forbidden" : "not_signed_in" }), {
+          status: callerToken ? 403 : 401, headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (serviceRoleKey) {
+        const secrets = await getOwnerSecrets(caller.ownerId, serviceRoleKey);
         if (secrets?.googleRefreshToken) refresh_token = secrets.googleRefreshToken;
       }
     }

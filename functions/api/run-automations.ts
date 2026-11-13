@@ -24,6 +24,7 @@
 import { logSmsToInbox } from "./_lib/inboxLog";
 import { twilioAccountSid } from "./_lib/twilioAccount";
 import { getOwnerSecrets } from "./_lib/ownerSecrets";
+import { toE164 } from "./_lib/bulkTextSend";
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 
@@ -509,9 +510,27 @@ const runForOwner = async (ownerId: string, serviceRoleKey: string, env: Record<
   const newDailyLog = { ...dailyLog };
   const sentCustomersThisRun = new Set<string>();
 
+  // BUG FIX (integration audit 2026-11-13) — sentLog used to be saved only
+  // after ALL sends finished, so a run cut off midway (or overlapping with
+  // another run) re-sent to the same customers. Each item's dedup key is now
+  // saved BEFORE its send, and removed again only if that send fails.
+  const setSentLogKey = async (autoId: string, dedupKey: string, value: string | null) => {
+    const freshRows = await fetch(`${SUPABASE_URL}/rest/v1/automations?id=eq.${encodeURIComponent(autoId)}&owner_id=eq.${encodeURIComponent(ownerId)}&select=data`, { headers }).then(r => r.json()).catch(() => null);
+    const row = (Array.isArray(freshRows) ? freshRows[0]?.data : null) || automations.find(a => a.id === autoId);
+    if (!row) return;
+    const sentLog = { ...(row.sentLog || {}) };
+    if (value === null) delete sentLog[dedupKey]; else sentLog[dedupKey] = value;
+    await fetch(`${SUPABASE_URL}/rest/v1/automations?id=eq.${encodeURIComponent(autoId)}&owner_id=eq.${encodeURIComponent(ownerId)}`, {
+      method: "PATCH", headers: { ...headers, "Content-Type": "application/json", Prefer: "return=minimal" },
+      body: JSON.stringify({ data: { ...row, sentLog }, updated_at: new Date().toISOString() }),
+    }).catch(() => {});
+  };
+
   for (const item of toSend) {
     if (sentCustomersThisRun.has(item.cand.customer.id)) continue;
+    await setSentLogKey(item.auto.id, item.dedupKey, todayStr);
     const ok = await sendOneServerSide(item, settings, secrets, ownerId, serviceRoleKey, env);
+    if (!ok) await setSentLogKey(item.auto.id, item.dedupKey, null);
     if (ok) {
       sent++;
       sentCustomersThisRun.add(item.cand.customer.id);
@@ -581,7 +600,9 @@ const sendOneServerSide = async (
   if (!c.phone || c.smsOptOut) return false;
   if (!secrets?.twilioAuthToken || !secrets?.twilioAccountSid || !secrets?.twilioFromNumber) { console.warn("[Automations]", item.auto.name, "— Twilio not configured"); return false; }
   const auth = `Basic ${btoa(`${secrets.twilioAccountSid}:${secrets.twilioAuthToken}`)}`;
-  const params = new URLSearchParams({ To: c.phone, From: secrets.twilioFromNumber, Body: item.body });
+  // BUG FIX (integration audit 2026-11-13) — send to the E.164 form of the
+  // stored number; Twilio rejects most other formats.
+  const params = new URLSearchParams({ To: toE164(c.phone) || c.phone, From: secrets.twilioFromNumber, Body: item.body });
   const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${await twilioAccountSid(secrets.twilioAccountSid, secrets.twilioAuthToken)}/Messages.json`, {
     method: "POST", headers: { Authorization: auth, "Content-Type": "application/x-www-form-urlencoded" }, body: params.toString(),
   });

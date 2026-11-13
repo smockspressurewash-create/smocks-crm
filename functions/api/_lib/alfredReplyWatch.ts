@@ -10,6 +10,7 @@
 // add it to their file."
 import { recList, recPut } from "./ownerRecords";
 import { askModelJson, sendCustomerSmsAsAlfred } from "./alfredSmsAgent";
+import { pushToOwnerDevices } from "./webPush";
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 
@@ -97,11 +98,11 @@ export async function handleWatchedReply(ctx: any, modelKeys: Record<string, str
     const r = await sendCustomerSmsAsAlfred(ctx, ctx.ownerPhone, body, undefined, true).catch(() => ({ ok: false }));
     if ((r as any).ok) { watch.pendingOwnerNote = []; watch.lastOwnerTextAt = new Date().toISOString(); }
   }
-  if (ctx.origin && ctx.ownerId) {
-    fetch(`${ctx.origin}/api/send-push`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ownerId: ctx.ownerId, title: `${name} replied`, body: line, url: "/#/inbox", tag: "watch-" + watch.id + "-" + customer.id }),
-    }).catch(() => {});
+  // BUG FIX (integration audit 2026-11-13) — /api/send-push needs a login
+  // this server code doesn't have, so these pushes never arrived. Send the
+  // push directly with the service role key instead.
+  if (ctx.ownerId && ctx.env) {
+    await pushToOwnerDevices(ctx.env, ctx.ownerId, { title: `${name} replied`, body: line, url: "/#/inbox", tag: "watch-" + watch.id + "-" + customer.id });
   }
 
   await recPut(ctx.authHeaders, ctx.ownerId, "reply_watch", watch);

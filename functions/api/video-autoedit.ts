@@ -17,8 +17,15 @@ type CaptionSpec = { text: string; startSec: number; endSec: number };
 const POLL_INTERVAL_MS = 3000;
 const MAX_POLLS = 25; // ~75s ceiling — Cloudflare Pages Functions have their own execution time limit
 
+// BUG FIX (integration audit 2026-11-13) — this needed no sign-in, so anyone
+// could use the deployment as a free render relay. Requires a session now.
+import { resolveCallerOwnerId } from "./_lib/ownerSecrets";
+
 export const onRequestPost = async (context: { request: Request }) => {
   try {
+    const token = (context.request.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "");
+    const ownerId = await resolveCallerOwnerId(token).catch(() => null);
+    if (!ownerId) return err("Sign in again to use AI auto-edit.", 401);
     const body = await context.request.json() as {
       apiKey?: string;
       clips?: ClipSpec[];

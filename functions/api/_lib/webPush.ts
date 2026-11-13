@@ -163,3 +163,30 @@ export const sendWebPush = async (
     return { ok: false, status: 0, error: e?.message || "Push send failed" };
   }
 };
+
+// BUG FIX (integration audit 2026-11-13) — server code (the SMS webhook,
+// reply watching) used to call /api/send-push over HTTP with no login, and
+// send-push now requires one, so those pushes never arrived. This sends a
+// push to the owner's own devices directly with the service role key, the
+// same way _lib/ownerNotify.ts does. Never throws.
+const OWNER_PUSH_VAPID_PUBLIC_KEY = "BClLCG2hdw-NBLcryKxD2tfwCVPKXXse8V6cIlTYix9U0omp8qdgRC3mAb_bxttrR1kdNw37r18QPFeUDrefVrE";
+export const pushToOwnerDevices = async (
+  env: Record<string, string>,
+  ownerId: string,
+  payload: { title: string; body: string; url?: string; tag?: string }
+): Promise<void> => {
+  const key = env?.SUPABASE_SERVICE_ROLE_KEY;
+  if (!key || !env.VAPID_PRIVATE_KEY || !ownerId) return;
+  try {
+    const res = await fetch(`https://boaqaihymgmrhnjtiqrs.supabase.co/rest/v1/push_subscriptions?owner_id=eq.${encodeURIComponent(ownerId)}&employee_id=is.null&select=endpoint,p256dh,auth`, {
+      headers: { apikey: key, Authorization: `Bearer ${key}` },
+    });
+    const subs = await res.json().catch(() => []);
+    if (!Array.isArray(subs)) return;
+    for (const sub of subs) {
+      await sendWebPush({ endpoint: sub.endpoint, p256dh: sub.p256dh, auth: sub.auth }, payload, OWNER_PUSH_VAPID_PUBLIC_KEY, env.VAPID_PRIVATE_KEY, env.VAPID_SUBJECT || "mailto:support@crewboss.app").catch(() => null);
+    }
+  } catch (e: any) {
+    console.warn("[webPush] owner push failed:", e?.message);
+  }
+};

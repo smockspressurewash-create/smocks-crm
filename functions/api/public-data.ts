@@ -167,8 +167,19 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       const estRes = await sb(serviceRoleKey, `estimates?id=eq.${encodeURIComponent(id)}&select=*`);
       const est = Array.isArray(estRes.data) ? estRes.data[0] : null;
       if (!est) return json({ error: "Not found" }, 404);
+      // BUG FIX (integration audit 2026-11-13) — this could be re-run after
+      // a deposit was paid, letting a customer swap to a cheaper package and
+      // pay the balance on that. Once any payment is recorded, the stored
+      // total is kept and returned unchanged (paying the balance still
+      // works). Before any payment — including an approved "pay later"
+      // quote — the total is recalculated from the selection as before.
+      const hasPayment = !!est.paidAt || Number(est.paidDeposit) > 0 || Number(est.paidFull) > 0 || (Array.isArray(est.paymentLog) && est.paymentLog.some((p: any) => p?.type === "paid"));
+      if (hasPayment) return json({ success: true, total: Number(est.total) || 0, locked: true });
       const settingsRow = est.owner_id ? await sb(serviceRoleKey, `app_settings?owner_id=eq.${encodeURIComponent(est.owner_id)}&select=data`) : null;
-      const taxRate = Number((Array.isArray(settingsRow?.data) ? settingsRow.data[0]?.data?.taxRate : null)) || 6;
+      // BUG FIX (integration audit 2026-11-13) — `|| 6` turned a business's
+      // real 0% tax rate into 6%, so a no-tax customer was overcharged.
+      // Same rule as ClientPortal.tsx: the stored rate, 0 allowed.
+      const taxRate = Number((Array.isArray(settingsRow?.data) ? settingsRow.data[0]?.data?.taxRate : null)) || 0;
       let subtotal = 0;
       if (est.estimateType === "package") {
         const pkg = (est.packages || []).find((p: any) => p.id === selectedPackageId);

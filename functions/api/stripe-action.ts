@@ -139,7 +139,19 @@ const resolveCallerIsOwnerOrManager = async (accessToken: string): Promise<{ own
   });
   const empRows = await empRes.json().catch(() => []);
   const row = Array.isArray(empRows) ? empRows[0] : null;
-  if (!row) return { ownerId: uid, role: "owner" };
+  if (!row) {
+    // BUG FIX (integration audit 2026-11-13) — "no employees row" used to
+    // mean "owner" for ANY signed-in account, including customer-portal
+    // logins, which could then save webhook/payment secrets. Now the account
+    // must have its own business (an app_settings row), the same test
+    // resolveStaffOwnerId uses. Read with the caller's own session, so RLS
+    // only ever shows the caller's own row.
+    const ownRes = await fetch(`${SUPABASE_URL}/rest/v1/app_settings?owner_id=eq.${encodeURIComponent(uid)}&select=owner_id&limit=1`, {
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${accessToken}` },
+    });
+    const ownRows = await ownRes.json().catch(() => []);
+    return Array.isArray(ownRows) && ownRows.length > 0 ? { ownerId: uid, role: "owner" } : null;
+  }
   const role = (row.role || "").toLowerCase();
   if (role !== "owner" && role !== "manager") return null;
   return { ownerId: row.owner_id || uid, role };
@@ -188,10 +200,17 @@ const stripeFetch = async (secretKey: string, method: string, path: string, para
   const data = await res.json().catch(() => ({} as any));
   if (!res.ok) {
     const msg = (data as any)?.error?.message || `Stripe error ${res.status}`;
-    throw new Error(msg);
+    // BUG FIX (integration audit 2026-11-13) — Stripe's own 4xx answers
+    // (card declined, bad id) stay 400; a Stripe outage is a 502.
+    throw Object.assign(new Error(msg), { status: res.status >= 500 ? 502 : 400 });
   }
   return data;
 };
+
+// BUG FIX (integration audit 2026-11-13) — a bad request from the caller
+// (missing or invalid field). Only these answer 400 now; every other error
+// answers 500 (see the catch at the bottom of onRequestPost).
+const badRequest = (msg: string) => Object.assign(new Error(msg), { status: 400 });
 
 // Looks up the real invoice total (in the estimates table — invoices ARE
 // estimate rows with invoiced:true, see CLAUDE.md) so a caller can never pay
@@ -394,7 +413,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       if (!secretKey) return new Response(JSON.stringify({ error: "Stripe isn't configured for this business yet." }), { status: 500, headers: { "Content-Type": "application/json" } });
 
       if (action === "list_payment_methods") {
-        if (!body.customerId) throw new Error("Missing customerId");
+        if (!body.customerId) throw badRequest("Missing customerId");
         if (serviceRoleKey && !(await verifyStripeCustomerOwnedBy(body.customerId, callerOwnerId!, serviceRoleKey))) {
           return new Response(JSON.stringify({ error: "That customer doesn't belong to your business." }), { status: 403, headers: { "Content-Type": "application/json" } });
         }
@@ -406,7 +425,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       // alone: fetch it from Stripe first to find its real owning customer,
       // then verify that customer belongs to the caller's own tenant, same
       // as detach_my_payment_method's customer-facing check below.
-      if (!body.paymentMethodId) throw new Error("Missing paymentMethodId");
+      if (!body.paymentMethodId) throw badRequest("Missing paymentMethodId");
       {
         const pmCheck = await stripeFetch(secretKey, "GET", `payment_methods/${encodeURIComponent(body.paymentMethodId)}`, undefined, stripeAccount);
         if (serviceRoleKey && !(await verifyStripeCustomerOwnedBy(pmCheck?.customer, callerOwnerId!, serviceRoleKey))) {
@@ -696,7 +715,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         // _lib/amountDue.ts. The browser's claimed amount is never used.
         const due = body.invoiceId ? await computeAmountDue({ invoiceId: body.invoiceId, serviceRoleKey, payType: body.payType, promoId: body.promoId, referrerId: body.referrerId }) : null;
         const amountCents = (due ? due.baseCents : Math.round(Number(body.amountCents) || 0)) + tipCents;
-        if (amountCents <= 0) throw new Error("Invalid amount");
+        if (amountCents <= 0) throw badRequest("Invalid amount");
         const params: Record<string, string> = {
           amount: String(amountCents),
           currency: body.currency || "usd",
@@ -706,6 +725,9 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         if (body.invoiceId) params["metadata[invoiceId]"] = body.invoiceId;
         if (due) { params["metadata[payType]"] = due.payType; params["metadata[baseCents]"] = String(due.baseCents); params["metadata[tipCents]"] = String(Math.max(0, amountCents - due.baseCents)); }
         if (due?.promoId) params["metadata[promoId]"] = due.promoId;
+        // BUG FIX (integration audit 2026-11-13) — remember the discount taken
+        // on this payment so a later balance doesn't charge it back.
+        if (due && due.discountCents > 0) params["metadata[discountCents]"] = String(due.discountCents);
         // FEATURE — "save this card" checkbox during a real invoice payment
         // (StripePaymentModal). Stripe requires `customer` +
         // setup_future_usage to be set at PaymentIntent CREATION time, not
@@ -737,7 +759,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         });
       }
       case "retrieve_payment_intent": {
-        if (!body.id) throw new Error("Missing id");
+        if (!body.id) throw badRequest("Missing id");
         const intent = await stripeFetch(secretKey, "GET", `payment_intents/${encodeURIComponent(body.id)}`, undefined, stripeAccount);
         // Status only — this needs no sign-in, so never hand back the client
         // secret, the Stripe customer, or card details.
@@ -760,7 +782,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       // result — a same-origin, same-trust-level backstop that doesn't wait
       // on webhook delivery.
       case "confirm_invoice_payment": {
-        if (!body.invoiceId || !body.paymentIntentId) throw new Error("Missing invoiceId or paymentIntentId");
+        if (!body.invoiceId || !body.paymentIntentId) throw badRequest("Missing invoiceId or paymentIntentId");
         if (!serviceRoleKey) throw new Error("Server missing SUPABASE_SERVICE_ROLE_KEY env var — add it in the Cloudflare Pages dashboard.");
         const intent = await stripeFetch(secretKey, "GET", `payment_intents/${encodeURIComponent(body.paymentIntentId)}`, undefined, stripeAccount);
         if (intent?.status !== "succeeded") {
@@ -789,7 +811,10 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         const rows = await getRes.json().catch(() => []);
         const existingLog = Array.isArray(rows) && Array.isArray(rows[0]?.paymentLog) ? rows[0].paymentLog : [];
         const alreadyLogged = existingLog.some((e: any) => e?.type === "paid" && e?.stripePaymentIntentId === body.paymentIntentId);
-        const newLog = alreadyLogged ? existingLog : [...existingLog, { id: crypto.randomUUID(), at: new Date().toISOString(), type: "paid", amount: (intent.amount || 0) / 100, stripePaymentIntentId: body.paymentIntentId, note: "Paid via Stripe (customer portal)" }];
+        // BUG FIX (integration audit 2026-11-13) — the discount taken on this
+        // payment is saved on its log entry (see _lib/amountDue.ts).
+        const loggedDiscount = (Number(intent?.metadata?.discountCents) || 0) / 100;
+        const newLog = alreadyLogged ? existingLog : [...existingLog, { id: crypto.randomUUID(), at: new Date().toISOString(), type: "paid", amount: (intent.amount || 0) / 100, stripePaymentIntentId: body.paymentIntentId, note: "Paid via Stripe (customer portal)", ...(loggedDiscount > 0 ? { discount: loggedDiscount } : {}) }];
         const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/estimates?id=eq.${encodeURIComponent(body.invoiceId)}&select=id`, {
           method: "PATCH",
           headers: { ...authHeaders, "Content-Type": "application/json", Prefer: "return=representation" },
@@ -827,7 +852,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         }
         const due = body.invoiceId ? await computeAmountDue({ invoiceId: body.invoiceId, serviceRoleKey, payType: body.payType }) : null;
         const amountCents = due ? due.baseCents : Math.round(Number(body.amountCents) || 0);
-        if (amountCents <= 0) throw new Error("Invalid amount");
+        if (amountCents <= 0) throw badRequest("Invalid amount");
         const params: Record<string, string> = {
           mode: "payment",
           success_url: body.successUrl,
@@ -856,11 +881,29 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       // already uses for CrewBoss's own SaaS billing), so no Stripe Product
       // catalog setup is required on the owner's account.
       case "create_recurring_checkout_session": {
+        // BUG FIX (integration audit 2026-11-13) — this trusted body.ownerId
+        // and any crmCustomerId, so anyone could start a subscription in a
+        // business's Stripe account tagged to another business's customer.
+        // Only called from the owner CRM (CustomerDetail.tsx): now needs a
+        // staff sign-in, uses the caller's own business and Stripe account,
+        // and the customer must belong to that business.
+        {
+          const accessTokenGuard = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+          const staffOwner = serviceRoleKey ? await resolveStaffOwnerId(accessTokenGuard, serviceRoleKey) : null;
+          if (!staffOwner) return new Response(JSON.stringify({ error: "Not authenticated — sign in and try again." }), { status: 401, headers: { "Content-Type": "application/json" } });
+          if (!body.crmCustomerId) throw badRequest("Missing crmCustomerId");
+          const cRes = await fetch(`${SUPABASE_URL}/rest/v1/customers?id=eq.${encodeURIComponent(body.crmCustomerId)}&owner_id=eq.${encodeURIComponent(staffOwner)}&select=id&limit=1`, { headers: { apikey: serviceRoleKey!, Authorization: `Bearer ${serviceRoleKey}` } });
+          const cRows = await cRes.json().catch(() => []);
+          if (!Array.isArray(cRows) || cRows.length === 0) return new Response(JSON.stringify({ error: "That customer doesn't belong to your business." }), { status: 403, headers: { "Content-Type": "application/json" } });
+          ({ secretKey, stripeAccount } = await stripeCredsFor(staffOwner, serviceRoleKey!, platformSecretKey));
+          if (!secretKey) throw new Error("Stripe isn't configured for this business yet.");
+          resolvedOwnerIdOuter = staffOwner;
+        }
         const amountCents = Math.round(Number(body.amountCents) || 0);
-        if (amountCents <= 0) throw new Error("Invalid amount");
+        if (amountCents <= 0) throw badRequest("Invalid amount");
         const interval = ["day", "week", "month", "year"].includes(body.interval) ? body.interval : "month";
         const intervalCount = Math.max(1, Math.round(Number(body.intervalCount) || 1));
-        if (!body.crmCustomerId) throw new Error("Missing crmCustomerId");
+        if (!body.crmCustomerId) throw badRequest("Missing crmCustomerId");
         const params: Record<string, string> = {
           mode: "subscription",
           success_url: body.successUrl,
@@ -891,7 +934,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           const guard = await resolveCallerIsOwnerOrManager(accessTokenGuard);
           const staffOwner = serviceRoleKey ? await resolveStaffOwnerId(accessTokenGuard, serviceRoleKey) : null;
           if (!guard || !staffOwner || staffOwner !== guard.ownerId) return new Response(JSON.stringify({ error: "Only the business owner or a manager can cancel a recurring plan." }), { status: 403, headers: { "Content-Type": "application/json" } });
-          if (!body.subscriptionId) throw new Error("Missing subscriptionId");
+          if (!body.subscriptionId) throw badRequest("Missing subscriptionId");
           // Same as refund: the caller's own account, and the plan must be theirs.
           ({ secretKey, stripeAccount } = await stripeCredsFor(guard.ownerId, serviceRoleKey!, platformSecretKey));
           if (!secretKey) throw new Error("Stripe isn't configured for this business yet.");
@@ -903,7 +946,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         return json({ success: true, status: sub.status || "canceled" });
       }
       case "retrieve_checkout_session": {
-        if (!body.sessionId) throw new Error("Missing sessionId");
+        if (!body.sessionId) throw badRequest("Missing sessionId");
         // Owner/crew only (InvoicesPage) — a Checkout Session carries the
         // payer's name, email and address.
         {
@@ -923,14 +966,37 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         // doesn't actually require one — only this endpoint's own hard check
         // did. Require AT LEAST a name or email (Stripe needs something to
         // identify the customer by), never email specifically.
-        if (!body.email && !body.name) throw new Error("Missing customer name or email");
+        if (!body.email && !body.name) throw badRequest("Missing customer name or email");
+        // BUG FIX (integration audit 2026-11-13) — the business was a bare
+        // body.ownerId. Staff callers now always use their own business; the
+        // public callers (trash-can signup page, customer portal) may only
+        // name a real business.
+        {
+          const r = await resolvePublicOrStaffStripe(context.request, body, serviceRoleKey, platformSecretKey);
+          if (r instanceof Response) return r;
+          ({ secretKey, stripeAccount } = r);
+        }
         const params: Record<string, string> = { name: body.name || "" };
         if (body.email) params.email = body.email;
         const customer = await stripeFetch(secretKey, "POST", "customers", params, stripeAccount);
         return json({ id: customer.id, email: customer.email, name: customer.name });
       }
       case "create_setup_intent": {
-        if (!body.customerId) throw new Error("Missing customerId");
+        if (!body.customerId) throw badRequest("Missing customerId");
+        // BUG FIX (integration audit 2026-11-13) — same as create_customer:
+        // staff use their own business; a public caller may only name a real
+        // business, and a Stripe customer already linked to a CRM customer
+        // must be linked to THAT business.
+        {
+          const r = await resolvePublicOrStaffStripe(context.request, body, serviceRoleKey, platformSecretKey);
+          if (r instanceof Response) return r;
+          ({ secretKey, stripeAccount } = r);
+          const linked = await fetch(`${SUPABASE_URL}/rest/v1/customers?stripeCustomerId=eq.${encodeURIComponent(body.customerId)}&select=owner_id`, { headers: { apikey: serviceRoleKey!, Authorization: `Bearer ${serviceRoleKey}` } });
+          const linkedRows = await linked.json().catch(() => []);
+          if (Array.isArray(linkedRows) && linkedRows.length > 0 && !linkedRows.some((x: any) => x?.owner_id === r.ownerId)) {
+            return new Response(JSON.stringify({ error: "That customer doesn't belong to this business." }), { status: 403, headers: { "Content-Type": "application/json" } });
+          }
+        }
         const intent = await stripeFetch(secretKey, "POST", "setup_intents", { customer: body.customerId, "payment_method_types[0]": "card" }, stripeAccount);
         return json({ id: intent.id, client_secret: intent.client_secret, status: intent.status });
       }
@@ -968,8 +1034,8 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         }
         const due = body.invoiceId ? await computeAmountDue({ invoiceId: body.invoiceId, serviceRoleKey, payType: body.payType }) : null;
         const amountCents = due ? due.baseCents : Math.round(Number(body.amountCents) || 0);
-        if (!body.customerId || !body.paymentMethodId) throw new Error("Missing customerId/paymentMethodId");
-        if (amountCents <= 0) throw new Error("Invalid amount");
+        if (!body.customerId || !body.paymentMethodId) throw badRequest("Missing customerId/paymentMethodId");
+        if (amountCents <= 0) throw badRequest("Invalid amount");
         // SECURITY FIX (audit finding) — verifiedOwnerIdForCharge only proved
         // "a real session," not that body.customerId is actually THIS
         // caller's own tenant's customer. Same cross-tenant risk as
@@ -989,6 +1055,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         if (body.invoiceId) params["metadata[invoiceId]"] = body.invoiceId;
         if (due) { params["metadata[payType]"] = due.payType; params["metadata[baseCents]"] = String(due.baseCents); params["metadata[tipCents]"] = String(Math.max(0, amountCents - due.baseCents)); }
         if (due?.promoId) params["metadata[promoId]"] = due.promoId;
+        if (due && due.discountCents > 0) params["metadata[discountCents]"] = String(due.discountCents);
         // Idempotency key derived from the invoice when one is given (the
         // charge is then fully determined by it — safe to reuse on retry).
         // SECURITY/SYNC FIX (audit finding) — ad-hoc charges (field-portal
@@ -1000,8 +1067,13 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         // Derive a stable key from the charge's own identity instead, bucketed
         // to a 60s window so a genuinely new charge for the same
         // customer/card/amount a minute later still gets its own key.
+        // BUG FIX (integration audit 2026-11-13) — the invoice key was just
+        // `charge-<invoiceId>`, so paying the deposit and later the balance
+        // (or retrying with a different card) replayed the FIRST charge's
+        // cached result and nothing new was charged. It now also holds the
+        // pay type, the amount in cents and the card.
         const chargeIdemKey = body.invoiceId
-          ? `charge-${body.invoiceId}`
+          ? `charge-${body.invoiceId}-${due?.payType || "full"}-${amountCents}-${body.paymentMethodId}`
           : `charge-${body.customerId}-${body.paymentMethodId}-${amountCents}-${Math.floor(Date.now() / 60000)}`;
         const intent = await stripeFetch(secretKey, "POST", "payment_intents", params, stripeAccount, chargeIdemKey);
         return json({ id: intent.id, client_secret: intent.client_secret, status: intent.status });
@@ -1024,7 +1096,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           const guard = await resolveCallerIsOwnerOrManager(accessTokenGuard);
           const staffOwner = serviceRoleKey ? await resolveStaffOwnerId(accessTokenGuard, serviceRoleKey) : null;
           if (!guard || !staffOwner || staffOwner !== guard.ownerId) return new Response(JSON.stringify({ error: "Only the business owner or a manager can issue refunds." }), { status: 403, headers: { "Content-Type": "application/json" } });
-          if (!body.paymentIntentId) throw new Error("Missing paymentIntentId");
+          if (!body.paymentIntentId) throw badRequest("Missing paymentIntentId");
           ({ secretKey, stripeAccount } = await stripeCredsFor(guard.ownerId, serviceRoleKey!, platformSecretKey));
           if (!secretKey) throw new Error("Stripe isn't configured for this business yet.");
           const pi = await stripeFetch(secretKey, "GET", `payment_intents/${encodeURIComponent(body.paymentIntentId)}`, undefined, stripeAccount);
@@ -1043,16 +1115,24 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         // amount instead of only ever refunding the full charge. Omitting
         // `amount` refunds the full remaining amount (Stripe's own default
         // behavior) — passing it does a real partial refund.
-        if (!body.paymentIntentId) throw new Error("Missing paymentIntentId");
+        if (!body.paymentIntentId) throw badRequest("Missing paymentIntentId");
         const params: Record<string, string> = { payment_intent: body.paymentIntentId };
         if (body.amountCents !== undefined && body.amountCents !== null) {
           const amt = Math.round(Number(body.amountCents));
-          if (!amt || amt <= 0) throw new Error("Invalid refund amount");
+          if (!amt || amt <= 0) throw badRequest("Invalid refund amount");
           params.amount = String(amt);
         }
         // Refund is fully determined by (paymentIntentId, amount) — safe to
         // reuse this key on retry instead of risking a double refund.
-        const refundIdemKey = `refund-${body.paymentIntentId}-${params.amount || "full"}`;
+        // BUG FIX (integration audit 2026-11-13) — two separate partial
+        // refunds of the same amount got the same key, so Stripe silently
+        // returned the first refund and the second was never made. A nonce
+        // from the client (kept the same on its own retries) or, failing that,
+        // the current time makes each refund request its own.
+        // With no nonce from the caller, keep the old (payment, amount) key so a
+        // double-click or a retry after a timeout can never refund twice.
+        const refundNonce = String(body.refundNonce || body.idempotencyNonce || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64);
+        const refundIdemKey = `refund-${body.paymentIntentId}-${params.amount || "full"}${refundNonce ? "-" + refundNonce : ""}`;
         const refund = await stripeFetch(secretKey, "POST", "refunds", params, stripeAccount, refundIdemKey);
         return json({ success: true, id: refund.id, amount: refund.amount, status: refund.status });
       }
@@ -1060,10 +1140,40 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         return new Response(JSON.stringify({ error: "Unknown action: " + action }), { status: 400, headers: { "Content-Type": "application/json" } });
     }
   } catch (e: any) {
+    // BUG FIX (integration audit 2026-11-13) — every error used to answer
+    // 400, so server faults (database down, missing config) looked like the
+    // caller's mistake. Only tagged bad requests stay 400; the rest are 500.
+    // A malformed JSON body is the caller's fault too.
+    const status = Number(e?.status) || (e instanceof SyntaxError ? 400 : 500);
     return new Response(JSON.stringify({ error: e?.message || "Stripe proxy error" }), {
-      status: 400, headers: { "Content-Type": "application/json" },
+      status, headers: { "Content-Type": "application/json" },
     });
   }
+};
+
+// BUG FIX (integration audit 2026-11-13) — which business's Stripe account
+// create_customer / create_setup_intent use. A signed-in staff member always
+// gets their own business. With no staff sign-in (the public trash-can signup
+// page, the customer portal), body.ownerId must be a real business (it has
+// an app_settings row) — never just any id.
+const resolvePublicOrStaffStripe = async (
+  request: Request,
+  body: Record<string, any>,
+  serviceRoleKey: string | undefined,
+  platformSecretKey: string | undefined
+): Promise<Response | { ownerId: string; secretKey: string; stripeAccount: string | undefined }> => {
+  if (!serviceRoleKey) return new Response(JSON.stringify({ error: "Server missing SUPABASE_SERVICE_ROLE_KEY env var — add it in the Cloudflare Pages dashboard, then redeploy." }), { status: 500, headers: { "Content-Type": "application/json" } });
+  const accessToken = (request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+  let ownerId = accessToken ? await resolveStaffOwnerId(accessToken, serviceRoleKey) : null;
+  if (!ownerId && body.ownerId) {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/app_settings?owner_id=eq.${encodeURIComponent(String(body.ownerId))}&select=owner_id&limit=1`, { headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` } });
+    const rows = await r.json().catch(() => []);
+    if (Array.isArray(rows) && rows.length > 0) ownerId = String(body.ownerId);
+  }
+  if (!ownerId) return new Response(JSON.stringify({ error: "Could not tell which business this card is for — reload the page and try again." }), { status: 400, headers: { "Content-Type": "application/json" } });
+  const creds = await stripeCredsFor(ownerId, serviceRoleKey, platformSecretKey);
+  if (!creds.secretKey) return new Response(JSON.stringify({ error: "Stripe isn't configured for this business yet." }), { status: 500, headers: { "Content-Type": "application/json" } });
+  return { ownerId, secretKey: creds.secretKey, stripeAccount: creds.stripeAccount };
 };
 
 const json = (data: any) => new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json" } });

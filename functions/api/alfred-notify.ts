@@ -37,10 +37,8 @@
 //      server-side (service role, bypasses RLS) — again, never trusted
 //      from the client directly, only the id is, and the id only ever
 //      unlocks the one business that row already belongs to.
-//   3. Last resort, for callers with no session and no row to key off of:
-//      loop over every app_settings row (service role) and post the
-//      notification once per owner. Should be rare in practice — every
-//      current caller in this codebase has an id to key off of (see 2).
+//   3. (Removed 2026-11-13) no session and no row id -> 401. It used to
+//      broadcast to every owner, which was an unauthenticated injection hole.
 //
 // All of this requires SUPABASE_SERVICE_ROLE_KEY (Cloudflare Pages ->
 // Settings -> Environment variables), same as invite-action.ts /
@@ -50,7 +48,13 @@
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_8aEa3wsYJ7ghVPcGbtHymw_ugj0aEfm";
 
-const NOTIFICATIONS_THREAD_ID = "system-notifications";
+// BUG FIX (integration audit 2026-11-13) — alfred_conversations.id is the
+// table's only primary key, so one fixed "system-notifications" id could only
+// ever belong to ONE business; every other owner's insert collided. Each
+// owner now gets their own thread id. The one owner who already has the old
+// fixed-id row keeps it (the CRM loads every row for its owner_id, so both
+// show up) and new notifications land in the per-owner thread.
+const notificationsThreadId = (ownerId: string) => `system-notifications-${ownerId}`;
 const MAX_MESSAGES = 200; // cap so this thread can't grow unbounded
 
 const json = (body: unknown, status = 200) =>
@@ -101,6 +105,7 @@ const resolveOwnerIdFromRow = async (
 // this once per owner without duplicating the merge logic.
 const postToOwner = async (ownerId: string, title: string | undefined, message: string, serviceRoleKey: string) => {
   const headers = { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` };
+  const NOTIFICATIONS_THREAD_ID = encodeURIComponent(notificationsThreadId(ownerId));
   const existingRes = await fetch(
     `${SUPABASE_URL}/rest/v1/alfred_conversations?id=eq.${NOTIFICATIONS_THREAD_ID}&owner_id=eq.${encodeURIComponent(ownerId)}&select=messages`,
     { headers }
@@ -135,7 +140,7 @@ const postToOwner = async (ownerId: string, title: string | undefined, message: 
       method: "POST",
       headers: { ...headers, "Content-Type": "application/json", Prefer: "return=minimal" },
       body: JSON.stringify({
-        id: NOTIFICATIONS_THREAD_ID, owner_id: ownerId, title: title || "Alfred Notifications",
+        id: notificationsThreadId(ownerId), owner_id: ownerId, title: title || "Alfred Notifications",
         messages, created_at: nowIso, updated_at: nowIso,
       }),
     });
@@ -187,25 +192,12 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       return ok ? json({ ok: true }) : json({ error: "Failed to update notifications thread" }, 502);
     }
 
-    // 3. Last resort — no session, no id to key off of. Notify every owner
-    // rather than guessing an arbitrary one. Every current in-app caller
-    // passes an id (see above), so this path should rarely if ever fire —
-    // it exists as a safety net so a future caller that forgets to pass one
-    // doesn't just silently vanish into "no owner configured yet".
-    console.warn("[AlfredNotify] no session and no estimateId/jobId/customerId given — broadcasting to all owners");
-    const ownersRes = await fetch(`${SUPABASE_URL}/rest/v1/app_settings?select=owner_id`, {
-      headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` },
-    });
-    if (!ownersRes.ok) return json({ error: "Could not resolve any owners (app_settings read failed)" }, 502);
-    const ownerRows = await ownersRes.json().catch(() => []);
-    const ownerIds: string[] = Array.isArray(ownerRows) ? ownerRows.map((r: any) => r?.owner_id).filter(Boolean) : [];
-    if (ownerIds.length === 0) return json({ error: "No owner configured yet" }, 404);
-    let anyOk = false;
-    for (const oid of ownerIds) {
-      const ok = await postToOwner(oid, title, message, serviceRoleKey);
-      anyOk = anyOk || ok;
-    }
-    return anyOk ? json({ ok: true, broadcast: true, count: ownerIds.length }) : json({ error: "Failed to update notifications thread for any owner" }, 502);
+    // BUG FIX (integration audit 2026-11-13) — this used to "broadcast" the
+    // message into EVERY business's Alfred feed when no owner could be
+    // resolved, which let anyone with no login inject text into all owners'
+    // trusted feeds. Every real caller sends a session token or a row id, so
+    // an unresolved owner is now simply refused.
+    return json({ error: "Unauthorized — no owner could be resolved" }, 401);
   } catch (e: any) {
     console.error("[AlfredNotify] handler error:", e?.message);
     return json({ error: e?.message || "Server error" }, 500);

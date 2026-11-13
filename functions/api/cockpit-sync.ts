@@ -23,7 +23,7 @@ import { sendWebPush } from "./_lib/webPush";
 import { textCockpitPhones } from "./_lib/cockpitBridge";
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
-const VAPID_PUBLIC_KEY = "BFqKy2PtHrcVhocXAUh9rCTn6C1PEXIk0X_jyY7xwWBeH6r8w7ybe7lQEtNdtA8luYVn2s0j77XPYJiTCyTfAYA";
+const VAPID_PUBLIC_KEY = "BClLCG2hdw-NBLcryKxD2tfwCVPKXXse8V6cIlTYix9U0omp8qdgRC3mAb_bxttrR1kdNw37r18QPFeUDrefVrE";
 const COCKPIT_OWNER_EMAIL = "smockspressurewash@gmail.com";
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });

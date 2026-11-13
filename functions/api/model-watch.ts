@@ -20,7 +20,11 @@ export const onRequestGet = async (context: { request: Request; env: Record<stri
   const secret = context.env.MODEL_WATCH_KEY || context.env.REMINDERS_CRON_SECRET;
   const url = new URL(context.request.url);
   const key = url.searchParams.get("key");
-  if (secret && key !== secret) return json({ error: "Invalid key" }, 403);
+  // BUG FIX (integration audit 2026-11-13) — with neither secret set, this
+  // GET was fully open: anyone could trigger a run that pings every
+  // business's paid AI keys. Fail closed until a key is configured.
+  if (!secret) return json({ error: "Set MODEL_WATCH_KEY (or REMINDERS_CRON_SECRET) in Cloudflare and pass it as ?key=" }, 403);
+  if (key !== secret) return json({ error: "Invalid key" }, 403);
   const r = await runModelWatch(context.env, { force: !!secret && key === secret && url.searchParams.get("force") === "1" });
   return json(r);
 };

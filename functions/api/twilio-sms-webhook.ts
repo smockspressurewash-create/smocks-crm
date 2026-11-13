@@ -36,6 +36,7 @@ import { runAlfredSmsAgent, sendAlfredSms } from "./_lib/alfredSmsAgent";
 import { cockpitSender, cockpitSenderFor } from "./_lib/cockpitBridge";
 import { runAlfredCustomerAgent } from "./_lib/alfredCustomerAgent";
 import { findActiveWatch, handleWatchedReply } from "./_lib/alfredReplyWatch";
+import { pushToOwnerDevices } from "./_lib/webPush";
 import { getOwnerSecrets } from "./_lib/ownerSecrets";
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
@@ -70,7 +71,10 @@ const sendCustomerAgentReply = async (ctx: { authHeaders: Record<string, string>
   } catch (e: any) { console.error("[TwilioSmsWebhook] failed to log customer agent reply:", e?.message); }
 };
 
-const STOP_WORDS = ["STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"];
+// BUG FIX (integration audit 2026-11-13) — REVOKE and OPTOUT are opt-out
+// words Twilio/carriers honor too; without them we kept texting people who
+// had opted out.
+const STOP_WORDS = ["STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT", "REVOKE", "OPTOUT"];
 const START_WORDS = ["START", "UNSTOP", "YES"];
 const CONFIRM_WORDS = ["Y", "YES"];
 const DEFAULT_OPT_IN_KEYWORD = "DEALS";
@@ -536,6 +540,14 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     const isStart = START_WORDS.includes(body);
     const resolved = await fetchAppSettings(context.env, params.To || "");
     const { companyName, keyword, ownerId, myPhone, alfredExtraPhones, alfredExtraPhoneRoles, alfredSmsEnabled, modelPriority, activeModel, openaiKey, googleProviderToken, googleTokenExpiresAt, testModeEnabled, alfredAutoApproveReschedules, alfredPersonality, owmKey, weatherLocation, companyAddress, alfredVoiceReplies, myEmail, alfredCapabilities, vacationMode, alfredAutonomyLevel } = resolved;
+    // BUG FIX (integration audit 2026-11-13) — when the number this text was
+    // sent TO matches no business, ownerId was null and everything below ran
+    // anyway: signature check skipped, customer search across every business,
+    // inbox writes with no owner. Stop here, before any write.
+    if (!ownerId) {
+      console.warn("[TwilioSmsWebhook] inbound To number matches no business — ignoring");
+      return twiml();
+    }
     // SECURITY FIX — Twilio auth token, the Google refresh_token, and every
     // AI model key moved out of app_settings.data into owner_secrets
     // (migration 0085 — see its comment for the full story). `resolved`
@@ -1034,16 +1046,14 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       // lets a push failure affect the actual SMS/Inbox logging above.
       if (ownerId && !alreadyHave) {
         const pushContactLabel = match ? `${match.firstName || ""} ${match.lastName || ""}`.trim() || from : from;
-        fetch(`${new URL(context.request.url).origin}/api/send-push`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            ownerId,
-            title: `New text from ${pushContactLabel}`,
-            body: newMsg.body || "New message",
-            url: "/#/inbox", tag: "inbox-" + msgId,
-          }),
-        }).catch(() => {});
+        // BUG FIX (integration audit 2026-11-13) — this called /api/send-push
+        // with no login, and send-push now requires one, so new-text pushes
+        // never arrived. Send directly with the service role key instead.
+        await pushToOwnerDevices(context.env as Record<string, string>, ownerId, {
+          title: `New text from ${pushContactLabel}`,
+          body: newMsg.body || "New message",
+          url: "/#/inbox", tag: "inbox-" + msgId,
+        });
       }
     } catch (e: any) {
       console.error("[TwilioSmsWebhook] failed to persist inbound message to inbox_threads:", e?.message);

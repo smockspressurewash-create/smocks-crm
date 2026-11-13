@@ -38,7 +38,7 @@ import { syncEmployeeJobToCalendar } from "./employeeCalendarSync";
 import { stripMarkdownForSms } from "./textFormat";
 import { COCKPIT_TOOLS, cockpitPrompt, cockpitSender, cockpitSenderFor, runCockpitTool } from "./cockpitBridge";
 import { recGet, recList, recPut, OWNER_RECORDS_MISSING } from "./ownerRecords";
-import { runBulkSendBatch } from "./bulkTextSend";
+import { runBulkSendBatch, markDraftSending } from "./bulkTextSend";
 import { searchCustomers as auditSearch, findDuplicateCustomers, customersMissingInfo, filterCustomers } from "../../../src/lib/customerAudit";
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
@@ -2392,7 +2392,11 @@ const executeToolCore = async (ctx: Ctx, name: string, input: Record<string, any
           const w = await recPut(ctx.authHeaders, ctx.ownerId, "reply_watch", watch);
           if (w.ok) draft.watchId = watch.id;
         }
-        await recPut(ctx.authHeaders, ctx.ownerId, "bulk_text_draft", draft);
+        // BUG FIX (integration audit 2026-11-13) — only flip draft -> sending
+        // if it's still a draft, so a duplicate approval can't start a second
+        // send. The actual sending then takes a lease (see bulkTextSend.ts)
+        // so this and the check-reminders cron never send the same draft.
+        if (!(await markDraftSending(ctx.authHeaders, ctx.ownerId, draft))) return { error: "That draft is already being sent." };
         if (!ctx.twilioSid || !ctx.twilioToken || !ctx.twilioFrom) return { error: "Twilio isn't configured for this account." };
         const after = await runBulkSendBatch(ctx.authHeaders, ctx.ownerId, { sid: ctx.twilioSid, token: ctx.twilioToken, from: ctx.twilioFrom }, draft, Date.now() + 35000);
         const left = after.recipients.filter(r => r.status === "pending").length;

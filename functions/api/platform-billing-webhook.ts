@@ -19,20 +19,31 @@
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 
+// BUG FIX (integration audit 2026-11-13) — Stripe can send more than one
+// v1 signature (for example while a webhook secret is being rolled), and the
+// old code only kept the last one, so a real event could be refused. Any
+// matching v1 now passes. It also had no age limit at all, so a captured old
+// event could be replayed forever; events signed more than 5 minutes ago are
+// now refused, same as stripe-webhook.ts.
 const verifyStripeSignature = async (payload: string, sigHeader: string, secret: string): Promise<boolean> => {
   if (!sigHeader) return false;
-  const parts = Object.fromEntries(sigHeader.split(",").map(kv => { const i = kv.indexOf("="); return [kv.slice(0, i), kv.slice(i + 1)]; }));
-  const timestamp = parts["t"];
-  const v1 = parts["v1"];
-  if (!timestamp || !v1) return false;
+  const pairs = sigHeader.split(",").map(kv => { const i = kv.indexOf("="); return [kv.slice(0, i).trim(), kv.slice(i + 1).trim()]; });
+  const timestamp = pairs.find(([k]) => k === "t")?.[1];
+  const sigs = pairs.filter(([k, v]) => k === "v1" && v).map(([, v]) => v);
+  if (!timestamp || sigs.length === 0) return false;
+  if (!Number.isFinite(Number(timestamp)) || Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) return false;
   const enc = new TextEncoder();
   const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const sigBuf = await crypto.subtle.sign("HMAC", key, enc.encode(`${timestamp}.${payload}`));
   const expected = Array.from(new Uint8Array(sigBuf)).map(b => b.toString(16).padStart(2, "0")).join("");
-  if (expected.length !== v1.length) return false;
-  let diff = 0;
-  for (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ v1.charCodeAt(i);
-  return diff === 0;
+  let anyMatch = false;
+  for (const v1 of sigs) {
+    if (expected.length !== v1.length) continue;
+    let diff = 0;
+    for (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ v1.charCodeAt(i);
+    if (diff === 0) anyMatch = true;
+  }
+  return anyMatch;
 };
 
 // SECURITY/CORRECTNESS FIX (audit finding — High) — customer.subscription.
