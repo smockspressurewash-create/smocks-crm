@@ -1,5 +1,6 @@
 // auto-extracted from Crew Boss OS monolith
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
   Settings, Bell, Menu, X, Plus, Search, Edit, Trash2, Send,
@@ -46,6 +47,26 @@ export function GlobalSearch({ customers = [], jobs = [], estimates = [], onNav 
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
   const inputRef = useRef(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  // BUG FIX (owner report): on a phone the results box opened off the left
+  // edge of the screen. It was pinned to the search button's right side at a
+  // fixed 320px width, and the button sits mid-header on a phone. The box now
+  // renders on top of the page and is placed from the button's real position:
+  // full width with a small margin on a phone, under the button on desktop.
+  const [pos, setPos] = useState<React.CSSProperties>({});
+  const place = useCallback(() => {
+    const r = btnRef.current?.getBoundingClientRect();
+    if (!r) return;
+    const w = window.innerWidth;
+    if (w < 768) setPos({ top: r.bottom + 8, left: 12, right: 12 });
+    else setPos({ top: r.bottom + 8, right: Math.max(12, w - r.right), width: Math.min(384, w - 24) });
+  }, []);
+  useEffect(() => {
+    if (!open) return;
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [open, place]);
 
   const results = q.length < 2 ? [] : (() => {
     const qL = q.toLowerCase();
@@ -72,18 +93,18 @@ export function GlobalSearch({ customers = [], jobs = [], estimates = [], onNav 
 
   return (
     <div className="relative">
-      <button onClick={() => { setOpen(!open); setTimeout(() => inputRef.current?.focus(), 50); }} className="flex items-center gap-2 px-3 py-1.5 bg-black/40 border border-red-900/30 rounded-xl text-xs text-white/50 hover:text-white hover:border-red-600/50 transition">
+      <button ref={btnRef} aria-label="Search" data-global-search onClick={() => { setOpen(!open); setTimeout(() => inputRef.current?.focus(), 50); }} className="flex items-center gap-2 px-3 py-1.5 bg-black/40 border border-red-900/30 rounded-xl text-xs text-white/50 hover:text-white hover:border-red-600/50 transition">
         <Search size={13} />
         <span className="hidden md:block">Search</span>
         <span className="hidden md:block text-[10px] text-white/30 border border-white/10 rounded px-1">⌘K</span>
       </button>
-      {open && <>
-        <div className="fixed inset-0 z-50" onClick={() => setOpen(false)} />
-        <div className="absolute right-0 top-full mt-2 w-80 md:w-96 bg-black/95 border border-red-900/40 rounded-xl shadow-2xl z-50 overflow-hidden backdrop-blur">
+      {open && createPortal(<>
+        <div className="fixed inset-0 z-[90]" onClick={() => setOpen(false)} />
+        <div style={pos} data-global-search-panel className="fixed bg-black/95 border border-red-900/40 rounded-xl shadow-2xl z-[91] overflow-hidden backdrop-blur">
           <div className="p-3 border-b border-red-900/30">
             <div className="flex items-center gap-2">
               <Search size={14} className="text-white/50 flex-shrink-0" />
-              <input ref={inputRef} value={q} onChange={e => setQ(e.target.value)} placeholder="Search customers, jobs, estimates…" className="flex-1 bg-transparent text-sm text-white placeholder-white/40 focus:outline-none" autoFocus />
+              <input ref={inputRef} value={q} onChange={e => setQ(e.target.value)} placeholder="Search customers, jobs, estimates…" className="flex-1 min-w-0 bg-transparent text-[16px] md:text-sm text-white placeholder-white/40 focus:outline-none" autoFocus />
               {q && <button onClick={() => setQ("")} className="text-white/40 hover:text-white"><X size={12} /></button>}
             </div>
           </div>
@@ -109,7 +130,7 @@ export function GlobalSearch({ customers = [], jobs = [], estimates = [], onNav 
             </div>
           </div>}
         </div>
-      </>}
+      </>, document.body)}
     </div>
   );
 }

@@ -1615,20 +1615,28 @@ export function orderStopsShortest<T extends { lat: number; lng: number }>(stops
 // legs makes the total drive shorter.
 export function buildOptimizedRoute(
   jobs: Array<{ id: string; lat?: number; lng?: number; scheduledTime?: string; estMinutes: number }>,
-  opts: { lunchMinutes?: number; lunchEarliestMinutes?: number; start?: { lat: number; lng: number } | null } = {}
+  opts: { lunchMinutes?: number; lunchEarliestMinutes?: number; start?: { lat: number; lng: number } | null; keepOrder?: boolean } = {}
 ): RouteEntry[] {
+  // keepOrder: the owner moved stops by hand; keep their order and only
+  // work out the drive and arrival times.
+  if (opts.keepOrder) return routeTimes(jobs, opts);
   const withCoords = jobs.filter(j => typeof j.lat === "number" && typeof j.lng === "number");
   const withoutCoords = jobs.filter(j => !(typeof j.lat === "number" && typeof j.lng === "number"))
     .sort((a, b) => (a.scheduledTime || "23:59").localeCompare(b.scheduledTime || "23:59"));
   const ordered = orderStopsShortest(withCoords as Array<{ lat: number; lng: number } & (typeof jobs)[number]>, opts.start || null);
-  const fullOrder = [...ordered, ...withoutCoords];
+  return routeTimes([...ordered, ...withoutCoords], opts);
+}
 
+function routeTimes(
+  fullOrder: Array<{ id: string; lat?: number; lng?: number; scheduledTime?: string; estMinutes: number }>,
+  opts: { lunchMinutes?: number; lunchEarliestMinutes?: number }
+): RouteEntry[] {
   const lunchMinutes = opts.lunchMinutes || 0;
   const lunchEarliest = opts.lunchEarliestMinutes ?? 240;
   const entries: RouteEntry[] = [];
   let elapsed = 0;
   let lunchInserted = lunchMinutes <= 0;
-  let prev: (typeof jobs)[number] | null = null;
+  let prev: (typeof fullOrder)[number] | null = null;
   for (const j of fullOrder) {
     if (!lunchInserted && elapsed >= lunchEarliest) {
       entries.push({ kind: "lunch", afterMinutes: elapsed, durationMinutes: lunchMinutes });

@@ -1,4 +1,5 @@
 // auto-extracted from Crew Boss OS monolith
+import { AddPhoneInline, saveCustomerPhone } from "../ui/AddPhoneInline";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -142,7 +143,7 @@ const SEQUENCE_DEFS = [
   },
 ];
 
-export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], estimates = [], jobs = [], settings = {} as AppSettings, setSettings, inboxThreads = [], setInboxThreads, automations = [], setAutomations, toast }: { campaigns?: any[]; setCampaigns?: any; customers?: any[]; estimates?: any[]; jobs?: any[]; settings?: AppSettings; setSettings?: any; inboxThreads?: any[]; setInboxThreads?: any; automations?: any[]; setAutomations?: any; toast?: any }) {
+export function CampaignsPage({ campaigns = [], setCampaigns, setCustomers, customers = [], estimates = [], jobs = [], settings = {} as AppSettings, setSettings, inboxThreads = [], setInboxThreads, automations = [], setAutomations, toast }: { campaigns?: any[]; setCampaigns?: any; setCustomers?: any; customers?: any[]; estimates?: any[]; jobs?: any[]; settings?: AppSettings; setSettings?: any; inboxThreads?: any[]; setInboxThreads?: any; automations?: any[]; setAutomations?: any; toast?: any }) {
   const [savedSegments, setSavedSegments] = usePersistent("smocks.savedSegments", []);
   // ITEM 27 — owner-created campaign templates.
   const customTemplates = ((settings as any)?.customCampaignTemplates || []) as { id: string; name: string; subject?: string; body: string }[];
@@ -263,7 +264,7 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
   const allTags = [...new Set(customers.flatMap(c => c.tags || []))];
   const allFolders = [...new Set(customers.map((c: any) => c.folder).filter(Boolean))].sort();
 
-  const matches = customers.filter((c: any) => {
+  const matchesAudience = (c: any, needContact: boolean) => {
     if (fFolder && c.folder !== fFolder) return false;
     if (fCity && !(c.address || "").includes(fCity)) return false;
     if (fLast) {
@@ -280,10 +281,15 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
       if (!hasService) return false;
     }
     if (fMinSpent && Number(c.totalSpent || 0) < Number(fMinSpent)) return false;
-    if (ch === "sms" && !c.phone) return false;
-    if (ch === "email" && !c.email) return false;
+    if (needContact && ch === "sms" && !c.phone) return false;
+    if (needContact && ch === "email" && !c.email) return false;
     return true;
-  });
+  };
+  const matches = customers.filter((c: any) => matchesAudience(c, true));
+  // Customers who fit the audience but have no phone yet (owner report:
+  // trash can and cleaning customers missing from text blasts). Listed under
+  // the recipient count so a number can be added without leaving the page.
+  const missingPhone = ch === "sms" ? customers.filter((c: any) => !c.phone && !c.smsOptOut && matchesAudience(c, false)) : [];
 
   const merge = (template, customer) => template
     .replace(/{{first_name}}/g, customer.firstName || "there")
@@ -602,6 +608,20 @@ export function CampaignsPage({ campaigns = [], setCampaigns, customers = [], es
             <div className="text-xs text-white/60 mt-1">recipients</div>
             <div className="text-[10px] text-white/40 mt-0.5">{ch === "sms" ? matches.filter(c => c.phone).length + " have phone" : matches.filter(c => c.email).length + " have email"}</div>
           </div>
+          {missingPhone.length > 0 && setCustomers && (
+            <div className="space-y-1" data-campaign-missing-phones>
+              <div className="text-[10px] text-yellow-300/80">{missingPhone.length} in this audience {missingPhone.length === 1 ? "has" : "have"} no phone number. Add one to include them:</div>
+              <div className="max-h-48 overflow-y-auto space-y-1">
+                {missingPhone.slice(0, 100).map((c: any) => (
+                  <div key={c.id} className="flex items-center gap-2 p-1.5 rounded-lg text-[11px] bg-yellow-950/20 border border-yellow-700/20">
+                    <span className="flex-1 min-w-0 truncate">{c.firstName} {c.lastName}</span>
+                    <AddPhoneInline disabled={sending} onSave={phone => saveCustomerPhone(c.id, phone, setCustomers, toast)} />
+                  </div>
+                ))}
+                {missingPhone.length > 100 && <div className="text-[10px] text-white/40">Showing 100. Narrow the audience to see the rest.</div>}
+              </div>
+            </div>
+          )}
           {/* Save segment */}
           <button onClick={() => {
             const name = prompt("Segment name:", (fFolder || fTag || fCity || "Custom") + " audience");

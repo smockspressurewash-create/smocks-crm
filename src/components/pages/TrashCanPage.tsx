@@ -27,6 +27,7 @@ import { BulkJobImportModal } from "../ui/BulkJobImportModal";
 import { recurrenceFor } from "../../lib/bulkImportCore";
 import { geocodeAddresses } from "../../lib/geocode";
 import { useIsMobile } from "../../hooks/useIsMobile";
+import { AddPhoneInline, saveCustomerPhone } from "../ui/AddPhoneInline";
 import { showSendReport, okResult, failResult, skipResult, type SendResult } from "../../lib/sendReport";
 
 const FREQ_OPTIONS = [
@@ -43,6 +44,8 @@ const freqLabel = (j: any) => j?.isRecurring ? (FREQ_OPTIONS.find(f => f.key ===
 const freqPatch = (freq: string, date?: string) => freq === "one_time"
   ? { isRecurring: false, recurringFreq: null }
   : recurrenceFor(freq, date ? new Date(date + "T12:00:00").getDay() : null);
+
+const RouteMap = React.lazy(() => import("../ui/RouteMap"));
 
 export function TrashCanPage({ jobs = [], customers = [], setCustomers, employees = [], settings = {} as AppSettings, setSettings, setJobs, toast, ownerId, markRecentlyDeleted }: { jobs?: Job[]; customers?: Customer[]; setCustomers?: any; employees?: any[]; settings?: AppSettings; setSettings?: any; setJobs?: any; toast?: any; ownerId?: string; markRecentlyDeleted?: (table: "jobs" | "customers" | "estimates" | "chemicals", ids: string[]) => void }) {
   const trashJobs = jobs.filter((j: any) => j.serviceCategory === "trash_can");
@@ -268,6 +271,27 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
   const [routeBuilding, setRouteBuilding] = useState(false);
   const [routeNote, setRouteNote] = useState("");
   const [savingRouteTimes, setSavingRouteTimes] = useState(false);
+  // Owner request: after "Optimize this day" the stops can be moved by hand
+  // (arrows or drag in the list, or drag pins on the map). The map
+  // locations and start point are kept so times can be worked out again for
+  // the new order without looking the addresses up again.
+  const [routeInputs, setRouteInputs] = useState<any[]>([]);
+  const [routeStartPt, setRouteStartPt] = useState<{ lat: number; lng: number } | null>(null);
+  const [routeMovedId, setRouteMovedId] = useState<string | null>(null);
+  const [routeDragIdx, setRouteDragIdx] = useState<number | null>(null);
+  const [routeMapOpen, setRouteMapOpen] = useState(true);
+  const routeLunch = { lunchMinutes: Number((settings as any)?.routeLunchMinutes) || 0, lunchEarliestMinutes: 240 };
+  const moveRouteStop = (from: number, to: number) => {
+    if (!route || from === to) return;
+    const ids = route.filter((e: any) => e.kind === "job").map((e: any) => e.jobId);
+    if (from < 0 || to < 0 || from >= ids.length || to >= ids.length) return;
+    const [id] = ids.splice(from, 1);
+    ids.splice(to, 0, id);
+    const byId = new Map(routeInputs.map((x: any) => [x.id, x]));
+    setRoute(buildOptimizedRoute(ids.map((x: string) => byId.get(x)).filter(Boolean), { ...routeLunch, start: routeStartPt, keepOrder: true }));
+    setRouteMovedId(id);
+    window.setTimeout(() => setRouteMovedId(m => m === id ? null : m), 2500);
+  };
   // The route starts from the owner's shop or home (Settings tab) when set,
   // so the first stop is the one nearest where the crew leaves from.
   const routeStartAddress = String((settings as any)?.routeStartAddress || (settings as any)?.companyAddress || "").trim();
@@ -283,10 +307,11 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
     setRouteBuilding(true);
     const [{ coords, missing, error }, start] = await Promise.all([coordsForJobs(dayJobs), startCoords()]);
     setRouteBuilding(false);
-    const entries = buildOptimizedRoute(
-      dayJobs.map(j => ({ id: j.id, ...(coords[j.id] || {}), scheduledTime: j.scheduledTime, estMinutes: ((j as any).cansCount || 1) * minutesPerCan })),
-      { lunchMinutes: Number((settings as any)?.routeLunchMinutes) || 0, lunchEarliestMinutes: 240, start }
-    );
+    const inputs = dayJobs.map(j => ({ id: j.id, ...(coords[j.id] || {}), scheduledTime: j.scheduledTime, estMinutes: ((j as any).cansCount || 1) * minutesPerCan }));
+    const entries = buildOptimizedRoute(inputs, { ...routeLunch, start });
+    setRouteInputs(inputs);
+    setRouteStartPt(start);
+    setRouteMovedId(null);
     // The day starts at the earliest time already on that day's stops (the
     // owner's own start), else 9:00.
     const times = dayJobs.map(j => hhmmToMin(j.scheduledTime)).filter((n): n is number => n != null);
@@ -665,6 +690,12 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
     }
     openSchedText("Text everyone their next cleaning day", list);
   };
+  // Save a phone typed in the text window to the customer and tick them.
+  const saveSchedPhone = async (customerId: string, phone: string) => {
+    const ok = await saveCustomerPhone(customerId, phone, setCustomers, toast);
+    if (ok) setSchedText(t => t && ({ ...t, rows: t.rows.map(r => r.customer.id === customerId ? { ...r, customer: { ...r.customer, phone }, on: !r.customer.smsOptOut } : r) }));
+    return ok;
+  };
   const sendSchedTexts = async () => {
     if (!schedText) return;
     const picked = schedText.rows.filter(r => r.on);
@@ -864,16 +895,44 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
         {routeNote && <div className="text-[10px] text-yellow-300/80">{routeNote}</div>}
         {route && (
           <div className="space-y-1.5 pt-2 border-t border-white/10">
-            {route.map((entry: any, i: number) => entry.kind === "lunch" ? (
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-[10px] text-white/40">Move a stop with the arrows or drag it{routeMapOpen ? ", or drag a pin on the map onto another stop" : ""}. Times update as you go.</div>
+              <button onClick={() => setRouteMapOpen(o => !o)} className="text-[11px] text-white/50 hover:text-white flex-shrink-0" data-route-map-toggle><MapPin size={11} className="inline mr-0.5" />{routeMapOpen ? "Hide map" : "Show map"}</button>
+            </div>
+            {routeMapOpen && (() => {
+              const byId = new Map(routeInputs.map((x: any) => [x.id, x]));
+              const stopsForMap = route.filter((e: any) => e.kind === "job").map((e: any) => {
+                const j = trashJobs.find(x => x.id === e.jobId); const c = j ? cf(j.customerId) : null; const p: any = byId.get(e.jobId) || {};
+                return { id: e.jobId, name: c ? `${c.firstName} ${c.lastName}` : (j?.address || "Stop"), lat: p.lat, lng: p.lng, time: clock(routeStart + (e.startMinutes || 0)) };
+              });
+              return <React.Suspense fallback={<div className="h-72 md:h-96 rounded-xl border border-white/10 bg-black/40 flex items-center justify-center text-xs text-white/40">Loading map…</div>}>
+                <RouteMap stops={stopsForMap} start={routeStartPt} onMove={moveRouteStop} movedId={routeMovedId} />
+              </React.Suspense>;
+            })()}
+            {(() => { const total = route.filter((e: any) => e.kind === "job").length; let n = -1; return route.map((entry: any, i: number) => { if (entry.kind === "job") n++; const k = n; return entry.kind === "lunch" ? (
               <div key={"lunch" + i} className="p-2 rounded-lg bg-yellow-950/20 border border-yellow-700/30 text-xs text-yellow-300 flex items-center gap-2"><Clock size={11} />Lunch break — {entry.durationMinutes} min</div>
             ) : (() => {
               const j = trashJobs.find(x => x.id === entry.jobId);
               const c = j ? cf(j.customerId) : null;
-              return <div key={entry.jobId} className="p-2 rounded-lg bg-black/40 border border-white/10 text-xs flex items-center justify-between gap-2">
-                <span className="flex items-center gap-2"><span className="text-white/70 w-16 shrink-0">{clock(routeStart + (entry.startMinutes || 0))}</span>{c ? `${c.firstName} ${c.lastName}` : "Customer"} — {j?.address}</span>
-                <span className="text-white/40 shrink-0">{entry.driveMinutes ? `${entry.driveMinutes}m drive · ` : ""}{(j as any)?.cansCount || 1} cans · ~{entry.estMinutes}m</span>
+              return <div key={entry.jobId} data-route-stop={entry.jobId}
+                draggable
+                onDragStart={() => setRouteDragIdx(k)}
+                onDragOver={e => e.preventDefault()}
+                onDrop={() => { if (routeDragIdx != null) moveRouteStop(routeDragIdx, k); setRouteDragIdx(null); }}
+                onDragEnd={() => setRouteDragIdx(null)}
+                className={"p-2 rounded-lg border text-xs flex items-center gap-2 transition-colors duration-700 " + (routeMovedId === entry.jobId ? "bg-green-900/40 border-green-500/50" : "bg-black/40 border-white/10") + (routeDragIdx === k ? " opacity-50" : "")}>
+                <span className="flex flex-col flex-shrink-0">
+                  <button aria-label="Move earlier" disabled={k === 0} onClick={() => moveRouteStop(k, k - 1)} className="px-2 py-0.5 leading-none text-white/50 hover:text-white disabled:opacity-20" data-route-up>▲</button>
+                  <button aria-label="Move later" disabled={k === total - 1} onClick={() => moveRouteStop(k, k + 1)} className="px-2 py-0.5 leading-none text-white/50 hover:text-white disabled:opacity-20" data-route-down>▼</button>
+                </span>
+                <span className="w-5 h-5 rounded-full bg-red-600 text-white text-[10px] font-bold flex items-center justify-center flex-shrink-0">{k + 1}</span>
+                <span className="flex-1 min-w-0">
+                  <span className="flex items-center gap-2 min-w-0"><span className="text-white/70 shrink-0">{clock(routeStart + (entry.startMinutes || 0))}</span><span className="truncate">{c ? `${c.firstName} ${c.lastName}` : "Customer"}</span></span>
+                  <span className="block text-[10px] text-white/40 truncate">{j?.address}</span>
+                </span>
+                <span className="text-white/40 shrink-0 text-[10px] text-right">{entry.driveMinutes ? <>{entry.driveMinutes}m drive<br /></> : null}{(j as any)?.cansCount || 1} cans · ~{entry.estMinutes}m</span>
               </div>;
-            })())}
+            })(); }); })()}
             <GBtn variant="ghost" disabled={savingRouteTimes} className="!text-xs w-full !justify-center" onClick={async () => {
               const stops = route.filter((e: any) => e.kind === "job");
               setSavingRouteTimes(true);
@@ -1351,8 +1410,16 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
                 </span>
               </div>
               <div className="max-h-64 overflow-y-auto space-y-1">
+                {schedText.rows.filter(r => !r.customer.phone).length > 0 && <div className="text-[10px] text-yellow-300/80">{schedText.rows.filter(r => !r.customer.phone).length} with no phone number. Type it next to their name and press Save.</div>}
                 {schedText.rows.map((r, idx) => {
                   const blocked = !r.customer.phone ? "no phone" : r.customer.smsOptOut ? "replied STOP" : "";
+                  if (!r.customer.phone) return (
+                    <div key={r.customer.id} className="flex items-center gap-2 p-1.5 rounded-lg text-[11px] bg-yellow-950/20 border border-yellow-700/20" data-sched-row data-no-phone>
+                      <input type="checkbox" disabled checked={false} readOnly />
+                      <span className="flex-1 min-w-0 truncate">{r.customer.firstName} {r.customer.lastName}</span>
+                      <AddPhoneInline disabled={!!schedSending} onSave={phone => saveSchedPhone(r.customer.id, phone)} />
+                    </div>
+                  );
                   return (
                     <label key={r.customer.id} className={"flex items-center gap-2 p-1.5 rounded-lg text-[11px] " + (blocked ? "opacity-50" : "hover:bg-white/5 cursor-pointer")} data-sched-row>
                       <input type="checkbox" disabled={!!blocked} checked={r.on} onChange={e => setSchedText(t => t && ({ ...t, rows: t.rows.map((x, k) => k === idx ? { ...x, on: e.target.checked } : x) }))} />

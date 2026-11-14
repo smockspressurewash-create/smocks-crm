@@ -1,4 +1,5 @@
 // auto-extracted from Crew Boss OS monolith
+import { AddPhoneInline, saveCustomerPhone } from "../ui/AddPhoneInline";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -741,6 +742,19 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
               {bulkSmsEligible.length} of {bulkSmsSelectedCustomers.length} will receive this
               {bulkSmsExcludedCount > 0 && ` — ${bulkSmsExcludedCount} excluded: opted out or no phone`}
             </div>
+            {bulkSmsSelectedCustomers.some((c: any) => !c.phone) && (
+              <div className="space-y-1" data-bulk-missing-phones>
+                <div className="text-[10px] text-yellow-300/80">No phone number yet. Type it and press Save to include them:</div>
+                <div className="max-h-40 overflow-y-auto space-y-1">
+                  {bulkSmsSelectedCustomers.filter((c: any) => !c.phone).map((c: any) => (
+                    <div key={c.id} className="flex items-center gap-2 p-1.5 rounded-lg text-[11px] bg-yellow-950/20 border border-yellow-700/20">
+                      <span className="flex-1 min-w-0 truncate">{c.firstName} {c.lastName}</span>
+                      <AddPhoneInline disabled={bulkSmsSending} onSave={phone => saveCustomerPhone(c.id, phone, setCustomers, toast)} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             <div>
               <textarea
                 value={bulkSmsBody}
