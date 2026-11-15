@@ -13,7 +13,7 @@ import { jobTaxSplit, taxOf, tolerantJobWrite } from "../../lib/jobWrite";
 import type { Job, Customer, AppSettings } from "../../types";
 import { supabase } from "../../lib/supabase";
 import { deleteByIds } from "../../lib/dbBulk";
-import { twilioSend, logOutboundSmsToInbox } from "../../lib/messaging";
+import { twilioSend, logOutboundSmsToInbox, sendEmail } from "../../lib/messaging";
 import { chargeSavedPaymentMethod } from "../../lib/stripe";
 import { Glass } from "../ui/Glass";
 import { GBtn } from "../ui/GBtn";
@@ -668,6 +668,12 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
     .replace(/\{day\}/g, longDay(r.date))
     .replace(/\{time\}/g, r.job.scheduledTime && r.date === r.job.scheduledDate ? ` around ${clock(hhmmToMin(r.job.scheduledTime) ?? 0)}` : "")
     .replace(/\{repeat\}/g, r.job.isRecurring ? `, then ${freqLabel(r.job).toLowerCase()} after that` : "");
+  // Owner rule: phone only gets a text, email only gets an email, both get
+  // both. A customer who replied STOP still gets the email.
+  const canSms = (c: any) => !!c?.phone && !c?.smsOptOut;
+  const canEmail = (c: any) => !!String(c?.email || "").includes("@");
+  const reachable = (c: any) => canSms(c) || canEmail(c);
+  const viaLabel = (c: any) => canSms(c) && canEmail(c) ? "text + email" : canSms(c) ? "text" : canEmail(c) ? (c?.smsOptOut ? "email (replied STOP)" : "email only") : "";
   const openSchedText = (title: string, list: { job: Job; date: string }[]) => {
     const seen = new Set<string>();
     const rows: SchedTextRow[] = [];
@@ -675,7 +681,7 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
       const c = cf(job.customerId);
       if (!c || seen.has(c.id)) continue;
       seen.add(c.id);
-      rows.push({ customer: c, job, date, on: !!c.phone && !c.smsOptOut });
+      rows.push({ customer: c, job, date, on: reachable(c) });
     }
     if (rows.length === 0) { toast?.("Nobody to text on that day", "yellow"); return; }
     setSchedText({ title, rows, template: SCHED_TEMPLATE });
@@ -693,36 +699,48 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
   // Save a phone typed in the text window to the customer and tick them.
   const saveSchedPhone = async (customerId: string, phone: string) => {
     const ok = await saveCustomerPhone(customerId, phone, setCustomers, toast);
-    if (ok) setSchedText(t => t && ({ ...t, rows: t.rows.map(r => r.customer.id === customerId ? { ...r, customer: { ...r.customer, phone }, on: !r.customer.smsOptOut } : r) }));
+    if (ok) setSchedText(t => t && ({ ...t, rows: t.rows.map(r => r.customer.id === customerId ? { ...r, customer: { ...r.customer, phone }, on: true } : r) }));
     return ok;
   };
   const sendSchedTexts = async () => {
     if (!schedText) return;
     const picked = schedText.rows.filter(r => r.on);
     if (picked.length === 0) { toast?.("Tick at least one customer", "yellow"); return; }
-    if (!window.confirm(`Send ${picked.length} text${picked.length !== 1 ? "s" : ""} now?`)) return;
+    const nText = picked.filter(r => canSms(r.customer)).length, nEmail = picked.filter(r => canEmail(r.customer)).length;
+    if (!window.confirm(`Send to ${picked.length} customer${picked.length !== 1 ? "s" : ""} now? (${nText} text${nText !== 1 ? "s" : ""}, ${nEmail} email${nEmail !== 1 ? "s" : ""})`)) return;
     setSchedSending({ done: 0, total: picked.length });
     const results: SendResult[] = [];
     for (const r of schedText.rows.filter(x => !x.on)) {
       const name = `${r.customer.firstName} ${r.customer.lastName}`.trim();
-      if (!r.customer.phone) results.push({ ...skipResult("sms", "Not sent: no phone number on file."), to: name });
-      else if (r.customer.smsOptOut) results.push({ ...skipResult("sms", "Not sent: this customer replied STOP."), to: name });
+      if (!reachable(r.customer)) results.push({ ...skipResult("sms", r.customer.smsOptOut ? "Not sent: replied STOP and no email on file." : "Not sent: no phone number or email on file."), to: name });
     }
+    // Out of credit or a bad login fails every text (or email) the same
+    // way: stop that channel and keep going with the other.
+    let smsDead = "", emailDead = "";
+    const fatal = /out of credit|rejected your login|suspended|isn't set up|not connected|reconnect/i;
     let i = 0;
     for (const r of picked) {
       const name = `${r.customer.firstName} ${r.customer.lastName}`.trim();
       const body = fillSchedText(schedText.template, r);
-      try {
-        const info = await twilioSend(settings as any, r.customer.phone, body, "sms", { confirm: true });
-        results.push({ ...okResult("sms", r.customer.phone, info), to: name + " · " + r.customer.phone });
-        if (!info?.testMode) logOutboundSmsToInbox({ via: "trash cans", contactName: name, contactPhone: r.customer.phone, customerId: r.customer.id, body }).catch(() => {});
-      } catch (e: any) {
-        results.push({ ...failResult("sms", r.customer.phone, e), to: name + " · " + r.customer.phone });
-        // Out of credit or bad login fails every text the same way: stop.
-        const sum = results[results.length - 1].summary;
-        if (/out of credit|rejected your login|suspended|isn't set up/.test(sum)) {
-          for (const rest of picked.slice(i + 1)) results.push({ ...skipResult("sms", "Not sent: stopped after the error above."), to: `${rest.customer.firstName} ${rest.customer.lastName}`.trim() });
-          break;
+      if (canSms(r.customer)) {
+        if (smsDead) results.push({ ...skipResult("sms", "Text not sent: stopped after the error above."), to: name });
+        else try {
+          const info = await twilioSend(settings as any, r.customer.phone, body, "sms", { confirm: true });
+          results.push({ ...okResult("sms", r.customer.phone, info), to: name + " · " + r.customer.phone });
+          if (!info?.testMode) logOutboundSmsToInbox({ via: "trash cans", contactName: name, contactPhone: r.customer.phone, customerId: r.customer.id, body }).catch(() => {});
+        } catch (e: any) {
+          results.push({ ...failResult("sms", r.customer.phone, e), to: name + " · " + r.customer.phone });
+          if (fatal.test(results[results.length - 1].summary)) smsDead = "1";
+        }
+      }
+      if (canEmail(r.customer)) {
+        if (emailDead) results.push({ ...skipResult("email", "Email not sent: stopped after the error above."), to: name });
+        else try {
+          const info = await sendEmail(settings as any, { to: r.customer.email, subject: `Your trash can cleaning is scheduled for ${longDay(r.date)}`, body: body.replace(/\s*Reply STOP to opt out\.?/i, "").trim() });
+          results.push({ ...okResult("email", r.customer.email, info), to: name + " · " + r.customer.email });
+        } catch (e: any) {
+          results.push({ ...failResult("email", r.customer.email, e), to: name + " · " + r.customer.email });
+          if (fatal.test(results[results.length - 1].summary)) emailDead = "1";
         }
       }
       i++;
@@ -1405,15 +1423,16 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
               <div className="flex items-center justify-between text-[11px] text-white/50">
                 <span>{on} of {schedText.rows.length} ticked</span>
                 <span className="flex gap-3">
-                  <button className="hover:text-white" onClick={() => setSchedText(t => t && ({ ...t, rows: t.rows.map(r => ({ ...r, on: !!r.customer.phone && !r.customer.smsOptOut })) }))}>All</button>
+                  <button className="hover:text-white" onClick={() => setSchedText(t => t && ({ ...t, rows: t.rows.map(r => ({ ...r, on: reachable(r.customer) })) }))}>All</button>
                   <button className="hover:text-white" onClick={() => setSchedText(t => t && ({ ...t, rows: t.rows.map(r => ({ ...r, on: false })) }))}>None</button>
                 </span>
               </div>
               <div className="max-h-64 overflow-y-auto space-y-1">
-                {schedText.rows.filter(r => !r.customer.phone).length > 0 && <div className="text-[10px] text-yellow-300/80">{schedText.rows.filter(r => !r.customer.phone).length} with no phone number. Type it next to their name and press Save.</div>}
+                {schedText.rows.filter(r => !reachable(r.customer)).length > 0 && <div className="text-[10px] text-yellow-300/80">{schedText.rows.filter(r => !reachable(r.customer)).length} with no phone number or email. Type a number next to their name and press Save.</div>}
+                <div className="text-[10px] text-white/40">Phone only gets a text, email only gets an email, both get both.</div>
                 {schedText.rows.map((r, idx) => {
-                  const blocked = !r.customer.phone ? "no phone" : r.customer.smsOptOut ? "replied STOP" : "";
-                  if (!r.customer.phone) return (
+                  const blocked = reachable(r.customer) ? "" : r.customer.smsOptOut ? "replied STOP" : "no phone or email";
+                  if (!r.customer.phone && !canEmail(r.customer)) return (
                     <div key={r.customer.id} className="flex items-center gap-2 p-1.5 rounded-lg text-[11px] bg-yellow-950/20 border border-yellow-700/20" data-sched-row data-no-phone>
                       <input type="checkbox" disabled checked={false} readOnly />
                       <span className="flex-1 min-w-0 truncate">{r.customer.firstName} {r.customer.lastName}</span>
@@ -1424,13 +1443,13 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
                     <label key={r.customer.id} className={"flex items-center gap-2 p-1.5 rounded-lg text-[11px] " + (blocked ? "opacity-50" : "hover:bg-white/5 cursor-pointer")} data-sched-row>
                       <input type="checkbox" disabled={!!blocked} checked={r.on} onChange={e => setSchedText(t => t && ({ ...t, rows: t.rows.map((x, k) => k === idx ? { ...x, on: e.target.checked } : x) }))} />
                       <span className="flex-1 min-w-0 truncate">{r.customer.firstName} {r.customer.lastName}</span>
-                      <span className="text-white/40 flex-shrink-0">{blocked || dayLabel(r.date)}</span>
+                      <span className="text-white/40 flex-shrink-0" data-sched-via>{blocked || `${dayLabel(r.date)} · ${viaLabel(r.customer)}`}</span>
                     </label>
                   );
                 })}
               </div>
               <GBtn onClick={sendSchedTexts} disabled={!!schedSending || on === 0} className="w-full !justify-center" data-sched-send>
-                <Send size={12} className="inline mr-1" />{schedSending ? `Sending ${schedSending.done + 1} of ${schedSending.total}…` : `Send ${on} text${on !== 1 ? "s" : ""}`}
+                <Send size={12} className="inline mr-1" />{schedSending ? `Sending ${schedSending.done + 1} of ${schedSending.total}…` : `Send to ${on} customer${on !== 1 ? "s" : ""}`}
               </GBtn>
             </div>
           );

@@ -216,17 +216,47 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
 
   const toggleMerge = id => setMergePair(prev => prev.includes(id) ? prev.filter(x => x !== id) : prev.length < 2 ? [...prev, id] : prev);
 
-  const doSimpleMerge = () => {
+  // BUG FIX (owner report, duplicate customer "Joe Gaza" / "Joe Gazza"):
+  // Merge only changed the list on screen. Nothing was saved, so both
+  // customers came back on the next load, and the second customer's jobs
+  // and quotes were never moved. Now: blank fields on the first customer
+  // are filled from the second (nothing filled in is overwritten), tags and
+  // notes are combined, the second customer's jobs, quotes and saved routes
+  // move to the first, and only then is the second customer deleted.
+  const doSimpleMerge = async () => {
     if (mergePair.length !== 2) return;
     const [aId, bId] = mergePair;
     const a = customers.find(c => c.id === aId);
     const b = customers.find(c => c.id === bId);
     if (!a || !b) return;
-    const merged = { ...a, ...b, id: a.id, totalSpent: (a.totalSpent || 0) + (b.totalSpent || 0), notes: [a.notes, b.notes].filter(Boolean).join(" | ") };
-    setCustomers(customers.filter(c => c.id !== bId).map(c => c.id === aId ? merged : c));
+    const filled: any = {};
+    for (const k of ["phone", "email", "address", "lastName", "leadSource", "birthday", "folder"]) if (!a[k] && b[k]) filled[k] = b[k];
+    const tags = Array.from(new Set([...(a.tags || []), ...(b.tags || [])]));
+    const notes = [a.notes, b.notes].filter(Boolean).join(" | ");
+    const patch = { ...filled, tags, notes, totalSpent: (a.totalSpent || 0) + (b.totalSpent || 0) };
+    try {
+      const up = await (supabase as any).from("customers").update(patch).eq("id", aId).select("id");
+      if (up.error || !up.data?.length) throw new Error(up.error?.message || "couldn't save the merged customer");
+      for (const t of ["jobs", "estimates"]) {
+        const r = await (supabase as any).from(t).update({ customerId: aId }).eq("customerId", bId).select("id");
+        if (r.error) throw new Error(`couldn't move ${t}: ${r.error.message}`);
+      }
+      const routes = await (supabase as any).from("trash_can_routes").select("id,customer_ids").contains("customer_ids", [bId]);
+      for (const rt of routes.data || []) {
+        const ids = Array.from(new Set((rt.customer_ids || []).map((x: string) => x === bId ? aId : x)));
+        await (supabase as any).from("trash_can_routes").update({ customer_ids: ids, updated_at: new Date().toISOString() }).eq("id", rt.id);
+      }
+      const del = await deleteByIds("customers", [bId]);
+      if (del.failed) throw new Error(del.error || "couldn't delete the duplicate");
+    } catch (e: any) {
+      toast("Merge didn't finish: " + (e?.message || "unknown error") + ". Nothing on screen was changed.", "red");
+      return;
+    }
+    markRecentlyDeleted("customers", [bId]);
+    setCustomers((prev: any[]) => prev.filter((c: any) => c.id !== bId).map((c: any) => c.id === aId ? { ...c, ...patch } : c));
     setMergeMode(false);
     setMergePair([]);
-    toast("Customers merged ✓");
+    toast("Customers merged ✓ (jobs and quotes moved)", "green");
   };
 
   const allCustomerTags = Array.from(new Set(customers.flatMap((c: any) => c.tags || []))).sort();
