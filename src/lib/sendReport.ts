@@ -119,4 +119,21 @@ export const okResult = (channel: SendChannel, to: string, info?: { testMode?: b
 
 export const failResult = (channel: SendChannel, to: string | undefined, err: any): SendResult => ({ channel, ok: false, to, ...explainSendError(channel, err) });
 
-export const skipResult = (channel: SendChannel, summary: string): SendResult => ({ channel, ok: false, skipped: true, summary });
+export const skipResult = (channel: SendChannel, summary: string, details?: Record<string, any>): SendResult => ({ channel, ok: false, skipped: true, summary, ...(details ? { details: lines({ ...details, time: new Date().toLocaleString() }) } : {}) });
+
+// OWNER REQUEST: the "Full details" drop-down (raw error codes, HTTP status,
+// tokens' state) is for the business that runs this deployment, not for
+// every customer business. Only these accounts see it; everyone else gets
+// the one-line reason. Extra emails can be added with the
+// VITE_VERBOSE_ERROR_EMAILS env var (comma separated).
+const VERBOSE_EMAILS: string[] = ["smockspressurewash@gmail.com"];
+const VERBOSE_DOMAIN: RegExp | null = /@smockspower\.com$/i;
+const VERBOSE_COMPANY: RegExp | null = /smock/i;
+let verboseErrors = false;
+export const setSendDetailsAccount = (email?: string | null, companyName?: string | null) => {
+  const e = String(email || "").trim().toLowerCase();
+  const extra = String((import.meta as any).env?.VITE_VERBOSE_ERROR_EMAILS || "").toLowerCase().split(",").map(x => x.trim()).filter(Boolean);
+  verboseErrors = !!e && (VERBOSE_EMAILS.includes(e) || extra.includes(e) || !!VERBOSE_DOMAIN?.test(e))
+    || (!!VERBOSE_COMPANY && !!companyName && VERBOSE_COMPANY.test(companyName));
+};
+export const showSendDetails = () => verboseErrors;

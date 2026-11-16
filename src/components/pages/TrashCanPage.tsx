@@ -712,44 +712,56 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
     const results: SendResult[] = [];
     for (const r of schedText.rows.filter(x => !x.on)) {
       const name = `${r.customer.firstName} ${r.customer.lastName}`.trim();
-      if (!reachable(r.customer)) results.push({ ...skipResult("sms", r.customer.smsOptOut ? "Not sent: replied STOP and no email on file." : "Not sent: no phone number or email on file."), to: name });
+      if (!reachable(r.customer)) results.push({ ...skipResult("sms", r.customer.smsOptOut ? "Not sent: replied STOP and no email on file." : "Not sent: no phone number or email on file.", { customer: name, phone: r.customer.phone || "none", email: r.customer.email || "none", smsOptOut: !!r.customer.smsOptOut }), to: name });
     }
     // Out of credit or a bad login fails every text (or email) the same
     // way: stop that channel and keep going with the other.
+    // BUG FIX (owner report): after the email error every other customer
+    // got their own "Email not sent: stopped after the error above" row,
+    // with nothing to open. Now the stopped customers are one row that names
+    // the error and lists them.
     let smsDead = "", emailDead = "";
+    const smsStopped: string[] = [], emailStopped: string[] = [];
     const fatal = /out of credit|rejected your login|suspended|isn't set up|not connected|reconnect/i;
     let i = 0;
     for (const r of picked) {
       const name = `${r.customer.firstName} ${r.customer.lastName}`.trim();
       const body = fillSchedText(schedText.template, r);
       if (canSms(r.customer)) {
-        if (smsDead) results.push({ ...skipResult("sms", "Text not sent: stopped after the error above."), to: name });
+        if (smsDead) smsStopped.push(name + " · " + r.customer.phone);
         else try {
           const info = await twilioSend(settings as any, r.customer.phone, body, "sms", { confirm: true });
           results.push({ ...okResult("sms", r.customer.phone, info), to: name + " · " + r.customer.phone });
           if (!info?.testMode) logOutboundSmsToInbox({ via: "trash cans", contactName: name, contactPhone: r.customer.phone, customerId: r.customer.id, body }).catch(() => {});
         } catch (e: any) {
           results.push({ ...failResult("sms", r.customer.phone, e), to: name + " · " + r.customer.phone });
-          if (fatal.test(results[results.length - 1].summary)) smsDead = "1";
+          if (fatal.test(results[results.length - 1].summary)) smsDead = results[results.length - 1].summary;
         }
       }
       if (canEmail(r.customer)) {
-        if (emailDead) results.push({ ...skipResult("email", "Email not sent: stopped after the error above."), to: name });
+        if (emailDead) emailStopped.push(name + " · " + r.customer.email);
         else try {
           const info = await sendEmail(settings as any, { to: r.customer.email, subject: `Your trash can cleaning is scheduled for ${longDay(r.date)}`, body: body.replace(/\s*Reply STOP to opt out\.?/i, "").trim() });
           results.push({ ...okResult("email", r.customer.email, info), to: name + " · " + r.customer.email });
         } catch (e: any) {
           results.push({ ...failResult("email", r.customer.email, e), to: name + " · " + r.customer.email });
-          if (fatal.test(results[results.length - 1].summary)) emailDead = "1";
+          if (fatal.test(results[results.length - 1].summary)) emailDead = results[results.length - 1].summary;
         }
       }
       i++;
       setSchedSending({ done: i, total: picked.length });
     }
+    const stoppedRow = (ch: "sms" | "email", list: string[], why: string) => list.length && results.push({
+      ...skipResult(ch, `${ch === "sms" ? "Texts" : "Emails"} not sent to ${list.length} more customer${list.length !== 1 ? "s" : ""}, because of the error above. Fix it, then send again.`, { stoppedBecause: why, notSentTo: "\n  " + list.join("\n  ") }),
+      to: `${list.length} customer${list.length !== 1 ? "s" : ""}`,
+    });
+    stoppedRow("sms", smsStopped, smsDead);
+    stoppedRow("email", emailStopped, emailDead);
     setSchedSending(null);
     setSchedText(null);
-    const sent = results.filter(r => r.ok).length;
-    showSendReport({ title: "Schedule texts", customerName: `${sent} of ${picked.length} sent`, results });
+    // Count customers, not messages: a customer reached by text or email counts once.
+    const reached = picked.filter(r => results.some(x => x.ok && x.to && (x.to.startsWith(`${r.customer.firstName} ${r.customer.lastName}`.trim() + " · ")))).length;
+    showSendReport({ title: "Schedule texts", customerName: `${reached} of ${picked.length} customers reached`, results });
   };
 
   // ── Page layout: one tab at a time ──────────────────────────────────────

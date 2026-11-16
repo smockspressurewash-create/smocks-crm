@@ -356,15 +356,23 @@ export const twilioSend = async (
       } catch { /* fall through — server will reject with no valid session */ }
     }
   }
-  let res: Response;
-  try {
-    res = await fetch(endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
-      body: JSON.stringify(payload),
-    });
-  } catch (e: any) {
-    throw new SendError("Couldn't reach the CrewBoss text server — " + (e?.message || "network error"), { endpoint, to: toNum, from: fromE164 });
+  // BUG FIX (owner report: one text of a 36-customer send failed with "No
+  // connection to the text server" on a phone on 5G). A phone's connection
+  // drops for a moment now and then; wait and try once more before giving up.
+  let res: Response | undefined;
+  let netErr: any;
+  for (let attempt = 0; attempt < 2 && !res; attempt++) {
+    if (attempt) await new Promise(r => setTimeout(r, 2500));
+    try {
+      res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
+        body: JSON.stringify(payload),
+      });
+    } catch (e: any) { netErr = e; }
+  }
+  if (!res) {
+    throw new SendError("Couldn't reach the CrewBoss text server — " + (netErr?.message || "network error"), { endpoint, to: toNum, from: fromE164, tries: 2, online: typeof navigator !== "undefined" ? navigator.onLine : undefined });
   }
   const data = await res.json().catch(() => ({} as any));
   if (!res.ok) {
@@ -845,7 +853,13 @@ export const sendViaGmail = async (
   // 401. This is what actually stops "token keeps expiring" from being user
   // visible at all, rather than just reacting faster to the 401 after it
   // already happened.
-  if (opts?.refreshToken && opts.tokenExpiresAt && Date.now() > opts.tokenExpiresAt - 2 * 60 * 1000 && !gmailCircuitOpen()) {
+  // BUG FIX (owner report: "Your Google connection expired" on every email
+  // of a schedule-text send from the phone). The refresh only ran when THIS
+  // device had a Google refresh token saved, and a phone usually doesn't:
+  // only the browser that clicked "Connect Google" gets one. The server
+  // keeps the owner's refresh token and uses it when none is sent, so
+  // always ask it for a new access token.
+  if (opts?.tokenExpiresAt && Date.now() > opts.tokenExpiresAt - 2 * 60 * 1000 && !gmailCircuitOpen()) {
     const refreshed = await refreshGoogleAccessToken(opts.refreshToken, opts.backendUrl);
     if (refreshed?.token) {
       activeToken = refreshed.token;
@@ -874,11 +888,11 @@ export const sendViaGmail = async (
     // only refreshes Supabase's own session JWT — it does not re-authenticate
     // with Google, so the "fresh" provider_token it sometimes returns is
     // usually just the same stale one, or null.
-    if (opts?.refreshToken) {
-      const refreshed = await refreshGoogleAccessToken(opts.refreshToken, opts.backendUrl);
+    {
+      const refreshed = await refreshGoogleAccessToken(opts?.refreshToken || "", opts?.backendUrl);
       if (refreshed?.token) {
         freshToken = refreshed.token;
-        opts.onTokenRefreshed?.(refreshed.token, refreshed.expiresAt);
+        opts?.onTokenRefreshed?.(refreshed.token, refreshed.expiresAt);
       } else if (refreshed?.configMissing) {
         configMissing = true;
       }

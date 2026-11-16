@@ -1,4 +1,5 @@
 ﻿import { useState, useEffect, useRef, useCallback } from "react";
+import { setSendDetailsAccount } from "./lib/sendReport";
 import { fetchModelWatch, takeNewModelWatchEvents } from "./lib/modelWatch";
 import { createPortal } from "react-dom";
 import {
@@ -3832,6 +3833,9 @@ export function App() {
   useEffect(() => {
     setCurrentOwnerIdForSms(crmUserId || null);
   }, [crmUserId]);
+  useEffect(() => {
+    setSendDetailsAccount(crmUserEmail, (settings as any)?.companyName);
+  }, [crmUserEmail, (settings as any)?.companyName]);
 
   // FEATURE (round 13, item 12) — Testing Mode, same registry pattern as
   // opt-out above. Recomputed whenever customers change OR the owner flips

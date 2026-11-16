@@ -4,7 +4,7 @@ import React, { useEffect, useState } from "react";
 import { CheckCircle2, XCircle, AlertTriangle, Copy, Share2, ExternalLink, Mail, MessageSquare } from "lucide-react";
 import { Modal } from "./Modal";
 import { GBtn } from "./GBtn";
-import { onSendReport, type SendReport } from "../../lib/sendReport";
+import { onSendReport, showSendDetails, type SendReport } from "../../lib/sendReport";
 
 export const copyText = async (text: string): Promise<boolean> => {
   try { await navigator.clipboard.writeText(text); return true; } catch { /* fall back below */ }
@@ -40,6 +40,7 @@ export function SendReportHost() {
   const [report, setReport] = useState<SendReport | null>(null);
   useEffect(() => onSendReport(setReport), []);
   if (!report) return null;
+  const verbose = showSendDetails();
   const anyOk = report.results.some(r => r.ok);
   const anyFail = report.results.some(r => !r.ok && !r.skipped);
   const heading = report.results.length === 0 ? "Nothing was sent" : anyFail && anyOk ? "Partly sent" : anyFail ? "Not sent" : anyOk ? "Sent" : "Not sent";
@@ -60,7 +61,7 @@ export function SendReportHost() {
                   {r.channel === "email" ? "Email" : "Text (Twilio)"}{r.to ? <span className="font-normal text-white/50 truncate">· {r.to}</span> : null}
                 </div>
                 <div className="text-xs text-white/80 mt-0.5" data-send-summary>{r.summary}</div>
-                {r.details && (
+                {verbose && r.details && (
                   <details className="mt-1.5">
                     <summary className="text-[11px] text-white/50 cursor-pointer select-none">Full details</summary>
                     <pre data-send-details className="mt-1 text-[10px] leading-snug text-white/70 bg-black/50 border border-white/10 rounded-lg p-2 whitespace-pre-wrap break-all max-h-48 overflow-y-auto">{r.details}</pre>
