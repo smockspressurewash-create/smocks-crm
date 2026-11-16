@@ -31,6 +31,7 @@
 // convention this is NOT routable, purely a shared module for the actual
 // route files (twilio-sms-webhook.ts) to import from.
 
+import { filterAudience, AUDIENCE_SCHEMA } from "../../../src/lib/bulkAudience";
 import { twilioAccountSid } from "./twilioAccount";
 import { effectiveModel } from "./modelOverrides";
 import { prepareImportFromFile, runTextImport } from "./textImport";
@@ -734,7 +735,8 @@ const TOOLS = [
       type: "object",
       properties: {
         message: { type: "string", description: "Use {{first_name}} to personalize" },
-        tag: { type: "string", description: "Only customers with this exact tag — omit to mean everyone" },
+        tag: { type: "string", description: "Only customers with this tag — omit to mean everyone" },
+        ...AUDIENCE_SCHEMA,
       },
       required: ["message"],
     },
@@ -965,6 +967,7 @@ const TOOLS = [
         campaignName: { type: "string", description: "Short name for the Campaigns page, e.g. 'Birthday collection'" },
         audience: { type: "string", enum: ["all", "tag", "names"], description: "Everyone with a phone, customers with a tag, or a list of names" },
         tag: { type: "string" },
+        ...AUDIENCE_SCHEMA,
         customerNames: { type: "array", items: { type: "string" } },
         onlyMissing: { type: "string", enum: ["birthday", "email", "address"], description: "Only customers whose file doesn't have this yet" },
         watchReplies: {
@@ -1968,7 +1971,7 @@ const executeToolCore = async (ctx: Ctx, name: string, input: Record<string, any
       // Never sends directly any more — drafts it for the owner's OK
       // (see prepare_bulk_text / send_bulk_text).
       case "notify_all_customers":
-        return executeToolCore(ctx, "prepare_bulk_text", { message: input.message, audience: input.tag ? "tag" : "all", tag: input.tag, campaignName: input.campaignName });
+        return executeToolCore(ctx, "prepare_bulk_text", { message: input.message, audience: input.tag ? "tag" : "all", tag: input.tag, serviceCategory: input.serviceCategory, jobWeekday: input.jobWeekday, jobDate: input.jobDate, campaignName: input.campaignName });
       case "create_promotion": {
         if (!input.name || !input.discountType || input.discountValue == null) return { error: "name, discountType, and discountValue required" };
         const code = (input.name as string).toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 10) || "SAVE" + Math.floor(Math.random() * 1000);
@@ -2319,10 +2322,13 @@ const executeToolCore = async (ctx: Ctx, name: string, input: Record<string, any
         let rows = await sbGetAll(ctx, `customers?select=*${ownerScope(ctx)}`);
         const total = rows.length;
         rows = rows.filter((c: any) => c.phone && !c.smsOptOut && !(ctx.testModeEnabled && c.isTestClient));
-        if (input.audience === "tag") {
-          if (!input.tag) return { error: "tag required for audience 'tag'." };
-          const t = String(input.tag).toLowerCase();
-          rows = rows.filter((c: any) => Array.isArray(c.tags) && c.tags.some((x: string) => String(x).toLowerCase() === t));
+        let audNote = "";
+        if (input.audience !== "names" && (input.tag || input.serviceCategory || input.jobWeekday || input.jobDate)) {
+          const jobRows = (input.serviceCategory || input.jobWeekday || input.jobDate || input.tag) ? await sbGetAll(ctx, `jobs?select=id,customerId,scheduledDate,status,serviceCategory,title${ownerScope(ctx)}`) : [];
+          const aud = filterAudience(rows, jobRows, { tag: input.tag, serviceCategory: input.serviceCategory, jobWeekday: input.jobWeekday, jobDate: input.jobDate }, today());
+          rows = aud.rows; audNote = aud.note || "";
+        } else if (input.audience === "tag") {
+          return { error: "tag required for audience 'tag'." };
         } else if (input.audience === "names") {
           const names: string[] = Array.isArray(input.customerNames) ? input.customerNames : [];
           if (!names.length) return { error: "customerNames required for audience 'names'." };
@@ -2337,7 +2343,7 @@ const executeToolCore = async (ctx: Ctx, name: string, input: Record<string, any
           if (notFound.length) (input as any)._notFound = notFound;
         }
         if (input.onlyMissing) rows = rows.filter((c: any) => !String(c[input.onlyMissing] || "").trim());
-        if (rows.length === 0) return { error: `Nobody matched — of ${total} customers, none have a phone number, haven't opted out, and fit "${input.audience}${input.tag ? " " + input.tag : ""}${input.onlyMissing ? ", missing " + input.onlyMissing : ""}".` };
+        if (rows.length === 0) return { error: `Nobody matched — of ${total} customers, none have a phone number, haven't opted out, and fit "${input.audience}${input.tag ? " " + input.tag : ""}${input.serviceCategory ? ", " + input.serviceCategory : ""}${input.jobWeekday ? " on " + input.jobWeekday : ""}${input.jobDate ? " on " + input.jobDate : ""}${input.onlyMissing ? ", missing " + input.onlyMissing : ""}".${audNote ? " " + audNote : ""}`, hint: "For customers on a day or with a kind of job, use serviceCategory (e.g. 'trash_can') and jobWeekday (e.g. 'wednesday') instead of tag." };
         const recipients = rows.map((c: any, i: number) => ({ n: i + 1, customerId: c.id, name: `${c.firstName || ""} ${c.lastName || ""}`.trim() || c.phone, firstName: c.firstName || "", phone: c.phone, status: "pending" }));
         const draftId = crypto.randomUUID();
         const campaignId = crypto.randomUUID();
@@ -2356,6 +2362,7 @@ const executeToolCore = async (ctx: Ctx, name: string, input: Record<string, any
           list: recipients.slice(0, SHOW).map((r: any) => `${r.n}. ${r.name}`),
           more: recipients.length > SHOW ? recipients.length - SHOW : 0,
           notFound: (input as any)._notFound,
+          ...(audNote ? { note: audNote } : {}),
           sample: String(input.message).replace(/{{first_name}}/g, recipients[0].firstName || "there"),
           next: "Nothing has been sent. Text the owner the numbered list (and the sample message) and ask which to send to — e.g. 'all', 'not 3 and 7', or 'only 1, 2, 5'. Then stop and wait for their reply before calling send_bulk_text.",
         };
