@@ -2173,7 +2173,18 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
   // notify_all_customers / send_bulk_text) — same rule as text-Alfred.
   // turnStartRef marks when the owner's current message started being
   // handled, so a draft made during it can't be sent until they reply.
-  const bulkDraftsRef = useRef<Map<string, { id: string; message: string; recipients: any[]; createdAt: number; watchReplies?: any; campaignName?: string }>>(new Map());
+  // BUG FIX (owner report: "Send all" got "the draft EXPIRED"). Drafts
+  // lived only in memory, so switching pages or the phone reloading the tab
+  // lost them. They are now also kept in this tab's session storage for
+  // 24 hours.
+  const BULK_DRAFTS_KEY = "smocks.alfredBulkDrafts";
+  const bulkDraftsRef = useRef<Map<string, { id: string; message: string; recipients: any[]; createdAt: number; watchReplies?: any; campaignName?: string }>>((() => {
+    try {
+      const list = JSON.parse(sessionStorage.getItem(BULK_DRAFTS_KEY) || "[]");
+      return new Map(list.filter((d: any) => d?.id && Date.now() - d.createdAt < 864e5).map((d: any) => [d.id, d]));
+    } catch { return new Map(); }
+  })());
+  const saveBulkDrafts = () => { try { sessionStorage.setItem(BULK_DRAFTS_KEY, JSON.stringify([...bulkDraftsRef.current.values()].slice(-5))); } catch { /* storage full or blocked */ } };
   const turnStartRef = useRef(0);
   // Big lists for import (attached spreadsheets, long pastes) are kept here
   // instead of being sent to the model whole — see prepare_import below.
@@ -4359,6 +4370,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           const recipients = eligible.map((c: any, i: number) => ({ n: i + 1, customerId: c.id, name: `${c.firstName || ""} ${c.lastName || ""}`.trim() || c.phone, firstName: c.firstName || "", phone: c.phone }));
           const draftId = uid();
           bulkDraftsRef.current.set(draftId, { id: draftId, message: inputs.message, recipients, createdAt: Date.now(), watchReplies: inputs.watchReplies, campaignName: inputs.campaignName });
+          saveBulkDrafts();
           return {
             success: true, draftId, notSentYet: true, recipientCount: recipients.length, ...(aud.note ? { note: aud.note } : {}),
             list: recipients.slice(0, 60).map((r: any) => `${r.n}. ${r.name}`), more: Math.max(0, recipients.length - 60),
@@ -4367,8 +4379,13 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           };
         }
         case "send_bulk_text": {
-          const draft = bulkDraftsRef.current.get(String(inputs.draftId || ""));
-          if (!draft) return { error: "That draft wasn't found (drafts last until the page is reloaded) — draft it again with notify_all_customers." };
+          // BUG FIX (owner report): the model only sees its own past words,
+          // not past tool results, so on the owner's "Send all" it often
+          // passed a draft id it made up. When the id isn't found, use the
+          // latest draft the owner has already seen (made before this reply).
+          let draft = bulkDraftsRef.current.get(String(inputs.draftId || ""));
+          if (!draft) draft = [...bulkDraftsRef.current.values()].filter(d => d.createdAt < turnStartRef.current).sort((a, b) => b.createdAt - a.createdAt)[0];
+          if (!draft) return { error: "No draft is waiting to be sent — draft it again with notify_all_customers, show the owner the list, and wait for their answer." };
           if (draft.createdAt >= turnStartRef.current) return { error: "Refused: the owner hasn't seen this list yet. Show them the numbered list and wait for their reply before sending." };
           if (!settings?.twilioSid) return { error: "Twilio isn't configured — add credentials in Settings → API Keys to send real SMS." };
           const only = new Set<number>((Array.isArray(inputs.only) ? inputs.only : []).map(Number));
@@ -4376,6 +4393,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
           const chosen = draft.recipients.filter((r: any) => only.size ? only.has(r.n) : !exclude.has(r.n));
           if (!chosen.length) return { error: "With those choices nobody is left to send to." };
           bulkDraftsRef.current.delete(draft.id);
+          saveBulkDrafts();
           let watchId: string | null = null;
           if (draft.watchReplies?.question && ownerId) {
             watchId = uid();
@@ -4882,7 +4900,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
     {
       name: "remember_fact",
       description: "Save an important fact to long-term memory — a real standing preference, recurring business rule, or fact worth knowing in every future conversation (e.g. 'always give repeat customers 10% off', 'my slow season is January-February'). Every saved memory gets shown to you at the start of every future conversation, so ONLY save things that should genuinely apply going forward — never a one-off request, a passing remark, or something that's only true for right now ('I don't have time today' is not a fact to remember; 'I'm always slammed on Mondays, don't schedule big jobs then' is).",
-      input_schema: { type: "object", properties: { fact: { type: "string" }, category: { type: "string", enum: ["preferences", "business", "facts", "goals", "general"] } }, required: ["fact"] }
+      input_schema: { type: "object", properties: { fact: { type: "string" }, category: { type: "string", enum: ["preferences", "business", "facts", "goals", "lessons", "general"], description: "'lessons' = how to do a task right next time, learned from a mistake or the owner's correction" } }, required: ["fact"] }
     },
     {
       name: "forget_fact",
@@ -5306,7 +5324,12 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
       // communication notes land (see the STANDING INSTRUCTIONS / CUSTOMER
       // TEXTING sections of toolHint below) — reframed as binding rules to
       // check against, not just recall.
-      const memoryContext = memory.length > 0 ? "\n\nWhat you remember about the user (organized by category — [preferences] and [business] are standing rules to actually follow on every relevant action below, not just background facts to recall):\n" + Object.entries(memByCat).map(([k, list]) => "  [" + k + "]: " + list.join("; ")).join("\n") : "";
+      // FEATURE (owner report: "Alfred's memory doesn't improve or learn").
+      // [lessons] are what Alfred learned from his own mistakes and the
+      // owner's corrections; he saves them himself (see the LEARNING rule
+      // in the system prompt) and must follow them.
+      const memoryContext = (memory.length > 0 ? "\n\nWhat you remember about the user (organized by category — [preferences], [business] and [lessons] are standing rules to actually follow on every relevant action below, not just background facts to recall; [lessons] are what you learned from past mistakes, so do it that way):\n" + Object.entries(memByCat).map(([k, list]) => "  [" + k + "]: " + list.join("; ")).join("\n") : "")
+        + "\n\nLEARNING: when the owner corrects you, or a tool fails and you then find what works, save ONE short lesson with remember_fact (category 'lessons') saying what to do next time, e.g. 'To text customers on a day, use notify_all_customers with serviceCategory and jobWeekday, not a tag.' Don't save a lesson that is already listed, and don't mention saving it unless asked.";
       // FEATURE — "the web chat and SMS should share memory." alfred_memory
       // (above) was already shared — both channels read/write the exact
       // same owner_id-scoped table. This adds awareness of the raw SMS
@@ -5485,7 +5508,23 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
       console.log("[Personality] systemPrompt personality clause:", getPersonality(activePersonality).systemPrompt.slice(0, 80) + "…");
 
       // Build initial message list — allow multi-turn tool calls up to 5 rounds
-      let convMessages = [...chats, userMsg].slice(-12).map((m: any) => ({ role: m.role === "user" ? "user" : "assistant", content: m.modelContent || m.content }));
+      // BUG FIX (owner report: "Send all" got "the draft EXPIRED"). Past
+      // turns only carried Alfred's words, so ids from his own tool results
+      // (a draft id, a new customer's id) were gone on the next message and
+      // he guessed them. Each past reply now carries a short hidden note of
+      // the tools he used and what they returned.
+      const toolNote = (traces: any[]) => {
+        if (!Array.isArray(traces) || !traces.length) return "";
+        const keep = ["draftId", "id", "customerId", "jobId", "estimateId", "invoiceId", "recipientCount", "sent", "failed"];
+        const parts = traces.slice(-6).map((t: any) => {
+          const r = t?.result || {};
+          if (r.error) return `${t.tool} → error: ${String(r.error).slice(0, 140)}`;
+          const ids = keep.filter(k => r[k] !== undefined && typeof r[k] !== "object").map(k => `${k}=${r[k]}`).join(", ");
+          return `${t.tool} → ok${ids ? " (" + ids + ")" : ""}`;
+        });
+        return "\n\n[Tools I used in this reply, not shown to the owner: " + parts.join("; ").slice(0, 700) + "]";
+      };
+      let convMessages: any[] = [...chats, userMsg].slice(-12).map((m: any) => ({ role: m.role === "user" ? "user" : "assistant", content: (m.modelContent || m.content) + (m.role === "user" ? "" : toolNote(m.toolTraces)) }));
       let rounds = 0;
       let finalText = "";
       const toolTraces = [];
@@ -7136,9 +7175,10 @@ UNDO REQUESTS: if the owner says "undo that", "undo it", "delete those", "change
           { k: "business", l: "Business", icon: "💼", color: "bg-green-950/30 text-green-300 border-green-800/40" },
           { k: "facts", l: "Facts", icon: "📌", color: "bg-yellow-950/30 text-yellow-300 border-yellow-800/40" },
           { k: "goals", l: "Goals", icon: "🎯", color: "bg-red-950/30 text-red-300 border-red-800/40" },
+          { k: "lessons", l: "Lessons", icon: "🎓", color: "bg-purple-950/30 text-purple-300 border-purple-800/40" },
           { k: "general", l: "General", icon: "🧠", color: "bg-white/5 text-white/60 border-white/10" }
         ];
-        const catMeta = c => memCats.find(x => x.k === (c || "general")) || memCats[4];
+        const catMeta = c => memCats.find(x => x.k === (c || "general")) || memCats[memCats.length - 1];
         const filteredMem = memFilter === "all" ? memory : memory.filter(m => (m.category || "general") === memFilter);
         return <>
           <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 transition-opacity duration-300" onClick={() => setMemoryOpen(false)} />

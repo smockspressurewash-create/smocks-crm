@@ -2369,8 +2369,15 @@ const executeToolCore = async (ctx: Ctx, name: string, input: Record<string, any
       }
       case "send_bulk_text": {
         if (!ctx.ownerId) return { error: "Can't tell which business this is." };
-        const draft: any = await recGet(ctx.authHeaders, ctx.ownerId, "bulk_text_draft", String(input.draftId || ""));
-        if (!draft) return { error: "That draft wasn't found — call list_bulk_text_drafts, or prepare a new one." };
+        let draft: any = await recGet(ctx.authHeaders, ctx.ownerId, "bulk_text_draft", String(input.draftId || ""));
+        // BUG FIX (owner report: "Send all" got "the draft EXPIRED"): a
+        // made-up or missing draft id now falls back to the newest unsent
+        // draft the owner has already seen.
+        if (!draft) {
+          const { rows } = await recList(ctx.authHeaders, ctx.ownerId, "bulk_text_draft", { limit: 10 });
+          draft = (rows || []).filter((d: any) => d.status === "draft" && Date.parse(d.createdAt) < (ctx.turnStartedAt || Date.now())).sort((a: any, b: any) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
+        }
+        if (!draft) return { error: "No draft is waiting to be sent — prepare a new one and show the owner the list." };
         if (draft.status !== "draft") return { error: `That draft is already ${draft.status}.` };
         // The owner must have seen the list: a draft made during this same
         // message can't be sent until they reply.
