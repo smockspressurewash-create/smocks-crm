@@ -7,7 +7,7 @@
 // (see lib/utils.ts's buildOptimizedRoute), and the public signup link.
 import React, { useState, useEffect } from "react";
 import { Trash2, Copy, DollarSign, Clock, Route as RouteIcon, Users, Calendar, GripVertical, Send, Plus, X, Check, Edit2, ChevronUp, ChevronDown, CreditCard, AlertTriangle, FileText, MapPin } from "lucide-react";
-import { fmt, uid, today, daysFromNow, buildOptimizedRoute, computeNextRecurringDate, computeDiscountsTotal } from "../../lib/utils";
+import { fmt, uid, today, daysFromNow, buildOptimizedRoute, computeNextRecurringDate, computeDiscountsTotal, repeatDayPatch } from "../../lib/utils";
 import { SalesTaxControl, defaultTaxRate } from "../ui/SalesTaxControl";
 import { jobTaxSplit, taxOf, tolerantJobWrite } from "../../lib/jobWrite";
 import type { Job, Customer, AppSettings } from "../../types";
@@ -94,13 +94,18 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
         dayAssignmentConfirmed: mode === "manual" ? false : mode === "dated" ? true : undefined,
       };
       if (mode === "auto") {
+        const autoJob = { id: uid(), ...jobPayload, owner_id: ownerId };
         const res = await fetch("/api/public-data", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "submit_trashcan_signup", ownerId, customer: customerPayload, job: { id: uid(), ...jobPayload, owner_id: ownerId } }),
+          body: JSON.stringify({ action: "submit_trashcan_signup", ownerId, customer: customerPayload, job: autoJob }),
         });
         const data = await res.json().catch(() => null);
         if (!res.ok || data?.error) throw new Error(data?.error || "Couldn't add customer");
         setCustomers?.((prev: any[]) => [...prev, { ...customerPayload, owner_id: ownerId }]);
+        // BUG FIX — the new customer's job was saved but never added to this
+        // page, so they were missing from the day (and from "Optimize this
+        // day") until the next refresh.
+        setJobs?.((prev: any[]) => prev.some((j: any) => j.id === autoJob.id) ? prev : [...prev, { ...autoJob, ...(data?.assignedDay ? { scheduledDate: data.scheduledDate, dayAssignmentConfirmed: true, ...repeatDayPatch(autoJob, data.scheduledDate) } : {}) }]);
         toast?.(data?.assignedDay ? `Added ✓ — placed on the ${data.assignedDay} route, first service ${data.scheduledDate}` : "Added — no existing route to auto-place on yet, assign a day in Planning below", data?.assignedDay ? "green" : "yellow");
       } else {
         const { data: savedCust, error: custErr } = await (supabase as any).from("customers").insert({ ...customerPayload, owner_id: ownerId }).select().single();
@@ -190,9 +195,9 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
     // customers could get texted a scheduled day that was never saved.
     let failedCount = 0;
     for (const [jobId, date] of touched) {
-      const patch = { scheduledDate: date, dayAssignmentConfirmed: true };
-      setJobs?.((prev: any[]) => prev.map(j => j.id === jobId ? { ...j, ...patch } : j));
       const j = trashJobs.find(x => x.id === jobId);
+      const patch = { scheduledDate: date, dayAssignmentConfirmed: true, ...repeatDayPatch(j, date) };
+      setJobs?.((prev: any[]) => prev.map(j => j.id === jobId ? { ...j, ...patch } : j));
       const r = await (supabase as any).from("jobs").update(patch).eq("id", jobId).select("id");
       if (r?.error || !Array.isArray(r?.data) || r.data.length === 0) {
         console.error("[TrashCan] day-assignment save failed:", r?.error?.message || "matched 0 rows");

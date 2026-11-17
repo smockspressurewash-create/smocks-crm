@@ -702,6 +702,17 @@ export const buildChecklistFromServices = (
 // employee-side (EmployeePortal.tsx) Complete-Job flows can never compute two
 // different next dates for the same job (the exact "two independent copies
 // of the same logic disagree" bug class this codebase has hit before).
+// BUG FIX (owner report: moved a new customer to Wednesday/Thursday and "it
+// went back"). A weekly visit repeats on the weekday saved in
+// recurringWeekdays, not on its date's weekday. Moving the visit to another
+// day changed only the date, so every later visit was back on the old day.
+// A one-day weekly repeat now follows the visit's new day.
+export const repeatDayPatch = (j: any, date: string): { recurringWeekdays?: number[] } => {
+  if (!j || !date || j.recurringMode !== "weekdays" || !Array.isArray(j.recurringWeekdays) || j.recurringWeekdays.length !== 1) return {};
+  const wd = new Date(date + "T12:00:00").getDay();
+  return j.recurringWeekdays[0] === wd ? {} : { recurringWeekdays: [wd] };
+};
+
 export const computeNextRecurringDate = (job: { recurringMode?: string; recurringFreq?: string; recurringInterval?: number; recurringWeekdays?: number[]; scheduledDate?: string }, fromDateStr?: string): string => {
   const from = new Date((fromDateStr || job.scheduledDate || today()) + "T12:00:00");
   const mode = job.recurringMode || "preset";

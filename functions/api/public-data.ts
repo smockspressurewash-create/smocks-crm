@@ -502,7 +502,9 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       let assignedDayLabel = "";
       try {
         const [existingJobsRow, settingsRow] = await Promise.all([
-          sb(serviceRoleKey, `jobs?owner_id=eq.${encodeURIComponent(ownerId)}&serviceCategory=eq.trash_can&status=neq.cancelled&select=scheduledDate,dayAssignmentConfirmed`),
+          // Only active jobs: counting completed past visits made the day
+          // with the longest history look "full".
+          sb(serviceRoleKey, `jobs?owner_id=eq.${encodeURIComponent(ownerId)}&serviceCategory=eq.trash_can&status=not.in.(cancelled,completed)&select=scheduledDate,dayAssignmentConfirmed`),
           sb(serviceRoleKey, `app_settings?owner_id=eq.${encodeURIComponent(ownerId)}&select=data`),
         ]);
         const existingJobs: any[] = Array.isArray(existingJobsRow.data) ? existingJobsRow.data : [];
@@ -536,7 +538,10 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
             candidate.setDate(candidate.getDate() + 7);
           }
           const isoDate = candidate.toISOString().slice(0, 10);
-          assignedJob = { ...assignedJob, scheduledDate: isoDate, dayAssignmentConfirmed: true };
+          // A weekly repeat follows the picked day too, or the next visits
+          // went back to the weekday the customer was added on.
+          const oneDayRepeat = assignedJob.recurringMode === "weekdays" && Array.isArray(assignedJob.recurringWeekdays) && assignedJob.recurringWeekdays.length === 1;
+          assignedJob = { ...assignedJob, scheduledDate: isoDate, dayAssignmentConfirmed: true, ...(oneDayRepeat ? { recurringWeekdays: [targetDow] } : {}) };
           assignedDayLabel = DOW_NAMES[targetDow];
         }
       } catch (e: any) {

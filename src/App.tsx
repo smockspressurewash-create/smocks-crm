@@ -3255,6 +3255,23 @@ export function App() {
     }
   };
 
+  // BUG FIX (owner report: moved a trash-can customer between Wednesday and
+  // Thursday and "it went back"). The data poll runs every few seconds. A
+  // poll that left before a save finished came back with the old row and put
+  // it over the change on screen, and the 30s autosave could then write that
+  // old value back to the database. A row changed on this device since the
+  // last poll now keeps this device's copy for 15 seconds, long enough for
+  // the save to land; after that the server's copy is used again.
+  const jobsMergeRef = useRef<{ last: Map<string, any>; hold: Map<string, number> }>({ last: new Map(), hold: new Map() });
+  const customersMergeRef = useRef<{ last: Map<string, any>; hold: Map<string, number> }>({ last: new Map(), hold: new Map() });
+  const keepLocalEdit = (m: { last: Map<string, any>; hold: Map<string, number> }, row: any) => {
+    const seen = m.last.get(row.id);
+    if (seen && seen !== row) m.hold.set(row.id, Date.now() + 15000);
+    const until = m.hold.get(row.id);
+    if (until && until > Date.now()) return true;
+    if (until) m.hold.delete(row.id);
+    return false;
+  };
   // Fetch jobs + customers from Supabase and merge into local state
   const refetchData = async () => {
     setIsSyncing(true);
@@ -3321,10 +3338,12 @@ export function App() {
           // previously confirmed synced that's now missing from THIS fresh
           // fetch, instead of keeping every row forever once seen once.
           const pruned = prev.filter(j => sbMap.has(j.id) || (!syncedJobIdsRef.current.has(j.id) && isRecentRow(j)));
-          const merged = pruned.map(j => sbMap.has(j.id) ? { ...j, ...sbMap.get(j.id) } : j);
+          const merged = pruned.map(j => !sbMap.has(j.id) ? j : keepLocalEdit(jobsMergeRef.current, j) ? j : { ...j, ...sbMap.get(j.id) });
           const existingIds = new Set(pruned.map(j => j.id));
           const added = normedJobs.filter((j: any) => !existingIds.has(j.id));
-          return [...merged, ...added];
+          const out = [...merged, ...added];
+          jobsMergeRef.current.last = new Map(out.map((j: any) => [j.id, j]));
+          return out;
         });
       }
       if (Array.isArray(sbCustomers)) {
@@ -3335,10 +3354,12 @@ export function App() {
           const filteredCustomers = filterRecentlyDeleted("customers", sbCustomers);
           const sbMap = new Map(filteredCustomers.map((c: any) => [c.id, c]));
           const pruned = prev.filter(c => sbMap.has(c.id) || (!syncedCustomerIdsRef.current.has(c.id) && isRecentRow(c)));
-          const merged = pruned.map(c => sbMap.has(c.id) ? { ...c, ...sbMap.get(c.id) } : c);
+          const merged = pruned.map(c => !sbMap.has(c.id) ? c : keepLocalEdit(customersMergeRef.current, c) ? c : { ...c, ...sbMap.get(c.id) });
           const existingIds = new Set(pruned.map(c => c.id));
           const added = filteredCustomers.filter((c: any) => !existingIds.has(c.id));
-          return [...merged, ...added];
+          const out = [...merged, ...added];
+          customersMergeRef.current.last = new Map(out.map((c: any) => [c.id, c]));
+          return out;
         });
       }
       if (Array.isArray(sbEstimates)) {
