@@ -1,5 +1,6 @@
 // auto-extracted from Crew Boss OS monolith
 import { TaxSplitNote } from "../ui/SalesTaxControl";
+import { tolerantJobWrite } from "../../lib/jobWrite";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -121,6 +122,13 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
     setEditingEst(e);
     setBuilderOpen(true);
   };
+  // A job's price from its quote: amount includes tax, `tax` is the tax part.
+  const estJobPrice = (est: any) => {
+    const tax = Math.max(0, Number(est?.tax) || 0);
+    const base = Math.max(0, (Number(est?.subtotal) || 0) - (Number(est?.discount) || 0));
+    const taxRate = est?.taxRate != null ? Number(est.taxRate) || 0 : tax > 0 && base > 0 ? Math.round(tax / base * 10000) / 100 : 0;
+    return { amount: Number(est?.total) || 0, tax, taxRate };
+  };
   const saveEdit = async (est: any) => {
     const orig = editingEst;
     if (!orig) return;
@@ -148,9 +156,18 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
       return;
     }
     // A job already made from this quote carries its price.
-    if (orig.jobId && Number(orig.total) !== Number(est.total)) {
-      setJobs((prev: any[]) => prev.map(j => j.id === orig.jobId ? { ...j, amount: est.total } : j));
-      (supabase as any).from("jobs").update({ amount: est.total }).eq("id", orig.jobId).then((jr: any) => { if (jr?.error) console.warn("[EditQuote] job amount not updated:", jr.error.message); });
+    // BUG FIX (audit 2026-11-17) — the job got the new total but kept the old
+    // sales tax, so its invoice split the price wrong; and a failed save was
+    // only logged. Carry tax with the amount and say when it didn't save.
+    if (orig.jobId && (Number(orig.total) !== Number(est.total) || Number(orig.tax || 0) !== Number(est.tax || 0))) {
+      const jobPrice = estJobPrice(est);
+      setJobs((prev: any[]) => prev.map(j => j.id === orig.jobId ? { ...j, ...jobPrice } : j));
+      tolerantJobWrite(jobPrice, x => (supabase as any).from("jobs").update(x).eq("id", orig.jobId).select("id"))
+        .then((jr: any) => {
+          if (jr?.error) toast?.("Quote saved, but its job's price didn't update — " + jr.error.message, "red");
+          else if (!jr?.data || jr.data.length === 0) toast?.("Quote saved, but its job's price didn't update — the server rejected it", "red");
+        })
+        .catch((e: any) => toast?.("Quote saved, but its job's price didn't update — " + (e?.message || "unknown error"), "red"));
     }
     const wasSent = !!(orig.sentAt || orig.clientViewedAt || orig.status !== "pending");
     toast?.(wasSent ? "Quote updated ✓ — their link shows the new version. Tap Send to let them know." : "Quote updated ✓", "green");
@@ -296,7 +313,8 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
       const combinedChecklist = buildChecklistFromServices(est.lineItems, services);
       created = {
         id: uid(), customerId: est.customerId, address: cust?.address || "",
-        amount: est.total, status: "scheduled", scheduledDate: "", duration: 2,
+        // BUG FIX (audit 2026-11-17) — the job dropped the quote's sales tax.
+        ...estJobPrice(est), status: "scheduled", scheduledDate: "", duration: 2,
         priority: "normal", crew: [], checklist: combinedChecklist, preChecklist: combinedChecklist, photos: [], chemicalsUsed: [],
         equipment: [], tags: ["Needs Scheduling"], commLog: [],
         notes: "From approved quote #" + estId.slice(-4).toUpperCase(),
@@ -328,7 +346,7 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
     if (created) {
       console.log("[Recurring] saving job from approved estimate", created.id, "isRecurring:", created.isRecurring);
       (async () => {
-        const { error } = await withTimeout<any>((supabase as any).from("jobs").insert(created), 15000, "Save job from approved estimate");
+        const { error } = await withTimeout<any>(tolerantJobWrite(created, x => (supabase as any).from("jobs").insert(x)), 15000, "Save job from approved estimate");
         if (error) {
           console.error("[Recurring] job-from-approved-estimate insert failed:", error.message, "— retrying without recurring-schedule columns");
           const { isRecurring, recurringMode, recurringFreq, recurringInterval, recurringWeekdays, ...coreJob } = created;
@@ -682,10 +700,19 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
         if (c) setTimeline(prev => ({ ...prev, [c.id]: [{ id: uid(), type: "estimate", note: "Quote created — " + fmt(est.total), date: today() }, ...(prev[c.id] || [])] }));
       }} />
       <EstimatePreview estimate={viewing} customers={customers} settings={settings} onClose={() => setViewing(null)} onApprove={id => {
-        setEstimates(estimates.map(x => x.id === id ? { ...x, status: "approved", signedAt: today() } : x));
+        // BUG FIX (audit 2026-11-17) — approving only changed the screen, so on
+        // refresh the quote was back to pending. Save it and say if it fails.
+        const approvePatch = { status: "approved", signedAt: today() };
+        setEstimates((prev: any[]) => prev.map(x => x.id === id ? { ...x, ...approvePatch } : x));
         createJobFromApprovedEstimate(id);
         setViewing(null);
-        toast("Approved!");
+        (supabase as any).from("estimates").update(approvePatch).eq("id", id).select("id")
+          .then((r: any) => {
+            if (r?.error) toast("Approved here, but failed to save — " + r.error.message, "red");
+            else if (!Array.isArray(r?.data) || r.data.length === 0) toast("Approved here, but the server didn't confirm — it may revert. Try again.", "red");
+            else toast("Approved!");
+          })
+          .catch((e: any) => toast("Approved here, but failed to save — " + (e?.message || "unknown error"), "red"));
       }} onConvert={id => {
         // BUG FIX — "Convert to Invoice" only ever updated local React
         // state, never Supabase — the same silent-local-only-mutation bug
@@ -704,8 +731,11 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
       }} onSchedule={est => {
         const c = customers.find(x => x.id === est.customerId);
         const combinedChecklist = buildChecklistFromServices(est.lineItems, services);
+        // BUG FIX (audit 2026-11-17) — scheduling an approved quote made a
+        // second job when approving had already made one. Reuse that job
+        // (just set its date); new jobs now carry estimateId and the tax.
         const newJob = {
-          id: uid(), customerId: est.customerId, address: c?.address || "", amount: est.total, status: "scheduled", scheduledDate: today(), duration: 3, priority: "normal", checklist: combinedChecklist, preChecklist: combinedChecklist, photos: [], chemicalsUsed: [], crew: [], notes: "From quote #" + (est.id || "").slice(-4), pipelineStage: "scheduled", createdAt: today(),
+          id: uid(), customerId: est.customerId, address: c?.address || "", ...estJobPrice(est), estimateId: est.id, status: "scheduled", scheduledDate: today(), duration: 3, priority: "normal", checklist: combinedChecklist, preChecklist: combinedChecklist, photos: [], chemicalsUsed: [], crew: [], notes: "From quote #" + (est.id || "").slice(-4), pipelineStage: "scheduled", createdAt: today(),
           // BUG FIX — missing owner_id violated the owner_id-scoped RLS
           // policy added by the multi-tenant migration, silently rejecting
           // every job created by scheduling straight from an estimate.
@@ -720,7 +750,6 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
             recurringWeekdays: (est as any).recurringWeekdays,
           } : {}),
         };
-        setJobs(prev => [...prev, newJob]);
         // FIX G — this used to ONLY call setJobs (local React state), the
         // same "local-state-only mutation" bug already found and fixed for
         // invoice inserts (FIX 1). With no Supabase insert at all, a job
@@ -734,7 +763,29 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
         // matching the same pattern already used for new jobs in JobsPage.tsx.
         console.log("[Recurring] saving job scheduled from estimate", newJob.id, "isRecurring:", (newJob as any).isRecurring);
         (async () => {
-          const { error } = await withTimeout<any>((supabase as any).from("jobs").insert(newJob), 15000, "Save job from estimate");
+          let existing: any = null;
+          try {
+            const q = await withTimeout<any>((supabase as any).from("jobs").select("id, tags").eq("estimateId", est.id).limit(1), 10000, "Find job for quote");
+            existing = q?.data?.[0] || null;
+          } catch { /* fall through to the local link below */ }
+          if (!existing && (est as any).jobId) existing = { id: (est as any).jobId, tags: null };
+          if (existing) {
+            const datePatch: any = { scheduledDate: newJob.scheduledDate, status: "scheduled" };
+            if (Array.isArray(existing.tags)) datePatch.tags = existing.tags.filter((t: string) => t !== "Needs Scheduling");
+            setJobs((prev: any[]) => prev.map(j => j.id === existing.id ? { ...j, ...datePatch, tags: (j.tags || []).filter((t: string) => t !== "Needs Scheduling") } : j));
+            const r = await (supabase as any).from("jobs").update(datePatch).eq("id", existing.id).select("id");
+            if (r?.error) toast?.("Couldn't set the job's date — " + r.error.message, "red");
+            else if (!r?.data || r.data.length === 0) toast?.("Couldn't set the job's date — the server rejected the change", "red");
+            if (settings?.googleConnected && settings?.googleScopes?.calendar) {
+              createGoogleCalendarEvent(settings, { ...newJob, id: existing.id }, c).then(ev => { if (ev) toast("📅 Synced to Google Calendar ✓"); });
+            }
+            return;
+          }
+          setJobs(prev => [...prev, newJob]);
+          if (settings?.googleConnected && settings?.googleScopes?.calendar) {
+            createGoogleCalendarEvent(settings, newJob, c).then(ev => { if (ev) toast("📅 Synced to Google Calendar ✓"); });
+          }
+          const { error } = await withTimeout<any>(tolerantJobWrite(newJob, x => (supabase as any).from("jobs").insert(x)), 15000, "Save job from estimate");
           if (error) {
             console.error("[Recurring] job-from-estimate insert failed:", error.message, "— retrying without recurring-schedule columns");
             const { isRecurring, recurringMode, recurringFreq, recurringInterval, recurringWeekdays, ...coreJob } = newJob as any;
@@ -749,10 +800,6 @@ export function EstimatesPage({ estimates = [], setEstimates, customers = [], se
             console.log("[Recurring] job from estimate saved to Supabase ✓", newJob.id);
           }
         })();
-        // Auto-sync to Google Calendar if connected
-        if (settings?.googleConnected && settings?.googleScopes?.calendar) {
-          createGoogleCalendarEvent(settings, newJob, c).then(ev => { if (ev) toast("📅 Synced to Google Calendar ✓"); });
-        }
         setViewing(null);
         toast("Job scheduled from quote ✓ — set date in Jobs");
         onNav("jobs");

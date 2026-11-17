@@ -230,6 +230,14 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       if (due) {
         const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${invoiceId}|${due.payType}|${amountCents}|${sourceId}`));
         invoiceIdemKey = "inv-" + Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 40);
+      } else {
+        // BUG FIX (audit 2026-11-17) — ad-hoc charges (field tips/fees, no
+        // invoice) got a random key, so a retry after a dropped response or a
+        // double tap charged the card twice. The key is now derived from the
+        // business, card token and amount in a 60-second window (same idea as
+        // stripe-action.ts), so a retry returns the first charge.
+        const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${ownerId}|${sourceId}|${amountCents}|${Math.floor(Date.now() / 60000)}`));
+        invoiceIdemKey = "adh-" + Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 40);
       }
 
       const sqRes = await fetch(`${squareApiBase()}/v2/payments`, {
@@ -251,7 +259,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           // (field-portal tips/fees, no invoiceId) have no stable id to key
           // on, so they keep a random key — narrower risk (typically small
           // amounts, no auto-retry in the client today).
-          idempotency_key: due ? invoiceIdemKey : crypto.randomUUID(),
+          idempotency_key: invoiceIdemKey,
           amount_money: { amount: amountCents, currency: "USD" },
           location_id: acct.locationId,
           // {promo:ID} before the [payType:cents] tag, which must stay last.
@@ -308,6 +316,18 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         refundAmountCents = payData?.payment?.amount_money?.amount || 0;
       }
       if (refundAmountCents <= 0) return json({ error: "Invalid refund amount" }, 400);
+      // BUG FIX (audit 2026-11-17) — two separate partial refunds of the same
+      // amount got the same key, so Square returned the first refund and the
+      // second was never made. A nonce from the client (kept the same on its
+      // own retries) makes each refund its own, like stripe-action.ts. With no
+      // nonce, keep the old key so a double click can never refund twice.
+      const refundNonce = String(body.refundNonce || body.idempotencyNonce || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64);
+      let refundIdemKey = `refund-${paymentId}-${refundAmountCents}`;
+      if (refundNonce) {
+        // Hashed to stay within Square's 45-character limit.
+        const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${paymentId}|${refundAmountCents}|${refundNonce}`));
+        refundIdemKey = "rf-" + Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 40);
+      }
 
       const refundRes = await fetch(`${squareApiBase()}/v2/refunds`, {
         method: "POST",
@@ -317,7 +337,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           // above; a refund is fully determined by (paymentId, amount), so
           // this key is safe to reuse on retry instead of risking a double
           // refund.
-          idempotency_key: `refund-${paymentId}-${refundAmountCents}`,
+          idempotency_key: refundIdemKey,
           amount_money: { amount: refundAmountCents, currency: "USD" },
           payment_id: paymentId,
         }),

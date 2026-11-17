@@ -92,7 +92,7 @@ import { WeeklyReflectionTab } from "../ui/WeeklyReflectionTab";
 // Customers drawn at a time; "Show more" adds the next batch.
 const CUSTOMER_LIST_PAGE = 50;
 
-export function CustomersPage({ customers = [], setCustomers, estimates = [], jobs = [], employees = [], toast, timeline = {}, setTimeline = () => {}, settings = {} as AppSettings, setSettings = (() => {}) as any, autoOpenNew = false, onAutoOpenNewConsumed, highlightId = null, pushUndo = (_desc: string, _fn: () => void, _redoFn?: () => void) => {}, markRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[]) => {}, unmarkRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[]) => {}, onSpotlight = (_step: { page: string; type?: string; id?: string; label?: string }) => {}, planLimits, onUpgrade = () => {} }: { customers?: any[]; setCustomers?: any; estimates?: any[]; jobs?: any[]; employees?: any[]; toast?: any; timeline?: any; setTimeline?: any; settings?: AppSettings; setSettings?: any; autoOpenNew?: boolean; onAutoOpenNewConsumed?: () => void; highlightId?: string | null; pushUndo?: (desc: string, fn: () => void, redoFn?: () => void) => void; markRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void; unmarkRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void; onSpotlight?: (step: { page: string; type?: string; id?: string; label?: string }) => void; planLimits?: PlanLimits; onUpgrade?: () => void }) {
+export function CustomersPage({ customers = [], setCustomers, estimates = [], jobs = [], employees = [], toast, timeline = {}, setTimeline = () => {}, settings = {} as AppSettings, setSettings = (() => {}) as any, autoOpenNew = false, onAutoOpenNewConsumed, highlightId = null, pushUndo = (_desc: string, _fn: () => void, _redoFn?: () => void) => {}, markRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[], _opts?: { mergedInto?: string }) => {}, unmarkRecentlyDeleted = (_table: "jobs" | "customers" | "estimates", _ids: string[]) => {}, onSpotlight = (_step: { page: string; type?: string; id?: string; label?: string }) => {}, planLimits, onUpgrade = () => {} }: { customers?: any[]; setCustomers?: any; estimates?: any[]; jobs?: any[]; employees?: any[]; toast?: any; timeline?: any; setTimeline?: any; settings?: AppSettings; setSettings?: any; autoOpenNew?: boolean; onAutoOpenNewConsumed?: () => void; highlightId?: string | null; pushUndo?: (desc: string, fn: () => void, redoFn?: () => void) => void; markRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[], opts?: { mergedInto?: string }) => void; unmarkRecentlyDeleted?: (table: "jobs" | "customers" | "estimates", ids: string[]) => void; onSpotlight?: (step: { page: string; type?: string; id?: string; label?: string }) => void; planLimits?: PlanLimits; onUpgrade?: () => void }) {
   const [search, setSearch] = useState("");
   // FEATURE — "the popup should be in the CRM with the CRM's UI" — replaces
   // window.confirm() for delete actions with a real branded modal.
@@ -234,6 +234,19 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
     const tags = Array.from(new Set([...(a.tags || []), ...(b.tags || [])]));
     const notes = [a.notes, b.notes].filter(Boolean).join(" | ");
     const patch = { ...filled, tags, notes, totalSpent: (a.totalSpent || 0) + (b.totalSpent || 0) };
+    if (!(await mergeInto(aId, bId, patch))) return;
+    setMergeMode(false);
+    setMergePair([]);
+    toast("Customers merged ✓ (jobs and quotes moved)", "green");
+  };
+  // Saves a merge: the kept customer gets `patch`, the duplicate's jobs,
+  // quotes and route spots move to it, then the duplicate is deleted.
+  // BUG FIX (audit) — deleting the duplicate also deletes its upcoming jobs
+  // (see App.tsx removeCustomersOpenJobs). Those jobs had just moved to the
+  // kept customer on the server but not on screen, so the merge deleted the
+  // duplicate's scheduled visits. markRecentlyDeleted's mergedInto moves them
+  // on screen instead.
+  const mergeInto = async (aId: string, bId: string, patch: Record<string, any>): Promise<boolean> => {
     try {
       const up = await (supabase as any).from("customers").update(patch).eq("id", aId).select("id");
       if (up.error || !up.data?.length) throw new Error(up.error?.message || "couldn't save the merged customer");
@@ -250,13 +263,11 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
       if (del.failed) throw new Error(del.error || "couldn't delete the duplicate");
     } catch (e: any) {
       toast("Merge didn't finish: " + (e?.message || "unknown error") + ". Nothing on screen was changed.", "red");
-      return;
+      return false;
     }
-    markRecentlyDeleted("customers", [bId]);
+    markRecentlyDeleted("customers", [bId], { mergedInto: aId });
     setCustomers((prev: any[]) => prev.filter((c: any) => c.id !== bId).map((c: any) => c.id === aId ? { ...c, ...patch } : c));
-    setMergeMode(false);
-    setMergePair([]);
-    toast("Customers merged ✓ (jobs and quotes moved)", "green");
+    return true;
   };
 
   const allCustomerTags = Array.from(new Set(customers.flatMap((c: any) => c.tags || []))).sort();
@@ -283,6 +294,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
     const newPath = parent ? `${parent}/${trimmed}` : trimmed;
     if (allFolderPaths.includes(newPath)) { toast?.("A folder with that name already exists here", "red"); return; }
     // Re-point this folder AND every descendant ("oldPath/...") to the new path.
+    saveFolders(customers.filter((c: any) => c.folder === oldPath || (c.folder || "").startsWith(oldPath + "/")).map((c: any) => ({ id: c.id, folder: c.folder === oldPath ? newPath : newPath + c.folder.slice(oldPath.length) })));
     setCustomers((prev: any[]) => prev.map((c: any) => {
       if (c.folder === oldPath) return { ...c, folder: newPath };
       if ((c.folder || "").startsWith(oldPath + "/")) return { ...c, folder: newPath + c.folder.slice(oldPath.length) };
@@ -299,9 +311,20 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
     toast?.("Folder renamed ✓");
   };
 
+  // BUG FIX (audit) — folder moves, renames and deletes only changed the
+  // list on screen; the next refresh put the old folders back. Save them.
+  const saveFolders = async (changes: Array<{ id: string; folder: string }>) => {
+    const byFolder = new Map<string, string[]>();
+    for (const c of changes) byFolder.set(c.folder, [...(byFolder.get(c.folder) || []), c.id]);
+    for (const [folder, ids] of byFolder) {
+      const r = await (supabase as any).from("customers").update({ folder }).in("id", ids).select("id");
+      if (r.error || !r.data?.length) { toast?.("Folder change didn't save: " + (r.error?.message || "the server didn't confirm it"), "red"); return; }
+    }
+  };
   const deleteFolder = async (path: string) => {
     const count = folderCustomerCount(path);
     if (!(await confirmAsync({ message: count > 0 ? `Delete "${folderLabel(path)}"? ${count} customer(s) will become unfiled (not deleted).` : `Delete empty folder "${folderLabel(path)}"?`, confirmLabel: "Delete Folder" }))) return;
+    saveFolders(customers.filter((c: any) => c.folder === path || (c.folder || "").startsWith(path + "/")).map((c: any) => ({ id: c.id, folder: "" })));
     setCustomers((prev: any[]) => prev.map((c: any) => (c.folder === path || (c.folder || "").startsWith(path + "/")) ? { ...c, folder: "" } : c));
     setSettings((s: any) => ({ ...s, customerFolders: (s.customerFolders || []).filter((f: string) => f !== path && !f.startsWith(path + "/")) }));
     if (folderFilter === path) setFolderFilter("");
@@ -319,6 +342,7 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
   };
 
   const moveCustomerToFolder = (customerId: string, folderPath: string) => {
+    saveFolders([{ id: customerId, folder: folderPath }]);
     setCustomers((prev: any[]) => prev.map((c: any) => c.id === customerId ? { ...c, folder: folderPath } : c));
     const cust = customers.find((c: any) => c.id === customerId);
     toast?.(`${cust?.firstName || "Customer"} moved to ${folderPath || "Unfiled"} ✓`);
@@ -422,6 +446,25 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
       const referralCode = (d.firstName?.slice(0, 3) || "REF").toUpperCase() + id.slice(-4).toUpperCase();
       record = { ...d, id, totalSpent: 0, createdAt: today(), referralCode };
     }
+    // BUG FIX (audit 2026-11-17) — the edit form saved the whole customer as
+    // it was when the form opened, so anything that changed meanwhile (the
+    // customer texting STOP, another device's edit) was undone. Only the
+    // fields edited in the form now go over the latest copy.
+    const opened: any = !isNew ? modal.data : null;
+    const latest: any = !isNew ? customers.find(c => c.id === d.id) : null;
+    if (opened && latest) {
+      const changed: any = {};
+      for (const k of Object.keys(d)) if (JSON.stringify(d[k] ?? null) !== JSON.stringify(opened[k] ?? null)) changed[k] = d[k];
+      record = { ...latest, ...changed };
+      // A new address must reach the customer's upcoming visits too: the
+      // route builder uses the visit's own address and map spot first.
+      const oldAddr = String(latest.address || "").trim(), newAddr = String(record.address || "").trim();
+      if ("address" in changed && newAddr && newAddr !== oldAddr) {
+        (supabase as any).from("jobs").update({ address: newAddr, lat: null, lng: null })
+          .eq("customerId", record.id).eq("address", oldAddr).not("status", "in", "(completed,cancelled)").select("id")
+          .then((r: any) => { if (r?.error) toast("Address saved, but upcoming visits still have the old one: " + r.error.message, "red"); });
+      }
+    }
     setCustomers(isNew ? [...customers, record] : customers.map(c => c.id === record.id ? record : c));
     setModal({ open: false, data: null });
     // BUG FIX — a column the database doesn't have yet (city/state/zip set by
@@ -510,13 +553,16 @@ export function CustomersPage({ customers = [], setCustomers, estimates = [], jo
     setMergeModal({ a, b });
   };
 
-  const doMerge = () => {
+  // BUG FIX (audit) — this only changed the list on screen, so the
+  // duplicate came back on the next refresh. It now saves like Merge does.
+  const doMerge = async () => {
     const { a, b } = mergeModal;
-    const merged = { ...a };
-    Object.entries(mergeChoices).forEach(([field, choice]) => { merged[field] = choice === "a" ? a[field] : b[field]; });
-    merged.totalSpent = (a.totalSpent || 0) + (b.totalSpent || 0);
-    merged.tags = [...new Set([...(a.tags||[]), ...(b.tags||[])])];
-    setCustomers(customers.filter(c => c.id !== b.id).map(c => c.id === a.id ? merged : c));
+    const patch: any = {};
+    Object.entries(mergeChoices).forEach(([field, choice]) => { patch[field] = choice === "a" ? a[field] : b[field]; });
+    patch.totalSpent = (a.totalSpent || 0) + (b.totalSpent || 0);
+    patch.tags = [...new Set([...(a.tags||[]), ...(b.tags||[])])];
+    if (!(await mergeInto(a.id, b.id, patch))) return;
+    const merged = { ...a, ...patch };
     setDupPairs(prev => prev?.filter(p => !(p.a.id === a.id && p.b.id === b.id)));
     setMergeModal(null);
     toast("Merged: " + merged.firstName + " " + merged.lastName + " ✓");

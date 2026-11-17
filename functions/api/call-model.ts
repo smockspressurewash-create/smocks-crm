@@ -231,10 +231,12 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       const geminiTools = body.tools?.length
         ? [{ functionDeclarations: (body.tools as Array<{ name: string; description: string; input_schema: unknown }>).map(t => ({ name: t.name, description: t.description, parameters: t.input_schema })) }]
         : undefined;
-      const url = `${def.endpoint}?key=${apiKey}`;
-      const data = await safeFetch(url, {
+      // BUG FIX (audit 2026-11-17) — the Gemini key was put in the URL, where
+      // it can end up in logs and error messages. Sent in Google's
+      // x-goog-api-key header instead.
+      const data = await safeFetch(def.endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
         body: JSON.stringify({
           contents,
           ...(geminiTools ? { tools: geminiTools } : {}),

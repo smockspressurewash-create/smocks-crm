@@ -4,7 +4,9 @@
 import { parseDelimited, splitHeader, autoMapColumns, applyMapping, rowToCustomer, mergeImportedCustomers, CUSTOMER_FIELD_MAP, CUSTOMER_FIELD_EXCLUDE, parseDateLoose, normalizeHeader } from "./importCore";
 // Local copies (utils.ts pulls in the browser Supabase client).
 const uid = (): string => (typeof crypto !== "undefined" && (crypto as any).randomUUID ? (crypto as any).randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
-const today = (): string => new Date().toISOString().slice(0, 10);
+// BUG FIX (audit 2026-11-17) — was the UTC date, so after 7-8 PM Eastern an
+// import's "today" (and "next Monday" for the AI) was already tomorrow.
+const today = (): string => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
 const recurringFreqs = [{ key: "weekly" }, { key: "biweekly" }, { key: "monthly" }, { key: "quarterly" }, { key: "biannual" }, { key: "annual" }];
 
 // One imported line: a customer, and (when it has any schedule/price) a job.
@@ -187,7 +189,10 @@ export const weekdayInWeek = (wd: number, anyDayInWeek: string): string => {
 export const recurrenceFor = (freq: string | null | undefined, wd: number | null | undefined): Record<string, any> => {
   if (!freq || freq === "one_time") return {};
   if (wd != null && freq === "weekly") return { isRecurring: true, recurringMode: "weekdays", recurringFreq: "weekly", recurringWeekdays: [wd], recurringInterval: 1 };
-  const weeks: Record<string, number> = { biweekly: 2, quarterly: 13, biannual: 26, annual: 52 };
+  // BUG FIX (audit 2026-11-17) — monthly used a flat 30 days, so a monthly
+  // stop moved off its route day every month (Tuesday, then Thursday...).
+  // With a route day it now repeats every 4 weeks on that day.
+  const weeks: Record<string, number> = { biweekly: 2, monthly: 4, quarterly: 13, biannual: 26, annual: 52 };
   if (wd != null && weeks[freq]) return { isRecurring: true, recurringMode: "weeks", recurringFreq: freq, recurringInterval: weeks[freq] };
   return { isRecurring: true, recurringMode: "preset", recurringFreq: freq };
 };
@@ -218,7 +223,7 @@ export type ImportPlan = {
 // defaultFrequency: used when a line doesn't say how often (trash cans
 // otherwise default to weekly). firstWeek: any date in the week the first
 // visits go in; a line's weekday is placed in that week.
-export function buildImportPlan(records: ImportRecord[], ctx: { customers: any[]; employees: any[]; serviceCategory?: string; costPerCan?: number; createJobs?: boolean; limit?: number | null; defaultFrequency?: string; firstWeek?: string }): ImportPlan {
+export function buildImportPlan(records: ImportRecord[], ctx: { customers: any[]; employees: any[]; jobs?: any[]; serviceCategory?: string; costPerCan?: number; createJobs?: boolean; limit?: number | null; defaultFrequency?: string; firstWeek?: string }): ImportPlan {
   const serviceCategory = ctx.serviceCategory || "general";
   const asCustomers: any[] = [];
   const jobSpecs: { cust: any; rec: ImportRecord }[] = [];
@@ -246,9 +251,17 @@ export function buildImportPlan(records: ImportRecord[], ctx: { customers: any[]
   };
   const unmatched = new Set<string>();
   const jobs: any[] = [];
+  // BUG FIX (audit 2026-11-17) — running an import again (which the error
+  // message itself suggests after a partial failure) gave every matched
+  // customer a second repeating visit. A customer who already has an open
+  // job of this kind (or got one earlier in this list) gets no new one.
+  const hasOpen = new Set((ctx.jobs || []).filter((j: any) => j.status !== "completed" && j.status !== "cancelled" && (j.serviceCategory || "general") === serviceCategory).map((j: any) => j.customerId));
+  let alreadyScheduled = 0;
   for (const { cust, rec } of jobSpecs) {
     const target = finalFor(cust);
     if (!target) continue;
+    if (hasOpen.has(target.id)) { alreadyScheduled++; continue; }
+    hasOpen.add(target.id);
     const freq = parseFrequency(rec.frequency) || parseFrequency(ctx.defaultFrequency) || (serviceCategory === "trash_can" && !rec.scheduledDate ? "weekly" : null);
     let date = rec.scheduledDate ? parseDateLoose(rec.scheduledDate) : "";
     const wd = parseWeekday(rec.weekday) ?? (/^\d{4}-\d{2}-\d{2}$/.test(date) ? new Date(date + "T12:00:00").getDay() : null);
@@ -271,6 +284,7 @@ export function buildImportPlan(records: ImportRecord[], ctx: { customers: any[]
     jobs.push(job);
   }
   const warnings: string[] = [];
+  if (alreadyScheduled) warnings.push(`${alreadyScheduled} customer(s) already have an upcoming visit, so no new one was made for them.`);
   if (noName) warnings.push(`${noName} line(s) had no name, phone or email and were skipped.`);
   const noAddr = merged.added.filter((c: any) => !c.address).length;
   if (noAddr) warnings.push(`${noAddr} new customer(s) have no address.`);

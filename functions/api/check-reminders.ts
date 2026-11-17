@@ -34,10 +34,13 @@ export const onRequest = async (context: { request: Request; env: Record<string,
     return new Response(JSON.stringify({ error: "SUPABASE_SERVICE_ROLE_KEY not configured" }), { status: 500, headers: { "Content-Type": "application/json" } });
   }
   const secret = context.env.REMINDERS_CRON_SECRET;
-  if (secret) {
-    const key = new URL(context.request.url).searchParams.get("key");
-    if (key !== secret) return new Response(JSON.stringify({ error: "Invalid key" }), { status: 403, headers: { "Content-Type": "application/json" } });
-  }
+  // BUG FIX (audit 2026-11-17) — with REMINDERS_CRON_SECRET unset, anyone
+  // could hit this URL and set off reminder, bulk and birthday texts plus a
+  // model watch. Fail closed until the secret is configured (same as the
+  // model-watch fix).
+  if (!secret) return new Response(JSON.stringify({ error: "Set REMINDERS_CRON_SECRET in Cloudflare and pass it as ?key=" }), { status: 403, headers: { "Content-Type": "application/json" } });
+  const key = new URL(context.request.url).searchParams.get("key");
+  if (key !== secret) return new Response(JSON.stringify({ error: "Invalid key" }), { status: 403, headers: { "Content-Type": "application/json" } });
 
   const headers = { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` };
 

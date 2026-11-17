@@ -126,9 +126,9 @@ const callSmsModel = async (
         return { role: m.role === "assistant" ? "model" : "user", parts: [{ text: String(m.content) }] };
       });
     const geminiTools = tools?.length ? [{ functionDeclarations: tools.map((t: any) => ({ name: t.name, description: t.description, parameters: t.input_schema })) }] : undefined;
-    const res = await fetch(`${def.endpoint}?key=${apiKey}`, {
+    const res = await fetch(def.endpoint, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
       body: JSON.stringify({
         contents,
         ...(geminiTools ? { tools: geminiTools } : {}),
@@ -438,7 +438,7 @@ const readFinancialDocument = async (ctx: Ctx, url: string, type: string, hint: 
     const d: any = await r.json(); return parse(d.content?.find((b: any) => b.type === "text")?.text);
   });
   if (keys.gemini) tries.push(async () => {
-    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(keys.gemini)}`, { method: "POST", headers: { "Content-Type": "application/json" },
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`, { method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": keys.gemini },
       body: JSON.stringify({ contents: [{ role: "user", parts: [{ inline_data: { mime_type: mime, data: b64 } }, { text: ask }] }], generationConfig: { maxOutputTokens: 4096 } }) });
     if (!r.ok) throw new Error("Gemini " + r.status);
     const d: any = await r.json(); return parse(d.candidates?.[0]?.content?.parts?.map((p: any) => p.text || "").join(""));

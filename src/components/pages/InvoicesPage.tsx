@@ -155,14 +155,28 @@ export function InvoicesPage({ services = [] as any[], estimates = [], setEstima
       // Supabase the link 404s and the invoice never shows up anywhere else
       // in the CRM. Insert BEFORE sending, and wrap in withTimeout so a hung
       // Supabase call can't leave the button stuck on "Sending…" forever.
-      console.log("[SendInvoice] inserting new invoice", newInv.id, "amount", newInv.total);
-      const insertResult = await withTimeout<any>((supabase as any).from("estimates").insert(newInv), 10000, "Invoice save");
-      if (insertResult?.error) {
-        console.error("[SendInvoice] estimate insert failed:", insertResult.error.message);
-        throw new Error("Couldn't save invoice — " + insertResult.error.message);
+      // BUG FIX (audit 2026-11-17) — sending again (or after a failed email)
+      // made a second invoice for the same job, so the customer could be
+      // billed twice. Reuse this job's unpaid invoice and bring its price
+      // up to date instead.
+      const existingInv: any = (estimates || []).find((e: any) => e.jobId === job.id && e.invoiced && !e.paidAt && !e.deletedAt);
+      if (existingInv) {
+        const pricePatch = { lineItems: newInv.lineItems, subtotal: newInv.subtotal, tax: newInv.tax, total: newInv.total };
+        const upd = await withTimeout<any>((supabase as any).from("estimates").update(pricePatch).eq("id", existingInv.id).select("id"), 10000, "Invoice save");
+        if (upd?.error) throw new Error("Couldn't save invoice — " + upd.error.message);
+        if (!Array.isArray(upd?.data) || upd.data.length === 0) throw new Error("Couldn't save invoice — the server rejected the change");
+        Object.assign(newInv, { id: existingInv.id });
+        setEstimates((prev: any[]) => prev.map(e => e.id === existingInv.id ? { ...e, ...pricePatch } : e));
+      } else {
+        console.log("[SendInvoice] inserting new invoice", newInv.id, "amount", newInv.total);
+        const insertResult = await withTimeout<any>((supabase as any).from("estimates").insert(newInv), 10000, "Invoice save");
+        if (insertResult?.error) {
+          console.error("[SendInvoice] estimate insert failed:", insertResult.error.message);
+          throw new Error("Couldn't save invoice — " + insertResult.error.message);
+        }
+        console.log("[SendInvoice] invoice saved to Supabase ✓");
+        setEstimates((prev: any[]) => [...prev, newInv]);
       }
-      console.log("[SendInvoice] invoice saved to Supabase ✓");
-      setEstimates((prev: any[]) => [...prev, newInv]);
       // FIX 17 — #/portal/ID is the employee portal's route, not a customer
       // invoice view; #/estimate/ID is the public no-login pay/sign portal.
       const payLink = `${window.location.origin}${window.location.pathname}#/estimate/${newInv.id}`;
@@ -183,11 +197,13 @@ export function InvoicesPage({ services = [] as any[], estimates = [], setEstima
       const jobPatch = { invoiceSentAt: today(), paymentType: "Invoice", paymentStatus: job.paymentStatus === "Paid" ? job.paymentStatus : "Pending" };
       setJobs((prev: any[]) => prev.map(j => j.id === job.id ? { ...j, ...jobPatch } : j));
       (supabase as any).from("jobs").update(jobPatch).eq("id", job.id).select("id")
+        // BUG FIX (audit 2026-11-17) — if this failed the job stayed in "Needs
+        // Invoice" after a reload with no warning, inviting a second send.
         .then((r: any) => {
-          if (r?.error) console.error("[SendInvoice] job patch (invoiceSentAt) failed:", r.error.message);
-          else if (!r?.data || r.data.length === 0) console.error("[SendInvoice] job patch (invoiceSentAt) matched 0 rows");
+          if (r?.error) { console.error("[SendInvoice] job patch (invoiceSentAt) failed:", r.error.message); toast?.("Invoice sent, but the job wasn't marked as invoiced — " + r.error.message, "red"); }
+          else if (!r?.data || r.data.length === 0) { console.error("[SendInvoice] job patch (invoiceSentAt) matched 0 rows"); toast?.("Invoice sent, but the server didn't mark the job as invoiced", "red"); }
         })
-        .catch((e: any) => console.error("[SendInvoice] job patch (invoiceSentAt) threw:", e?.message));
+        .catch((e: any) => { console.error("[SendInvoice] job patch (invoiceSentAt) threw:", e?.message); toast?.("Invoice sent, but the job wasn't marked as invoiced — " + (e?.message || "unknown error"), "red"); });
       showSendReport({ title: "Send Invoice", customerName: `${cust.firstName} ${cust.lastName || ""}`.trim(), link: payLink, linkLabel: "Invoice link", shareText: invShare, results: [emailRes] });
       setPreviewInvoiceJob(null);
     } catch (e: any) {
@@ -928,8 +944,11 @@ export function InvoicesPage({ services = [] as any[], estimates = [], setEstima
                   const amt = prompt("Partial payment amount ($):", "");
                   if (!amt || isNaN(Number(amt))) return;
                   const partial = Number(amt);
-                  const newBalance = Math.max(0, viewing.total - partial);
-                  const newPartialPaid = (viewing.partialPaid || 0) + partial;
+                  // BUG FIX (audit 2026-11-17) — the balance ignored earlier partial
+                  // payments and the deposit, so a second payment could show the
+                  // wrong balance and never mark the invoice paid.
+                  const newPartialPaid = (Number(viewing.partialPaid) || 0) + partial;
+                  const newBalance = Math.max(0, Math.round(((Number(viewing.total) || 0) - newPartialPaid - (Number((viewing as any).paidDeposit) || 0)) * 100) / 100);
                   const newPaidAt = newBalance === 0 ? today() : null;
                   // BLOCKER 14 (mobile round 10) — same missing-Supabase-write
                   // bug as markPaid/markUnpaid: local state only, so the next

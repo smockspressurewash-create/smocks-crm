@@ -88,7 +88,7 @@ export async function pingModel(def: ModelDef, key: string, opts: { tools?: bool
       res = await withTimeout(def.endpoint, { method: "POST", headers: { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
         body: JSON.stringify({ model: def.modelId, max_tokens: 64, messages: [{ role: "user", content: prompt }], ...(opts.tools ? { tools: [{ name: "ok_check", description: "Health check.", input_schema: { type: "object", properties: {} } }] } : {}) }) }, opts.timeoutMs || 20000);
     } else if (def.provider === "google") {
-      res = await withTimeout(`${def.endpoint}?key=${encodeURIComponent(key)}`, { method: "POST", headers: { "Content-Type": "application/json" },
+      res = await withTimeout(def.endpoint, { method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key },
         body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { maxOutputTokens: 64, thinkingConfig: { thinkingBudget: 0 } }, ...(opts.tools ? { tools: [{ functionDeclarations: [{ name: "ok_check", description: "Health check.", parameters: { type: "object", properties: {} } }] }] } : {}) }) }, opts.timeoutMs || 20000);
     } else {
       res = await withTimeout(def.endpoint, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}`, ...(def.provider === "openrouter" ? { "HTTP-Referer": "https://example.com", "X-Title": "CRM model watch" } : {}) },
@@ -124,7 +124,7 @@ async function readCatalog(provider: Provider, key?: string): Promise<string[] |
     }
     if (!key) return null;
     if (provider === "anthropic") { const j: any = await get("https://api.anthropic.com/v1/models?limit=100", { "x-api-key": key, "anthropic-version": "2023-06-01" }); return j?.data?.map((m: any) => m.id) || null; }
-    if (provider === "google") { const j: any = await get(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=${encodeURIComponent(key)}`); return j?.models?.filter((m: any) => (m.supportedGenerationMethods || []).includes("generateContent")).map((m: any) => String(m.name).replace(/^models\//, "")) || null; }
+    if (provider === "google") { const j: any = await get(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=200`, { "x-goog-api-key": key }); return j?.models?.filter((m: any) => (m.supportedGenerationMethods || []).includes("generateContent")).map((m: any) => String(m.name).replace(/^models\//, "")) || null; }
     const base: Record<string, string> = { openai: "https://api.openai.com/v1/models", groq: "https://api.groq.com/openai/v1/models", mistral: "https://api.mistral.ai/v1/models", cerebras: "https://api.cerebras.ai/v1/models" };
     if (base[provider]) { const j: any = await get(base[provider], { Authorization: `Bearer ${key}` }); return j?.data?.map((m: any) => m.id) || null; }
   } catch { /* fall through */ }

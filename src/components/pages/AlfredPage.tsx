@@ -4307,7 +4307,7 @@ export function AlfredPage({ conversations, setConversations, activeConvId, setA
             how = `read with AI in ${out.pieces} piece(s)` + (failedPieces ? ` — ${failedPieces} piece(s) couldn't be read` : "");
           }
           if (!records.length) return { error: "Couldn't find any customers in that list.", how };
-          const plan = buildImportPlan(records, { customers, employees, serviceCategory: category, createJobs: inputs.createJobs !== false, costPerCan: Number((settings as any)?.trashCanCostPerCan) || 5, defaultFrequency: inputs.defaultFrequency || undefined, firstWeek: /^\d{4}-\d{2}-\d{2}$/.test(String(inputs.firstWeek || "")) ? inputs.firstWeek : undefined });
+          const plan = buildImportPlan(records, { customers, employees, jobs, serviceCategory: category, createJobs: inputs.createJobs !== false, costPerCan: Number((settings as any)?.trashCanCostPerCan) || 5, defaultFrequency: inputs.defaultFrequency || undefined, firstWeek: /^\d{4}-\d{2}-\d{2}$/.test(String(inputs.firstWeek || "")) ? inputs.firstWeek : undefined });
           importPlansRef.current.set(plan.id, plan);
           return {
             success: true, ...planSummary(plan), how, columns,

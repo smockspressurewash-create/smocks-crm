@@ -1188,11 +1188,32 @@ export function App() {
       localStorage.setItem(key, JSON.stringify(merged));
     } catch { /* localStorage unavailable — in-memory guards still apply */ }
   }, []);
+  // BUG FIX (audit 2026-11-17) — createdAt is usually a date with no time
+  // ("2026-11-17"), which reads as midnight UTC, so a record made minutes ago
+  // never counted as "new": a quote or job whose first save failed was
+  // dropped at the next refresh instead of being saved again. A date-only
+  // value now counts as recent on that same local day.
+  const createdRecently = (row: any, ms: number) => {
+    const v = String(row?.createdAt || "");
+    if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v === today();
+    const t = Date.parse(v);
+    return !Number.isNaN(t) && Date.now() - t < ms;
+  };
+  // Undo of a delete must also clear the saved deleted-ids list, or the
+  // restored row is skipped by autosave from then on (audit 2026-11-17).
+  const clearTombstones = (table: "estimates" | "customers" | "jobs", ids: string[]) => {
+    try {
+      const key = `smocks.deleted.${table}`;
+      const drop = new Set(ids);
+      const existing: string[] = JSON.parse(localStorage.getItem(key) || "[]");
+      localStorage.setItem(key, JSON.stringify(existing.filter(id => !drop.has(id))));
+    } catch { /* localStorage unavailable */ }
+  };
   const readTombstones = (table: "estimates" | "customers" | "jobs"): Set<string> => {
     try { return new Set(JSON.parse(localStorage.getItem(`smocks.deleted.${table}`) || "[]")); }
     catch { return new Set(); }
   };
-  const markRecentlyDeleted = useCallback((table: "jobs" | "customers" | "estimates" | "chemicals", ids: string[]) => {
+  const markRecentlyDeleted = useCallback((table: "jobs" | "customers" | "estimates" | "chemicals", ids: string[], opts?: { mergedInto?: string }) => {
     const m = recentlyDeletedRef.current[table];
     const now = Date.now();
     for (const [id, ts] of m) { if (now - ts > RECENTLY_DELETED_TTL_MS) m.delete(id); }
@@ -1205,7 +1226,13 @@ export function App() {
     if (table === "jobs" && crmRoleRef.current === "owner") {
       removeJobsFromGoogle(ids, settingsRef.current).then(n => { if (n) console.log("[calendarSync] removed", n, "Google Calendar event(s)"); });
     }
-    if (table === "customers") removeCustomersOpenJobs(ids);
+    // A merged duplicate's jobs and quotes were moved to the kept customer on
+    // the server; move them on screen too instead of deleting them.
+    if (table === "customers" && opts?.mergedInto) {
+      const to = opts.mergedInto;
+      setJobs((prev: any[]) => prev.map((j: any) => ids.includes(j.customerId) ? { ...j, customerId: to } : j));
+      setEstimates((prev: any[]) => prev.map((e: any) => ids.includes(e.customerId) ? { ...e, customerId: to } : e));
+    } else if (table === "customers") removeCustomersOpenJobs(ids);
   }, [persistTombstones]); // eslint-disable-line react-hooks/exhaustive-deps
   // Undoing a delete restores the row — it must stop being treated as
   // "recently deleted" or the next refetch would just filter the restore
@@ -1213,6 +1240,7 @@ export function App() {
   const unmarkRecentlyDeleted = useCallback((table: "jobs" | "customers" | "estimates" | "chemicals", ids: string[]) => {
     const m = recentlyDeletedRef.current[table];
     ids.forEach(id => m.delete(id));
+    if (table !== "chemicals") clearTombstones(table, ids);
     if (table === "customers") restoreCustomersOpenJobs(ids);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   // Deleting a customer also deletes their upcoming jobs (finished and
@@ -3292,7 +3320,7 @@ export function App() {
       // it's recent — same heuristic already used by the mount-time
       // syncLocalToSupabase push and the 30s autosave's own new-row check.
       const RECENT_MS = 30 * 60 * 1000;
-      const isRecentRow = (row: any) => { const t = Date.parse(row?.createdAt || ""); return !Number.isNaN(t) && Date.now() - t < RECENT_MS; };
+      const isRecentRow = (row: any) => createdRecently(row, RECENT_MS);
       const [{ data: sbJobs, error: jobsErr }, { data: sbCustomers, error: customersErr }, { data: sbEstimates, error: estimatesErr }, { data: sbPromotions }, { data: sbReviews, error: reviewsErr }, { data: sbChemicals }] = await Promise.all([
         // All rows, 1,000 per request (the server's page cap) — see lib/dbBulk.ts.
         fetchAllRows("jobs", "*", crmUserId),
@@ -3553,7 +3581,7 @@ export function App() {
         // A job never seen on the server only counts as new if it was
         // created in the last half hour — an old cached copy of a job deleted
         // on another device is not.
-        const isNewLocal = (j: any) => { const t = Date.parse(j?.createdAt || ""); return !syncedJobIdsRef.current.has(j.id) && !Number.isNaN(t) && Date.now() - t < 30 * 60 * 1000; };
+        const isNewLocal = (j: any) => !syncedJobIdsRef.current.has(j.id) && createdRecently(j, 30 * 60 * 1000);
         const base = jobsAutosaveBaseRef.current || new Map<string, any>();
         jobsAutosaveBaseRef.current = new Map(jobs.map((j: any) => [j.id, j]));
         const same = (a: any, b: any) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
@@ -3745,7 +3773,7 @@ export function App() {
       // a phone still holding a deleted import), and pushing it would bring
       // it back.
       const RECENT_PUSH_MS = 30 * 60 * 1000;
-      const recentLocal = (row: any) => { const t = Date.parse(row?.createdAt || ""); return !Number.isNaN(t) && Date.now() - t < RECENT_PUSH_MS; };
+      const recentLocal = (row: any) => createdRecently(row, RECENT_PUSH_MS);
       const safeCustomers = !customerSafeIds ? [] : customers.filter((c: any) => !syncedCustomerIdsRef.current.has(c.id) && !customerSafeIds!.has(c.id) && recentLocal(c));
       await upsertCustomersSafely(safeCustomers, "Customer auto-save");
       const safeEstimates = !estimateSafeIds ? [] : estimates.filter((e: any) => !syncedEstimateIdsRef.current.has(e.id) && !estimateSafeIds!.has(e.id) && recentLocal(e));
@@ -3911,7 +3939,7 @@ export function App() {
       // path already keeps it current, and re-pushing risks clobbering
       // whatever changed server-side since this tab's snapshot was taken.
       const RECENT_MS = 30 * 60 * 1000;
-      const isRecent = (row: any) => { const t = Date.parse(row?.createdAt || ""); return !Number.isNaN(t) && Date.now() - t < RECENT_MS; };
+      const isRecent = (row: any) => createdRecently(row, RECENT_MS);
       let liveEstIds: Set<string> | null = null;
       let liveCustIds: Set<string> | null = null;
       let liveChemIds: Set<string> | null = null;

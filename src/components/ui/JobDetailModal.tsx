@@ -1,6 +1,6 @@
 // auto-extracted from Crew Boss OS monolith
 import { TaxSplitNote } from "./SalesTaxControl";
-import { jobTaxSplit } from "../../lib/jobWrite";
+import { jobTaxSplit, taxOf } from "../../lib/jobWrite";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   LayoutDashboard, Users, FileText, Briefcase, Bot, BarChart3,
@@ -624,6 +624,15 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
   // record — pay the remaining balance. "Send Invoice" only validates contact
   // info and opens the preview modal — the actual send happens in
   // confirmSendInvoice once the owner reviews/edits it and clicks Send there.
+  // A new pre-tax price for this job, with its sales tax worked out at the
+  // job's own rate (taxed after discounts, same as the Trash Cans page).
+  const priceWithTax = (price: number) => {
+    const p = Math.max(0, Math.round((Number(price) || 0) * 100) / 100);
+    const sp = jobTaxSplit(job);
+    const rate = (job as any).taxRate != null ? Number((job as any).taxRate) || 0 : sp.tax > 0 && sp.subtotal > 0 ? Math.round(sp.tax / sp.subtotal * 10000) / 100 : 0;
+    const tax = rate > 0 ? taxOf(Math.max(0, p - computeDiscountsTotal(job.discounts, p)), rate) : 0;
+    return { amount: Math.round((p + tax) * 100) / 100, tax, taxRate: rate } as any;
+  };
   const sendInvoice = () => {
     const c = customers.find(x => x.id === job.customerId);
     if (!c?.email && !c?.phone) { toast("No contact info for this customer. Add email or phone first.", "red"); return; }
@@ -657,6 +666,9 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
         invoiced: true,
         invoicedAt: today(),
         owner_id: ownerId,
+        // BUG FIX (audit 2026-11-17) — the invoice wasn't linked to its job, so
+        // paying it never marked the job paid and Charge Card couldn't find it.
+        jobId,
       };
       // [SendInvoice] this used to only call setEstimates (local React state)
       // with no Supabase write — the payLink texted/emailed to the customer
@@ -705,8 +717,13 @@ export function JobDetailModal({ jobId, job, onClose, customers = [], employees 
     updateJob(jobId, { paymentStatus: "Paid", paymentType: "Card" as any, amountCollected: Number(job.amount) || 0, stripePaymentIntentId: paymentIntentId, stripePaymentStatus: "paid" } as any);
     if (linkedInvoice) {
       setEstimates((prev: any[]) => prev.map(e => e.id === linkedInvoice.id ? { ...e, paidAt: today(), status: "approved", stripePaymentIntentId: paymentIntentId, stripePaymentStatus: "paid" as const } : e));
-      (supabase as any).from("estimates").update({ paidAt: today(), status: "approved", stripePaymentIntentId: paymentIntentId, stripePaymentStatus: "paid" }).eq("id", linkedInvoice.id)
-        .then(() => {}, (e: any) => console.warn("[ChargeCard] invoice sync failed:", e?.message));
+      // BUG FIX (audit 2026-11-17) — if marking the invoice paid failed, the
+      // card was charged but the invoice still showed unpaid with no warning.
+      (supabase as any).from("estimates").update({ paidAt: today(), status: "approved", stripePaymentIntentId: paymentIntentId, stripePaymentStatus: "paid" }).eq("id", linkedInvoice.id).select("id")
+        .then((r: any) => {
+          if (r?.error) toast("Card charged, but the invoice wasn't marked paid — " + r.error.message, "red");
+          else if (!r?.data || r.data.length === 0) toast("Card charged, but the server didn't mark the invoice paid — mark it paid by hand", "red");
+        }, (e: any) => toast("Card charged, but the invoice wasn't marked paid — " + (e?.message || "unknown error"), "red"));
     }
     setChargeCardOpen(false);
     toast("Payment received ✓", "green");
@@ -1364,7 +1381,10 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
           <div className="flex items-center justify-between gap-3">
             <label className="text-xs text-white/60 flex-shrink-0">Price</label>
             <div className="flex items-center gap-2">
-              <GInput type="number" step="0.01" value={job.amount ?? ""} onChange={e => updateJob(jobId, { amount: Number(e.target.value) || 0 })} placeholder="0.00" className="!w-32 !text-right" />
+              {/* BUG FIX (audit 2026-11-17) — changing the price kept the old
+                  sales tax, so the invoice split the total wrong. The price
+                  box is now the pre-tax price and tax is worked out from it. */}
+              <GInput type="number" step="0.01" value={job.amount == null ? "" : jobTaxSplit(job).subtotal} onChange={e => updateJob(jobId, priceWithTax(Number(e.target.value) || 0))} placeholder="0.00" className="!w-32 !text-right" />
             </div>
           </div>
           {services.length > 0 && (
@@ -1404,7 +1424,8 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
                 <button
                   onClick={() => {
                     const total = (job.serviceIds || []).reduce((sum: number, id: string) => sum + (services.find((s: any) => s.id === id)?.basePrice || 0), 0);
-                    updateJob(jobId, { amount: total });
+                    // BUG FIX (audit 2026-11-17) — keep sales tax in step with the new price.
+                    updateJob(jobId, priceWithTax(total));
                     toast?.("Price recalculated from selected services ✓");
                   }}
                   className="text-[11px] text-red-400 hover:text-red-300"
@@ -2154,7 +2175,7 @@ ${job.notes ? `<div class="section"><h2>Job Notes</h2><p>${job.notes}</p></div>`
               </div>
             </div>
             {job.sqFootage && job.sqFtRate && Math.abs((job.sqFootage * job.sqFtRate) - job.amount) > 10 && (
-              <button onClick={() => updateJob(jobId, { amount: Math.round(job.sqFootage * job.sqFtRate * 100) / 100 })} className="mt-1.5 text-[10px] text-blue-400 hover:text-blue-300">
+              <button onClick={() => updateJob(jobId, priceWithTax(Math.round(job.sqFootage * job.sqFtRate * 100) / 100))} className="mt-1.5 text-[10px] text-blue-400 hover:text-blue-300">
                 Apply {fmt(job.sqFootage * job.sqFtRate)} to job price →
               </button>
             )}

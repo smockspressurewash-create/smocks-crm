@@ -455,6 +455,7 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
             threadsRef.current.flatMap(t => t.messages.map((m: any) => m.sid).filter(Boolean))
           );
           const touchedIds = new Set<string>();
+          const newMsgs: { threadId: string; m: any }[] = [];
           // ISSUE 2 (round 8) — ROOT CAUSE of the "N new messages" toast (and,
           // by extension, its accompanying opt-in/opt-out toast) firing
           // repeatedly with nothing actually new: this counted `incoming.length`
@@ -499,6 +500,17 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
                   setCustomers((prev: Customer[]) => prev.map(c => c.id === customer.id
                     ? { ...c, smsOptOut: true, optOutDate: today(), smsOptIn: false } as Customer
                     : c));
+                  // BUG FIX (audit 2026-11-17) — STOP was only marked on this
+                  // screen; after a reload (or on another device) the customer
+                  // was texted again. Save it to the customer record.
+                  if (!alreadyNotified) {
+                    (supabase as any).from("customers").update({ smsOptOut: true, optOutDate: today(), smsOptIn: false }).eq("id", customer.id).select("id")
+                      .then((r: any) => {
+                        if (r?.error) toast("⚠ Couldn't save the STOP for " + (customer.firstName || phone) + " — " + r.error.message + ". Turn off texts on their profile by hand.", "red");
+                        else if (!r?.data || r.data.length === 0) toast("⚠ Couldn't save the STOP for " + (customer.firstName || phone) + " — the server rejected it. Turn off texts on their profile by hand.", "red");
+                      })
+                      .catch((e: any) => toast("⚠ Couldn't save the STOP for " + (customer.firstName || phone) + " — " + (e?.message || "unknown error"), "red"));
+                  }
                   if (!alreadyNotified) toast("⛔ " + (customer.firstName || phone) + " replied STOP — unsubscribed");
                 } else if (!alreadyNotified) {
                   toast("⛔ STOP received from unknown number " + phone + " — no matching customer to unsubscribe");
@@ -509,6 +521,12 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
                   setCustomers((prev: Customer[]) => prev.map(c => c.id === customer.id
                     ? { ...c, smsOptOut: false, smsOptIn: true, smsOptInAt: new Date().toISOString() } as Customer
                     : c));
+                  // BUG FIX (audit 2026-11-17) — same as STOP: save the re-subscribe.
+                  if (!alreadyNotified) {
+                    (supabase as any).from("customers").update({ smsOptOut: false, smsOptIn: true, smsOptInAt: new Date().toISOString() }).eq("id", customer.id).select("id")
+                      .then((r: any) => { if (r?.error || !r?.data?.length) toast("Couldn't save that " + (customer.firstName || phone) + " re-subscribed — " + (r?.error?.message || "the server rejected it"), "red"); })
+                      .catch((e: any) => toast("Couldn't save that " + (customer.firstName || phone) + " re-subscribed — " + (e?.message || "unknown error"), "red"));
+                  }
                 }
                 if (!alreadyNotified) toast("✅ " + (customer?.firstName || phone) + " re-subscribed");
                 if (msg.sid) markSidNotified(msg.sid);
@@ -523,23 +541,28 @@ export function InboxPage({ threads = [], setThreads, customers = [], setCustome
                 if (!isDup) {
                   updated = updated.map(t => t.id === existingThread.id ? { ...t, unread: true, messages: [...t.messages, newMsg] } : t);
                   touchedIds.add(existingThread.id);
+                  newMsgs.push({ threadId: existingThread.id, m: newMsg });
                   newlyProcessedCount++;
                 }
               } else {
                 const newThreadId = uid();
                 updated = [{ id: newThreadId, channel: "sms", contactName: customer ? customer.firstName + " " + customer.lastName : phone, contactPhone: phone, contactEmail: "", customerId: customer?.id || null, unread: true, messages: [newMsg] }, ...updated];
                 touchedIds.add(newThreadId);
+                newMsgs.push({ threadId: newThreadId, m: newMsg });
                 newlyProcessedCount++;
               }
             });
-            touchedIds.forEach(id => {
-              const t = updated.find(x => x.id === id);
-              const m = t?.messages?.[t.messages.length - 1];
+            // BUG FIX (audit 2026-11-17) — only the LAST new text in each
+            // conversation was saved, so when a customer sent two or three
+            // texts in a row the others vanished after a reload. Save each one.
+            newMsgs.forEach(({ threadId, m }) => {
+              const t = updated.find(x => x.id === threadId);
               if (t && m && !appendedSidsRef.current.has(m.id)) { appendedSidsRef.current.add(m.id); toAppend.push({ t, m }); }
             });
             return updated;
           });
-          setTimeout(() => toAppend.forEach(({ t, m }) => appendSmsMessage(t, m, true)), 0);
+          // One at a time, in order, so the conversation keeps its order.
+          setTimeout(() => { (async () => { for (const { t, m } of toAppend) await appendSmsMessage(t, m, true); })(); }, 0);
           if (newlyProcessedCount > 0) toast(newlyProcessedCount + " new message" + (newlyProcessedCount > 1 ? "s" : ""));
         }
       } catch { /* silent */ } finally { setPolling(false); }

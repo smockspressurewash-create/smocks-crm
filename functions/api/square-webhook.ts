@@ -89,19 +89,23 @@ const patchCustomerRecurringPlan = async (crmCustomerId: string, patch: Record<s
 // Same "insert a real paid invoice row" pattern as stripe-webhook.ts's
 // recordRecurringPayment, deduped on squareInvoiceId (migration 0083) since
 // Square, like Stripe, redelivers webhooks on any non-2xx response.
-const recordRecurringPayment = async (crmCustomerId: string, ownerId: string, amountCents: number, description: string, squareInvoiceId: string, serviceRoleKey: string): Promise<void> => {
+const recordRecurringPayment = async (crmCustomerId: string, ownerId: string, amountCents: number, description: string, squareInvoiceId: string, serviceRoleKey: string): Promise<boolean> => {
   const authHeaders = { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` };
   if (squareInvoiceId) {
     const dupRes = await fetch(`${SUPABASE_URL}/rest/v1/estimates?squareInvoiceId=eq.${encodeURIComponent(squareInvoiceId)}&select=id&limit=1`, { headers: authHeaders });
     const dupRows = await dupRes.json().catch(() => []);
     if (Array.isArray(dupRows) && dupRows.length > 0) {
       console.log("[SquareWebhook] recurring payment for Square invoice", squareInvoiceId, "already recorded — skipping duplicate insert");
-      return;
+      return true;
     }
   }
   const amount = amountCents / 100;
   const today = new Date().toISOString().slice(0, 10);
-  await fetch(`${SUPABASE_URL}/rest/v1/estimates`, {
+  // BUG FIX (audit 2026-11-17) — the insert result was never checked, so a
+  // failed save still answered Square "OK" and the recurring payment never
+  // showed up in the CRM. A failure now returns false, the webhook answers
+  // 500 and Square retries (same as stripe-webhook.ts).
+  const insRes = await fetch(`${SUPABASE_URL}/rest/v1/estimates`, {
     method: "POST",
     headers: { ...authHeaders, "Content-Type": "application/json", Prefer: "return=minimal" },
     body: JSON.stringify({
@@ -112,7 +116,12 @@ const recordRecurringPayment = async (crmCustomerId: string, ownerId: string, am
       paymentLog: [{ id: crypto.randomUUID(), at: new Date().toISOString(), type: "paid", amount, note: "Recurring payment via Square (" + squareInvoiceId + ")" }],
       createdAt: Date.now(),
     }),
-  }).catch(e => console.error("[SquareWebhook] recordRecurringPayment insert failed:", e?.message));
+  }).catch(e => { console.error("[SquareWebhook] recordRecurringPayment insert failed:", e?.message); return null; });
+  if (!insRes || !insRes.ok) {
+    if (insRes) console.error("[SquareWebhook] recordRecurringPayment insert failed:", insRes.status, await insRes.text().catch(() => ""));
+    return false;
+  }
+  return true;
 };
 
 export const onRequestPost = async (context: { request: Request; env: Record<string, string> }) => {
@@ -166,7 +175,8 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
             const amountCents = invoice.payment_requests?.[0]?.computed_amount_money?.amount || invoice.payment_requests?.[0]?.fixed_amount_requested_money?.amount || 0;
             if (amountCents > 0) {
               await patchCustomerRecurringPlan(cust.id, { status: "active", lastPaidAt: new Date().toISOString(), lastAmount: amountCents / 100 }, serviceRoleKey);
-              await recordRecurringPayment(cust.id, oid, amountCents, invoice.title || "Recurring service", invoice.id || "", serviceRoleKey);
+              const saved = await recordRecurringPayment(cust.id, oid, amountCents, invoice.title || "Recurring service", invoice.id || "", serviceRoleKey);
+              if (!saved) return new Response(JSON.stringify({ error: "Failed to record payment" }), { status: 500, headers: { "Content-Type": "application/json" } });
             }
           } else if (invoice.status === "FAILED" || invoice.status === "PAYMENT_PENDING") {
             await patchCustomerRecurringPlan(cust.id, { status: invoice.status === "FAILED" ? "payment_failed" : "pending", lastFailedAt: invoice.status === "FAILED" ? new Date().toISOString() : undefined }, serviceRoleKey);

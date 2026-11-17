@@ -295,6 +295,7 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
     const byId = new Map(routeInputs.map((x: any) => [x.id, x]));
     setRoute(buildOptimizedRoute(ids.map((x: string) => byId.get(x)).filter(Boolean), { ...routeLunch, start: routeStartPt, keepOrder: true }));
     setRouteMovedId(id);
+    setRouteSaved(false);
     window.setTimeout(() => setRouteMovedId(m => m === id ? null : m), 2500);
   };
   // The route starts from the owner's shop or home (Settings tab) when set,
@@ -306,8 +307,15 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
     const res = await geocodeAddresses([routeStartAddress], key).catch(() => null);
     return res?.found?.[routeStartAddress] || null;
   };
+  // OWNER REQUEST ("when I optimize it for the cleanings in December, it
+  // doesn't automatically change it for the next quarter"). A stop's time is
+  // saved on the customer's job, so every repeat of that day uses it. Repeat
+  // days (e.g. March) can now be optimized too, and the route says it isn't
+  // saved until "Save this order" is tapped.
+  const [routeSaved, setRouteSaved] = useState(true);
   const buildRoute = async () => {
-    const dayJobs = trashJobs.filter(j => j.scheduledDate === routeDate && j.status !== "cancelled" && j.status !== "completed");
+    const dayStops = upcomingDays.find(d => d.date === routeDate)?.stops.map(s => s.job);
+    const dayJobs = (dayStops || trashJobs.filter(j => j.scheduledDate === routeDate)).filter(j => j.status !== "cancelled" && j.status !== "completed");
     if (dayJobs.length === 0) { toast?.("No trash-can jobs scheduled that day", "yellow"); return; }
     setRouteBuilding(true);
     const [{ coords, missing, error }, start] = await Promise.all([coordsForJobs(dayJobs), startCoords()]);
@@ -324,7 +332,8 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
     setRouteNote(missing ? `${missing} stop${missing !== 1 ? "s" : ""} couldn't be placed on the map${error ? " (" + error + ")" : ""} — they're at the end. Check the address on the customer.` : "");
     if (missing) toast?.(`${missing} address${missing !== 1 ? "es" : ""} couldn't be found on the map${error ? " — " + error : ""}`, "yellow");
     setRoute(entries);
-    toast?.(`Route built — ${dayJobs.length} stop${dayJobs.length !== 1 ? "s" : ""}`, "green");
+    setRouteSaved(false);
+    toast?.(`Route built — ${dayJobs.length} stop${dayJobs.length !== 1 ? "s" : ""}. Tap "Save this order" to keep it.`, "green");
   };
 
   // ── Saved, named Routes (persisted — distinct from the ad-hoc same-day
@@ -472,15 +481,20 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
     const feeName = (settings as any)?.trashCanInconvenienceFeeName || "Cans Not Out Fee";
     const feeAmount = Number((settings as any)?.trashCanInconvenienceFeeAmount) || 15;
     setChargingPendingId(job.id);
+    // BUG FIX (audit 2026-11-17) — a failed save after a successful charge
+    // said "Charge failed" and left the row, so the owner charged again.
+    // The charge and the save now report separately.
+    let charged = false;
     try {
       await chargeSavedPaymentMethod(cust.stripeCustomerId, cust.savedPaymentMethodId, Math.round(feeAmount * 100), "usd", feeName, undefined, job.owner_id || ownerId);
+      charged = true;
       const patch = { inconvenienceFeeCharged: feeAmount, inconvenienceFeeChargedAt: new Date().toISOString(), inconvenienceFeePendingConfirmation: false };
       setJobs?.((prev: any[]) => prev.map(j => j.id === job.id ? { ...j, ...patch } : j));
-      const { error } = await (supabase as any).from("jobs").update(patch).eq("id", job.id);
-      if (error) throw new Error(error.message);
+      const r = await (supabase as any).from("jobs").update(patch).eq("id", job.id).select("id");
+      if (r.error || !r.data?.length) throw new Error(r.error?.message || "the server didn't confirm it");
       toast?.(`Charged ${fmt(feeAmount)} ✓`, "green");
     } catch (e: any) {
-      toast?.(`Charge failed — ${e?.message || "unknown error"}`, "red");
+      toast?.(charged ? `Charged ${fmt(feeAmount)}, but it wasn't recorded on the job (${e?.message || "unknown error"}). Don't charge again.` : `Charge failed — ${e?.message || "unknown error"}`, charged ? "yellow" : "red");
     } finally {
       setChargingPendingId(null);
     }
@@ -506,8 +520,8 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
         const newLineItems = [...(openInv.lineItems || []), lineItem];
         const newTotal = (Number(openInv.total) || 0) + feeAmount;
         const newSubtotal = (Number(openInv.subtotal) || 0) + feeAmount;
-        const { error } = await (supabase as any).from("estimates").update({ lineItems: newLineItems, total: newTotal, subtotal: newSubtotal }).eq("id", openInv.id);
-        if (error) throw new Error(error.message);
+        const r = await (supabase as any).from("estimates").update({ lineItems: newLineItems, total: newTotal, subtotal: newSubtotal }).eq("id", openInv.id).select("id");
+        if (r.error || !r.data?.length) throw new Error(r.error?.message || "the server didn't confirm the invoice change");
         toast?.(`Added ${fmt(feeAmount)} to invoice ✓`, "green");
       } else {
         const newInv = {
@@ -526,8 +540,9 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
       }
       const patch = { inconvenienceFeePendingConfirmation: false };
       setJobs?.((prev: any[]) => prev.map(j => j.id === job.id ? { ...j, ...patch } : j));
-      const { error: jobErr } = await (supabase as any).from("jobs").update(patch).eq("id", job.id);
-      if (jobErr) console.warn("[TrashCan] couldn't clear pending-fee flag:", jobErr.message);
+      const jr = await (supabase as any).from("jobs").update(patch).eq("id", job.id).select("id");
+      // A flag left on means the fee can be added to an invoice twice; say so.
+      if (jr.error || !jr.data?.length) toast?.("Fee added, but this job still shows it as owed: " + (jr.error?.message || "the server didn't confirm it") + ". Don't add it again.", "yellow");
     } catch (e: any) {
       toast?.(`Couldn't add fee to invoice — ${e?.message || "unknown error"}`, "red");
     } finally {
@@ -887,7 +902,7 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
                       const sel = date === selectedDay;
                       const projected = stops.every(s => s.projected);
                       return (
-                        <button key={date} onClick={() => { setSelectedDay(date); setRouteDate(date); setRoute(null); setRouteNote(""); if (isMobile) setTimeout(() => document.getElementById("trash-day-detail")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50); }}
+                        <button key={date} onClick={() => { if (route && !routeSaved && !window.confirm("This day's new order isn't saved. Leave without saving it?")) return; setRouteSaved(true); setSelectedDay(date); setRouteDate(date); setRoute(null); setRouteNote(""); if (isMobile) setTimeout(() => document.getElementById("trash-day-detail")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50); }}
                           className={"p-2 rounded-lg border text-left transition flex items-center gap-2 " + (sel ? "bg-red-900/30 border-red-500/50" : "bg-black/30 border-white/10 hover:border-white/25")}>
                           <div className="w-10 text-center flex-shrink-0">
                             <div className="text-[9px] uppercase text-white/40">{d.toLocaleDateString(undefined, { weekday: "short" })}</div>
@@ -920,16 +935,17 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
                     </div>
                     <div className="flex gap-1.5 flex-wrap">
                       <GBtn variant="ghost" onClick={() => openSchedText("Text " + dayLabel(date) + " customers", stops.map(s => ({ job: s.job, date })))} className="!text-xs" data-sched-text-day><Send size={12} className="inline mr-1" />Text these customers</GBtn>
-                      {!projected && <GBtn onClick={buildRoute} disabled={routeBuilding} className="!text-xs"><RouteIcon size={12} className="inline mr-1" />{routeBuilding ? "Finding addresses…" : "Optimize this day"}</GBtn>}
+                      {<GBtn onClick={buildRoute} disabled={routeBuilding} className="!text-xs"><RouteIcon size={12} className="inline mr-1" />{routeBuilding ? "Finding addresses…" : "Optimize this day"}</GBtn>}
                     </div>
                   </div>
-                  {projected && <div className="text-[10px] text-white/40">Repeat visits. They become real jobs (and get times) when the visit before them is completed.</div>}
+                  {projected && <div className="text-[10px] text-white/40">Repeat visits. Each customer's time is the same on every repeat, so an order saved here (or on the first visit) carries to all of them.</div>}
                   {showRoute ? (
                     <div className="space-y-2">
-                      <div className="text-[10px] text-white/40">Closest stop next, by address. Times count your minutes per can plus an estimated drive between stops, starting at this day's earliest time. Nothing changes until you tap "Use these times".</div>
+                      <div className="text-[10px] text-white/40">Closest stop next, by address. Times count your minutes per can plus an estimated drive between stops, starting at this day's earliest time. Nothing changes until you tap "Save this order".</div>
         {routeNote && <div className="text-[10px] text-yellow-300/80">{routeNote}</div>}
         {route && (
           <div className="space-y-1.5 pt-2 border-t border-white/10">
+            {!routeSaved && <div className="text-[11px] text-yellow-300" data-route-unsaved>Not saved yet. Tap "Save this order" below to keep it for this day and every repeat.</div>}
             <div className="flex items-center justify-between gap-2">
               <div className="text-[10px] text-white/40">Move a stop with the arrows or drag it{routeMapOpen ? ", or drag a pin on the map onto another stop" : ""}. Times update as you go.</div>
               <button onClick={() => setRouteMapOpen(o => !o)} className="text-[11px] text-white/50 hover:text-white flex-shrink-0" data-route-map-toggle><MapPin size={11} className="inline mr-0.5" />{routeMapOpen ? "Hide map" : "Show map"}</button>
@@ -979,8 +995,9 @@ export function TrashCanPage({ jobs = [], customers = [], setCustomers, employee
                 if (await patchJobs([e.jobId], { scheduledTime: t })) saved++;
               }
               setSavingRouteTimes(false);
-              toast?.(saved === stops.length ? `Saved ${saved} stop time${saved !== 1 ? "s" : ""} — Google Calendar updates in a few seconds ✓` : `Saved ${saved} of ${stops.length} stop times`, saved === stops.length ? "green" : "yellow");
-            }}><Clock size={11} className="inline mr-1" />{savingRouteTimes ? "Saving…" : "Use these times for the day"}</GBtn>
+              if (saved === stops.length) setRouteSaved(true);
+              toast?.(saved === stops.length ? `Saved ${saved} stop time${saved !== 1 ? "s" : ""} for this day and every repeat — Google Calendar updates in a few seconds ✓` : `Saved ${saved} of ${stops.length} stop times`, saved === stops.length ? "green" : "yellow");
+            }}><Clock size={11} className="inline mr-1" />{savingRouteTimes ? "Saving…" : routeSaved ? "Saved ✓ (this day and every repeat)" : "Save this order (this day and every repeat)"}</GBtn>
           </div>
         )}
                       <button onClick={() => setRoute(null)} className="text-[11px] text-white/40 hover:text-white/70">← Back to the day's list</button>

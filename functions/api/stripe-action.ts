@@ -34,6 +34,7 @@ import { redeemPromoForInvoice } from "./_lib/promoRedeem";
 
 import { getOwnerSecrets } from "./_lib/ownerSecrets";
 import { computeAmountDue, paidPatch } from "./_lib/amountDue";
+import { fetchWithTimeout } from "./_lib/fetchWithTimeout";
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_8aEa3wsYJ7ghVPcGbtHymw_ugj0aEfm";
@@ -179,7 +180,10 @@ const stripeCredsFor = async (ownerId: string, serviceRoleKey: string, platformS
 };
 
 const stripeFetch = async (secretKey: string, method: string, path: string, params?: Record<string, string>, stripeAccount?: string, idempotencyKey?: string) => {
-  const res = await fetch(`https://api.stripe.com/v1/${path}`, {
+  // BUG FIX (audit 2026-11-17) — Stripe calls had no time limit, so a stuck
+  // request hung the payment screen. They now fail after ~15s with an error
+  // (a 502); retrying is safe because money calls carry an Idempotency-Key.
+  const res = await fetchWithTimeout(`https://api.stripe.com/v1/${path}`, {
     method,
     headers: {
       Authorization: `Basic ${btoa(secretKey + ":")}`,
@@ -196,7 +200,7 @@ const stripeFetch = async (secretKey: string, method: string, path: string, para
       ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
     },
     body: method === "POST" && params ? new URLSearchParams(params).toString() : undefined,
-  });
+  }).catch((e: any) => { throw Object.assign(new Error(e?.message || "Stripe request failed"), { status: 502 }); });
   const data = await res.json().catch(() => ({} as any));
   if (!res.ok) {
     const msg = (data as any)?.error?.message || `Stripe error ${res.status}`;

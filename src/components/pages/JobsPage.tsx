@@ -20,7 +20,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, localDateStr, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, describeRecurringSchedule, isEmployeeUnavailable, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, getEffectiveRate, totalJobPhotoCount, stripLegacyJobFields, insertClientIdRowWithRetry, insertJobRequestSafely, buildJobCalendarDescription } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, weekdayLabels, computeNextRecurringDate, describeRecurringSchedule, isEmployeeUnavailable, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, getEffectiveRate, totalJobPhotoCount, stripLegacyJobFields, nextVisitBase,insertClientIdRowWithRetry, insertJobRequestSafely, buildJobCalendarDescription } from "../../lib/utils";
 const weatherRisk = (_dateStr: string): {icon: string; level: string; reason: string} | null => null;
 import type { Customer, Estimate, Job, Employee, Vehicle, MaintenanceRecord, Expense, Chemical, Service, Campaign, Automation, Review, SocialPost, AccountabilityEntry, Goal, Win, Reminder, RewardTier, Referral, MileageLog, PersonalTransaction, AppSettings, InboxThread, InboxMessage, AlfredConversation, AlfredMemory, AlfredMessage, Timeline, TimelineEntry, ModelStatus, LineItem, ChecklistItem, Photo, ChemicalUsed, CommLogEntry, AutomationStep, CustomField } from "../../types";
 import { twilioSend, sendEmail, emailShell, emailButton, getFreshOwnerGoogleToken, logOutboundSmsToInbox } from "../../lib/messaging";
@@ -325,9 +325,25 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
       return String(bDate).localeCompare(String(aDate)) || (prioOrder[a.priority || "normal"] - prioOrder[b.priority || "normal"]);
     });
 
-  const move = (jid, ns) => {
+  // BUG FIX (audit 2026-11-17) — starting, completing, cancelling or marking a
+  // job no-show only changed the screen; the 30s autosave skips `status`, so
+  // the change was lost on refresh and the crew never saw it. Save it to the
+  // jobs table right away and say so if the save fails.
+  const saveJobStatus = (ids: string[], patch: Record<string, any>) => {
+    if (ids.length === 0) return;
+    setJobs((prev: any[]) => prev.map(x => ids.includes(x.id) ? { ...x, ...patch } : x));
+    tolerantJobWrite(patch, x => (supabase as any).from("jobs").update(x).in("id", ids).select("id"))
+      .then((r: any) => {
+        if (r?.error) toast?.("Status changed here, but failed to save — " + r.error.message, "red");
+        else if (!r?.data || r.data.length === 0) toast?.("Status changed here, but the server rejected the change", "red");
+        else if (r.data.length < ids.length) toast?.(`Only ${r.data.length} of ${ids.length} jobs saved the new status`, "red");
+      })
+      .catch((e: any) => toast?.("Status changed here, but failed to save — " + (e?.message || "unknown error"), "red"));
+  };
+  const statusPatch = (ns: string): Record<string, any> => ns === "completed" ? { status: ns, completedAt: new Date().toISOString() } : { status: ns };
+  const move = (jid, ns, extra: Record<string, any> = {}) => {
     const before = jobs.find(x => x.id === jid);
-    setJobs(jobs.map(j => j.id === jid ? { ...j, status: ns } : j));
+    saveJobStatus([jid], { ...statusPatch(ns), ...extra });
     // BUG FIX (owner report: random texts, trash cans) — these status texts
     // went out every time a job was moved, even back and forth, and to
     // weekly trash can stops. Only text on a real change, never for trash
@@ -542,7 +558,8 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
   };
   const confirmCancel = () => {
     const j = jobs.find(x => x.id === cancelModal);
-    setJobs(jobs.map(x => x.id === cancelModal ? { ...x, status: "cancelled", cancelReason, cancelledAt: new Date().toISOString() } : x));
+    // BUG FIX (audit 2026-11-17) — cancelling only changed the screen; now saved.
+    if (cancelModal) saveJobStatus([cancelModal], { status: "cancelled", cancelReason, cancelledAt: new Date().toISOString() });
     setCancelModal(null);
     toast("Job cancelled");
     // Delete Google Calendar event if connected
@@ -1264,7 +1281,8 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
       {bulkSelected.length > 0 && <Glass className="p-3 !bg-purple-950/30 !border-purple-600/40 flex items-center gap-3 flex-wrap">
         <span className="text-sm font-semibold text-purple-300">{bulkSelected.length} selected</span>
         <div className="flex gap-2 flex-wrap">
-          {["scheduled", "in_progress", "completed", "cancelled"].map(s => <GBtn key={s} onClick={() => { setJobs(jobs.map(j => bulkSelected.includes(j.id) ? { ...j, status: s } : j)); setBulkSelected([]); toast("Updated " + bulkSelected.length + " jobs"); }} variant="ghost" className="!text-xs capitalize">{s.replace("_", " ")}</GBtn>)}
+          {/* BUG FIX (audit 2026-11-17) — bulk status change only changed the screen; now saved. */}
+          {["scheduled", "in_progress", "completed", "cancelled"].map(s => <GBtn key={s} onClick={() => { saveJobStatus([...bulkSelected], s === "cancelled" ? { status: s, cancelledAt: new Date().toISOString() } : statusPatch(s)); setBulkSelected([]); toast("Updated " + bulkSelected.length + " jobs"); }} variant="ghost" className="!text-xs capitalize">{s.replace("_", " ")}</GBtn>)}
           <button onClick={async () => {
             let sent = 0, failed = 0;
             for (const jid of bulkSelected) {
@@ -1703,7 +1721,8 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                 {j.clockInAt && <button onClick={() => clockOut(j)} title="Stop this job's old timer" className="px-2.5 py-1.5 rounded-lg border bg-green-900/30 border-green-600/40 text-green-300 hover:bg-green-900/50 text-xs transition flex items-center gap-1"><Clock size={12} />Stop {((Date.now() - j.clockInAt) / 3600000).toFixed(2)}h</button>}
                 {tab === "scheduled" && <>{onCrew ? <GBtn onClick={() => move(j.id, "in_progress")} className="flex-1 text-xs !py-1.5">Start</GBtn> : <div className="flex-1" />}
                   <button onClick={() => {
-                    setJobs(jobs.map(x => x.id === j.id ? { ...x, status: "cancelled", noShow: true, cancelReason: "Customer no-show", cancelledAt: new Date().toISOString() } : x));
+                    // BUG FIX (audit 2026-11-17) — no-show only changed the screen; now saved.
+                    saveJobStatus([j.id], { status: "cancelled", noShow: true, cancelReason: "Customer no-show", cancelledAt: new Date().toISOString() });
                     toast("Marked as no-show");
                     // Text Will about the no-show
                     if (settings?.twilioSid && settings?.myPhone) {
@@ -1721,8 +1740,13 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                   // all, so this would silently skip auto-scheduling for them.
                   // computeNextRecurringDate (lib/utils.ts) is the single
                   // shared calculation for every mode.
-                  if (j.isRecurring) {
-                    const nextDate = computeNextRecurringDate(j, j.scheduledDate);
+                  // BUG FIX (audit 2026-11-17) — tapping Complete twice (or on two
+                  // devices) booked the next visit twice. Skip it when this job
+                  // was already done, or the same visit already exists that day.
+                  const nextDateCheck = j.isRecurring ? computeNextRecurringDate(j, j.scheduledDate) : "";
+                  const nextVisitExists = !!nextDateCheck && jobs.some((x: any) => x.id !== j.id && x.customerId === j.customerId && x.scheduledDate === nextDateCheck && x.status !== "cancelled" && (x.serviceCategory || "") === ((j as any).serviceCategory || "") && (x.title || "") === ((j as any).title || ""));
+                  if (j.isRecurring && j.status !== "completed" && !nextVisitExists) {
+                    const nextDate = nextDateCheck;
                     // BLOCKER 8 (mobile round 9) — this only ever called
                     // setJobs (LOCAL state) with no Supabase insert at all —
                     // unlike EmployeePortal.tsx's own createRecurringJob,
@@ -1742,7 +1766,9 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                     // from before that bug was reverted (see lib/utils.ts); a
                     // bare {...j} spread would carry it into this brand-new
                     // row and fail the insert below.
-                    const nextJob: any = { ...stripLegacyJobFields(j), id: uid(), googleEventId: null, status: "scheduled", scheduledDate: nextDate, loggedHours: 0, clockInAt: null, arrivedAt: null, completedAt: null, checklist: (j.checklist || []).map(ck => ({ ...ck, done: false })), preChecklist: (j.preChecklist || []).map((ck: any) => ({ ...ck, done: false })), duringChecklist: (j.duringChecklist || []).map((ck: any) => ({ ...ck, done: false })), postChecklist: (j.postChecklist || []).map((ck: any) => ({ ...ck, done: false })), commLog: [], photos: [], videos: [], chemicalsUsed: [], paymentStatus: undefined, amountCollected: undefined, owner_id: ownerId };
+                    // BUG FIX (audit 2026-11-17) — the next visit copied this visit's
+                    // cans-not-out fee; nextVisitBase drops it.
+                    const nextJob: any = { ...nextVisitBase(j), id: uid(), googleEventId: null, status: "scheduled", scheduledDate: nextDate, loggedHours: 0, clockInAt: null, arrivedAt: null, completedAt: null, checklist: (j.checklist || []).map(ck => ({ ...ck, done: false })), preChecklist: (j.preChecklist || []).map((ck: any) => ({ ...ck, done: false })), duringChecklist: (j.duringChecklist || []).map((ck: any) => ({ ...ck, done: false })), postChecklist: (j.postChecklist || []).map((ck: any) => ({ ...ck, done: false })), commLog: [], photos: [], videos: [], chemicalsUsed: [], paymentStatus: undefined, amountCollected: undefined, owner_id: ownerId };
                     console.log("[Recurring] auto-scheduling next occurrence for", nextDate, "— crew:", nextJob.crew);
                     setJobs(prev => [...prev.map(x => x.id === j.id ? { ...x, status: "completed" } : x), nextJob]);
                     (supabase as any).from("jobs").insert(nextJob)
@@ -1814,8 +1840,9 @@ export function JobsPage({ jobs = [], setJobs, customers = [], setCustomers = ((
                   const c = customers.find(x => x.id === j.customerId);
                   const newDate = prompt("New date (YYYY-MM-DD):", daysFromNow(7));
                   if (!newDate) return;
-                  move(j.id, "scheduled");
-                  setJobs(prev => prev.map(x => x.id === j.id ? { ...x, scheduledDate: newDate, status: "scheduled", cancelReason: "" } : x));
+                  // BUG FIX (audit 2026-11-17) — the new date and status were only
+                  // changed on screen; move() now saves them together.
+                  move(j.id, "scheduled", { scheduledDate: newDate, cancelReason: "" });
                   if (c?.phone) {
                     const msg = "Hi " + c.firstName + ", we've rescheduled your service to " + newDate + ". Reply to confirm or request a different date. — " + ((settings as any)?.companyName || "Crew Boss");
                     if (settings?.twilioSid) {

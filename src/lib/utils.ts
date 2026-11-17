@@ -1008,6 +1008,16 @@ export const stripLegacyJobFields = <T extends Record<string, any>>(job: T): T =
   LEGACY_BAD_JOB_FIELDS.forEach(f => delete copy[f]);
   return copy;
 };
+// BUG FIX (audit 2026-11-17) — the next visit of a repeating job was a copy
+// of the finished one, including its cans-not-out fee, so the owner saw the
+// same fee to collect again every week (or "already charged" forever). Use
+// this as the base of every next visit.
+const PER_VISIT_ONLY_FIELDS = ["inconvenienceFeeCharged", "inconvenienceFeeChargedAt", "inconvenienceFeePendingConfirmation"] as const;
+export const nextVisitBase = <T extends Record<string, any>>(job: T): T => {
+  const copy: any = stripLegacyJobFields(job);
+  PER_VISIT_ONLY_FIELDS.forEach(f => delete copy[f]);
+  return copy;
+};
 
 // ─── reconcileCrewAfterAssign ───────────────────────────────────────────────
 // Four independent places compute a job's new crew array the same way:

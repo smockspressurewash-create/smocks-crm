@@ -13,6 +13,7 @@
 // never a raw table dump — so this is not a re-opening of the "public
 // USING(true)" hole RLS just closed. Each action's own comment explains
 // what bounds the query (an unguessable id, a verified session email, etc).
+import { recurrenceFor } from "../../src/lib/bulkImportCore";
 import { logSmsToInbox } from "./_lib/inboxLog";
 import { twilioAccountSid } from "./_lib/twilioAccount";
 import { getOwnerSecrets, resolveCallerOwnerId } from "./_lib/ownerSecrets";
@@ -509,12 +510,20 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
         ]);
         const existingJobs: any[] = Array.isArray(existingJobsRow.data) ? existingJobsRow.data : [];
         const holidayDates: string[] = Array.isArray(settingsRow.data) ? (settingsRow.data[0]?.data?.trashCanHolidayDates || []) : [];
+        // BUG FIX (audit 2026-11-17) — "today" was the server's UTC date, so a
+        // signup on a Monday evening (Eastern) counted from Tuesday and a
+        // Tuesday-route customer got the Tuesday a week later. Use the
+        // business's own time zone (default Eastern, same as automations).
+        const tz = (Array.isArray(settingsRow.data) && settingsRow.data[0]?.data?.timeZone) || "America/New_York";
+        let localToday: string;
+        try { localToday = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date()); }
+        catch { localToday = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date()); }
         const DOW_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
         const countByDow = [0, 0, 0, 0, 0, 0, 0];
         existingJobs.forEach((j: any) => {
           if (!j.scheduledDate || !j.dayAssignmentConfirmed) return;
-          const d = new Date(j.scheduledDate + "T12:00:00");
-          if (!isNaN(d.getTime())) countByDow[d.getDay()]++;
+          const d = new Date(j.scheduledDate + "T12:00:00Z");
+          if (!isNaN(d.getTime())) countByDow[d.getUTCDay()]++;
         });
         // Only consider weekdays that already have at least one route going
         // (never invent a brand-new day nobody services yet) — if this is
@@ -525,23 +534,26 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
           activeDows.sort((a, b) => a.n - b.n);
           const targetDow = activeDows[0].dow;
           const inSameWeek = (a: Date, b: Date) => {
-            const startOfWeek = (d: Date) => { const s = new Date(d); s.setDate(s.getDate() - s.getDay()); s.setHours(0, 0, 0, 0); return s.getTime(); };
+            const startOfWeek = (d: Date) => { const s = new Date(d); s.setUTCDate(s.getUTCDate() - s.getUTCDay()); s.setUTCHours(0, 0, 0, 0); return s.getTime(); };
             return startOfWeek(a) === startOfWeek(b);
           };
-          let candidate = new Date();
-          const daysUntil = (targetDow - candidate.getDay() + 7) % 7;
-          candidate.setDate(candidate.getDate() + (daysUntil === 0 ? 7 : daysUntil)); // next occurrence, not today
+          let candidate = new Date(localToday + "T12:00:00Z");
+          const daysUntil = (targetDow - candidate.getUTCDay() + 7) % 7;
+          candidate.setUTCDate(candidate.getUTCDate() + (daysUntil === 0 ? 7 : daysUntil)); // next occurrence, not today
           // Holiday-week skip — try up to 4 weeks ahead in case of back-to-back holidays.
           for (let guard = 0; guard < 4; guard++) {
-            const hitsHoliday = holidayDates.some(hd => { const hDate = new Date(hd + "T12:00:00"); return !isNaN(hDate.getTime()) && inSameWeek(candidate, hDate); });
+            const hitsHoliday = holidayDates.some(hd => { const hDate = new Date(hd + "T12:00:00Z"); return !isNaN(hDate.getTime()) && inSameWeek(candidate, hDate); });
             if (!hitsHoliday) break;
-            candidate.setDate(candidate.getDate() + 7);
+            candidate.setUTCDate(candidate.getUTCDate() + 7);
           }
           const isoDate = candidate.toISOString().slice(0, 10);
           // A weekly repeat follows the picked day too, or the next visits
           // went back to the weekday the customer was added on.
-          const oneDayRepeat = assignedJob.recurringMode === "weekdays" && Array.isArray(assignedJob.recurringWeekdays) && assignedJob.recurringWeekdays.length === 1;
-          assignedJob = { ...assignedJob, scheduledDate: isoDate, dayAssignmentConfirmed: true, ...(oneDayRepeat ? { recurringWeekdays: [targetDow] } : {}) };
+          // The public signup page sends a 30/90-day preset, which drifts off
+          // the route day; pin the repeat to the picked day (audit 2026-11-17).
+          const repeat = assignedJob.isRecurring && assignedJob.recurringFreq && (assignedJob.recurringMode === "preset" || assignedJob.recurringMode === "weekdays" || assignedJob.recurringMode === "weeks")
+            ? recurrenceFor(assignedJob.recurringFreq, targetDow) : {};
+          assignedJob = { ...assignedJob, scheduledDate: isoDate, dayAssignmentConfirmed: true, ...repeat };
           assignedDayLabel = DOW_NAMES[targetDow];
         }
       } catch (e: any) {
@@ -549,7 +561,12 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       }
 
       const jobInsert = await sb(serviceRoleKey, `jobs`, { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify(assignedJob) });
-      if (!jobInsert.ok) return json({ error: "Failed to save job" }, 500);
+      if (!jobInsert.ok) {
+        // BUG FIX (audit 2026-11-17) — the customer was left behind when the
+        // job failed, and every retry (new id each time) added another copy.
+        if (newCust?.id) await sb(serviceRoleKey, `customers?id=eq.${encodeURIComponent(newCust.id)}&owner_id=eq.${encodeURIComponent(ownerId)}`, { method: "DELETE" }).catch(() => null);
+        return json({ error: "Failed to save job" }, 500);
+      }
 
       // Best-effort SMS confirmation — never blocks the signup itself on a
       // messaging failure (same reasoning as every other public-form send in

@@ -23,30 +23,16 @@
 //                                 for the token exchange below (never the
 //                                 connected account's)
 
+import { resolveCallerIsOwnerOrManager } from "./_lib/ownerSecrets";
+
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
-const SUPABASE_ANON_KEY = "sb_publishable_8aEa3wsYJ7ghVPcGbtHymw_ugj0aEfm";
+const STATE_TTL_MS = 15 * 60 * 1000;
 
 const hmac = async (message: string, secret: string): Promise<string> => {
   const enc = new TextEncoder();
   const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const sigBuf = await crypto.subtle.sign("HMAC", key, enc.encode(message));
   return Array.from(new Uint8Array(sigBuf)).map(b => b.toString(16).padStart(2, "0")).join("");
-};
-
-const resolveCallerOwnerId = async (accessToken: string): Promise<string | null> => {
-  if (!accessToken) return null;
-  const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
-    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${accessToken}` },
-  });
-  if (!userRes.ok) return null;
-  const user = await userRes.json().catch(() => null) as any;
-  const uid = user?.id;
-  if (!uid) return null;
-  const empRes = await fetch(`${SUPABASE_URL}/rest/v1/employees?user_id=eq.${encodeURIComponent(uid)}&select=owner_id&limit=1`, {
-    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${accessToken}` },
-  });
-  const empRows = await empRes.json().catch(() => []);
-  return Array.isArray(empRows) && empRows[0]?.owner_id ? empRows[0].owner_id : uid;
 };
 
 // POST { action: "get_authorize_url" } — called from Settings while the
@@ -62,13 +48,26 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       return new Response(JSON.stringify({ error: "Server missing STRIPE_CONNECT_CLIENT_ID env var — set up Stripe Connect in the Stripe Dashboard first (Settings → Connect), then add the Client ID in Cloudflare Pages." }), { status: 500, headers: { "Content-Type": "application/json" } });
     }
     const accessToken = (context.request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
-    const ownerId = await resolveCallerOwnerId(accessToken);
-    if (!ownerId) {
-      return new Response(JSON.stringify({ error: "Not signed in." }), { status: 401, headers: { "Content-Type": "application/json" } });
+    // BUG FIX (audit 2026-11-17) — any staff member (even a technician) could
+    // link the business to a Stripe account of their choosing, redirecting
+    // customer payments. Only an owner or manager may start Connect now.
+    const caller = await resolveCallerIsOwnerOrManager(accessToken);
+    if (!caller) {
+      return new Response(JSON.stringify({ error: "Only the owner or a manager can connect Stripe." }), { status: 403, headers: { "Content-Type": "application/json" } });
     }
+    const ownerId = caller.ownerId;
     const stateSecret = context.env.STRIPE_CONNECT_STATE_SECRET || context.env.SUPABASE_SERVICE_ROLE_KEY || "";
-    const sig = stateSecret ? await hmac(ownerId, stateSecret) : "";
-    const state = `${ownerId}.${sig}`;
+    if (!stateSecret) {
+      return new Response(JSON.stringify({ error: "Server missing STRIPE_CONNECT_STATE_SECRET." }), { status: 500, headers: { "Content-Type": "application/json" } });
+    }
+    // BUG FIX (audit 2026-11-17) — the old `state` was just owner id + a fixed
+    // signature, so one leaked link worked forever. It now carries a random
+    // nonce and a 15-minute expiry, all covered by the signature.
+    const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16))).map(b => b.toString(16).padStart(2, "0")).join("");
+    const exp = String(Date.now() + STATE_TTL_MS);
+    const payload = `${ownerId}.${nonce}.${exp}`;
+    const sig = await hmac(payload, stateSecret);
+    const state = `${payload}.${sig}`;
     const redirectUri = `${new URL(context.request.url).origin}/api/stripe-connect-oauth`;
     const url = `https://connect.stripe.com/oauth/authorize?${new URLSearchParams({
       response_type: "code",
@@ -96,10 +95,14 @@ export const onRequestGet = async (context: { request: Request; env: Record<stri
   if (errorParam) return redirectTo(`stripe_connect_error=${encodeURIComponent(errorParam)}`);
   if (!code || !state) return redirectTo("stripe_connect_error=missing_code_or_state");
 
-  const [ownerId, sig] = state.split(".");
+  // BUG FIX (audit 2026-11-17) — state is now owner.nonce.expiry.signature;
+  // old-style or expired links are refused instead of linking an account.
+  const [ownerId, nonce, exp, sig] = state.split(".");
   const stateSecret = context.env.STRIPE_CONNECT_STATE_SECRET || context.env.SUPABASE_SERVICE_ROLE_KEY || "";
-  if (!stateSecret || !ownerId || !sig) return redirectTo("stripe_connect_error=invalid_state");
-  const expectedSig = await hmac(ownerId, stateSecret);
+  if (!stateSecret || !ownerId || !nonce || !exp || !sig) return redirectTo("stripe_connect_error=invalid_state");
+  const expMs = Number(exp);
+  if (!Number.isFinite(expMs) || Date.now() > expMs || expMs - Date.now() > STATE_TTL_MS) return redirectTo("stripe_connect_error=state_expired");
+  const expectedSig = await hmac(`${ownerId}.${nonce}.${exp}`, stateSecret);
   // SECURITY FIX (audit finding — low severity) — a plain !== comparison on
   // a secret HMAC is a timing side-channel (same class of issue the webhook
   // signature checks elsewhere in this codebase already guard against);

@@ -142,8 +142,15 @@ export function BulkJobImportModal({
     setCreating(true);
     const newCustomers: any[] = [];
     const newJobs: any[] = [];
-    let createdJobs = 0, createdCustomers = 0, failed = 0;
+    let createdJobs = 0, createdCustomers = 0, failed = 0, already = 0;
+    // BUG FIX (audit 2026-11-17) — re-running an import gave every matched
+    // customer a second repeating visit, and failed rows were lost because
+    // the window closed after any success. Customers who already have an
+    // upcoming visit of this kind are skipped; failed rows stay here to retry.
+    const hasOpen = new Set((jobs || []).filter((j: any) => j.status !== "completed" && j.status !== "cancelled" && (j.serviceCategory || "general") === serviceCategory).map((j: any) => j.customerId));
+    const failedRows: any[] = [];
     for (const row of active) {
+      if (row.matchedCustomerId && hasOpen.has(row.matchedCustomerId)) { already++; continue; }
       try {
         let customerId = row.matchedCustomerId;
         if (!customerId) {
@@ -179,18 +186,22 @@ export function BulkJobImportModal({
         const saved = await insertJobsTolerant([jobRecord]);
         if (!saved.saved) throw new Error(saved.errors[0] || "Job save failed");
         newJobs.push(jobRecord);
+        hasOpen.add(customerId);
         createdJobs++;
       } catch (e: any) {
         failed++;
+        failedRows.push(row);
         console.error("[BulkJobImport] row failed —", row.customerName, "—", e?.message);
       }
     }
     if (newCustomers.length > 0) setCustomers?.((prev: any[]) => [...prev, ...newCustomers]);
     if (newJobs.length > 0) setJobs?.((prev: any[]) => [...prev, ...newJobs]);
     setCreating(false);
-    if (failed > 0) toast?.(`Created ${createdJobs} job${createdJobs !== 1 ? "s" : ""}, ${failed} failed — check the console for details`, "yellow");
-    else toast?.(`Created ${createdJobs} job${createdJobs !== 1 ? "s" : ""} (${createdCustomers} new customer${createdCustomers !== 1 ? "s" : ""}) ✓`, "green");
-    if (createdJobs > 0) { reset(); onClose(); }
+    const skippedNote = already ? ` · ${already} skipped (already have an upcoming visit)` : "";
+    if (failed > 0) toast?.(`Created ${createdJobs} job${createdJobs !== 1 ? "s" : ""}, ${failed} failed${skippedNote}. The failed rows are still here to fix and try again.`, "yellow");
+    else toast?.(`Created ${createdJobs} job${createdJobs !== 1 ? "s" : ""} (${createdCustomers} new customer${createdCustomers !== 1 ? "s" : ""})${skippedNote} ✓`, "green");
+    if (failed > 0) setRows(failedRows.map(r => ({ ...r, matchedCustomerId: r.matchedCustomerId || newCustomers.find((c: any) => `${c.firstName} ${c.lastName}`.trim() === r.customerName.trim())?.id || r.matchedCustomerId })));
+    else if (createdJobs > 0 || already > 0) { reset(); onClose(); }
   };
 
   const assignableEmployees = employees.filter((e: any) => e.status === "active" && e.role !== "owner");

@@ -12,6 +12,10 @@
 // config. Without a real refresh_token AND these two env vars, this always
 // fails cleanly — callers fall back to prompting the owner to reconnect.
 import { getOwnerSecrets, resolveCallerIsOwnerOrManager, resolveCallerOwnerId } from "./_lib/ownerSecrets";
+// BUG FIX (audit 2026-11-17) — external calls here had no time limit, so a
+// stuck provider left the request hanging; they now give up after ~15s with
+// an error (see _lib/fetchWithTimeout.ts).
+import { fetchWithTimeout } from "./_lib/fetchWithTimeout";
 
 export const onRequestPost = async (context: { request: Request; env: Record<string, string> }) => {
   try {
@@ -74,7 +78,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       refresh_token,
       grant_type: "refresh_token",
     });
-    const googleRes = await fetch("https://oauth2.googleapis.com/token", {
+    const googleRes = await fetchWithTimeout("https://oauth2.googleapis.com/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: body.toString(),

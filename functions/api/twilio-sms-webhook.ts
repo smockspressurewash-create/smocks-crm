@@ -30,6 +30,7 @@
 // guessed.
 
 import { twilioAccountSid } from "./_lib/twilioAccount";
+import { fetchWithTimeout } from "./_lib/fetchWithTimeout";
 import { loadModelOverrides } from "./_lib/modelOverrides";
 import { transcribeAudioBuffer, TRANSCRIBE_SETUP_HELP } from "./_lib/transcribe";
 import { runAlfredSmsAgent, sendAlfredSms } from "./_lib/alfredSmsAgent";
@@ -598,53 +599,48 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // no usable token at all, so route it to that existing fail-open path
     // instead of failing closed on a credential-entry mistake the owner has
     // no way to see or diagnose.
+    // BUG FIX (audit 2026-11-17) — anyone who knew this URL could post a fake
+    // text "from" the owner's phone and drive owner-level Alfred: with no
+    // auth token configured the check was skipped, the API-Key path trusted
+    // the AccountSid sent in the request, and it let the text through when
+    // Twilio couldn't be reached. Now a text is processed only when it is
+    // positively verified, using the owner's own stored Twilio login:
+    //  - Account SID + Auth Token: check X-Twilio-Signature with that token.
+    //  - API Key saved instead: try the platform token's signature, else ask
+    //    Twilio (under the owner's own account) whether this exact message
+    //    arrived with this from/to. Any doubt means reject.
+    //  - Nothing stored: platform TWILIO_AUTH_TOKEN signature, else reject.
     const twilioSidLooksReal = /^AC[0-9a-f]{32}$/i.test(twilioSid || "");
-    const effectiveAuthToken = (twilioSidLooksReal && twilioToken) || context.env.TWILIO_AUTH_TOKEN;
-    // Without the account's Auth Token the signature can't be checked, so
-    // anyone who knows this URL could post a fake text "from" the owner's
-    // phone and drive owner-level Alfred. Instead, ask Twilio whether this
-    // exact message really arrived (from/to must match). A message that
-    // doesn't exist is rejected; if Twilio can't be asked, it's let through
-    // as before, so real texts are never lost.
-    if (!twilioSidLooksReal && twilioToken && twilioSid && !context.env.TWILIO_AUTH_TOKEN) {
-      const d10 = (p: string) => String(p || "").replace(/\D/g, "").slice(-10);
-      const sid = params.MessageSid || params.SmsSid || "";
-      const acct = params.AccountSid || "";
-      if (!/^(SM|MM)[0-9a-f]{32}$/i.test(sid) || !/^AC[0-9a-f]{32}$/i.test(acct)) {
-        console.warn("[TwilioSmsWebhook] unsigned request without a real MessageSid/AccountSid — rejecting");
-        return new Response("Invalid request", { status: 403 });
-      }
-      const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 5000);
-      const check = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${acct}/Messages/${sid}.json`, {
-        headers: { Authorization: "Basic " + btoa(`${twilioSid}:${twilioToken}`) }, signal: ctl.signal,
-      }).catch(() => null);
-      clearTimeout(t);
-      if (check?.status === 404) {
-        console.warn("[TwilioSmsWebhook] message", sid, "doesn't exist at Twilio — rejecting forged request");
-        return new Response("Invalid request", { status: 403 });
-      }
-      if (check?.ok) {
-        const m: any = await check.json().catch(() => null);
-        if (!m || d10(m.from) !== d10(params.From || "") || d10(m.to) !== d10(params.To || "")) {
-          console.warn("[TwilioSmsWebhook] message", sid, "from/to don't match Twilio's record — rejecting");
-          return new Response("Invalid request", { status: 403 });
-        }
-      } else {
-        console.warn("[TwilioSmsWebhook] couldn't confirm message", sid, "with Twilio (" + (check?.status ?? "network") + ") — processing anyway");
-      }
-    }
-    if (!twilioSidLooksReal && twilioToken) {
-      console.warn("[TwilioSmsWebhook] owner", ownerId, "has a Twilio SID that isn't a real Account SID (starts with", (twilioSid || "").slice(0, 2) || "?", "not AC) — likely an API Key pasted into the Account SID field. Skipping signature verification instead of rejecting every inbound text; fix in Settings → Integrations → Twilio using the Account SID/Auth Token from the main Twilio Console dashboard, not an API Key.");
-    }
-    if (effectiveAuthToken) {
-      const signature = context.request.headers.get("X-Twilio-Signature") || "";
-      const valid = await verifyTwilioSignature(context.request.url, params, signature, effectiveAuthToken);
-      if (!valid) {
-        console.warn("[TwilioSmsWebhook] signature verification failed for owner", ownerId, "— rejecting");
-        return new Response("Invalid signature", { status: 403 });
-      }
+    const platformToken = context.env.TWILIO_AUTH_TOKEN || "";
+    const signature = context.request.headers.get("X-Twilio-Signature") || "";
+    let verified = false;
+    if (twilioSidLooksReal && twilioToken) {
+      verified = !!signature && await verifyTwilioSignature(context.request.url, params, signature, twilioToken);
     } else {
-      console.warn("[TwilioSmsWebhook] no Twilio Auth Token available (neither this owner's own nor a platform fallback) — processing without signature verification");
+      if (platformToken && signature) {
+        verified = await verifyTwilioSignature(context.request.url, params, signature, platformToken);
+      }
+      if (!verified && twilioSid && twilioToken) {
+        const d10 = (p: string) => String(p || "").replace(/\D/g, "").slice(-10);
+        const sid = params.MessageSid || params.SmsSid || "";
+        const acct = await twilioAccountSid(twilioSid, twilioToken);
+        if (/^(SM|MM)[0-9a-f]{32}$/i.test(sid) && /^AC[0-9a-f]{32}$/i.test(acct) && (!params.AccountSid || params.AccountSid === acct)) {
+          const check = await fetchWithTimeout(`https://api.twilio.com/2010-04-01/Accounts/${acct}/Messages/${sid}.json`, {
+            headers: { Authorization: "Basic " + btoa(`${twilioSid}:${twilioToken}`) },
+          }, 5000).catch(() => null);
+          if (check?.ok) {
+            const m: any = await check.json().catch(() => null);
+            verified = !!m && m.direction === "inbound" && d10(m.from) === d10(params.From || "") && d10(m.to) === d10(params.To || "");
+          }
+        }
+        if (!twilioSidLooksReal) {
+          console.warn("[TwilioSmsWebhook] owner", ownerId, "has a Twilio SID that isn't an Account SID (starts with", (twilioSid || "").slice(0, 2) || "?", "not AC); verified by message lookup instead. Saving the Account SID + Auth Token in Settings → Integrations → Twilio is more reliable.");
+        }
+      }
+    }
+    if (!verified) {
+      console.warn("[TwilioSmsWebhook] request could not be verified as coming from Twilio for owner", ownerId, "— rejecting");
+      return new Response("Invalid signature", { status: 403 });
     }
 
     const isOptInKeyword = body === keyword;

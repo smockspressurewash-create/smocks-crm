@@ -13,6 +13,10 @@
 // CORS restriction applies to calling IT from the browser either), so it
 // proxies the real Twilio call through.
 import { twilioAccountSid } from "./_lib/twilioAccount";
+// BUG FIX (audit 2026-11-17) — external calls here had no time limit, so a
+// stuck provider left the request hanging; they now give up after ~15s with
+// an error (see _lib/fetchWithTimeout.ts).
+import { fetchWithTimeout } from "./_lib/fetchWithTimeout";
 import { getOwnerSecrets, resolveCallerOwnerId } from "./_lib/ownerSecrets";
 
 const SUPABASE_URL = "https://boaqaihymgmrhnjtiqrs.supabase.co";
@@ -122,12 +126,12 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
     // "Twilio is out of credit" instead of a vague message.
     const balanceOf = async (): Promise<string | undefined> => {
       try {
-        const r = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${acSid}/Balance.json`, { headers: { Authorization: basic } });
+        const r = await fetchWithTimeout(`https://api.twilio.com/2010-04-01/Accounts/${acSid}/Balance.json`, { headers: { Authorization: basic } });
         const b: any = await r.json().catch(() => null);
         return b?.balance != null ? `${b.balance} ${b.currency || ""}`.trim() : undefined;
       } catch { return undefined; }
     };
-    const twilioRes = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${acSid}/Messages.json`, {
+    const twilioRes = await fetchWithTimeout(`https://api.twilio.com/2010-04-01/Accounts/${acSid}/Messages.json`, {
       method: "POST",
       headers: {
         Authorization: basic,
@@ -144,7 +148,7 @@ export const onRequestPost = async (context: { request: Request; env: Record<str
       let last: any = data;
       for (const wait of [1500, 2500]) {
         await new Promise(r => setTimeout(r, wait));
-        const sr = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${acSid}/Messages/${data.sid}.json`, { headers: { Authorization: basic } }).catch(() => null);
+        const sr = await fetchWithTimeout(`https://api.twilio.com/2010-04-01/Accounts/${acSid}/Messages/${data.sid}.json`, { headers: { Authorization: basic } }).catch(() => null);
         const s: any = sr ? await sr.json().catch(() => null) : null;
         if (s?.status) last = s;
         if (s?.status === "failed" || s?.status === "undelivered" || s?.status === "delivered") break;

@@ -22,7 +22,7 @@ import {
   Tooltip, ResponsiveContainer, Area, AreaChart, LineChart, Line,
   ComposedChart, Legend
 } from "recharts";
-import { fmt, uid, today, localDateStr, localDateKey, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, forecastFor, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, totalJobPhotoCount, desktopNotifsSupported, desktopNotifPermission, requestDesktopNotifPermission, computeNextRecurringDate, stripLegacyJobFields } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, localDateKey, nextVisitBase, daysFromNow, daysSince, filterByTimeframe, TIMEFRAMES, forecastFor, pipelineStages, priorityLevels, cancelReasons, recurringFreqs, equipmentList, jobTagOptions, expenseCats, personalities, normalizeAutomation, IRS_RATE, withTimeout, totalJobPhotoCount, desktopNotifsSupported, desktopNotifPermission, requestDesktopNotifPermission, computeNextRecurringDate, stripLegacyJobFields } from "../../lib/utils";
 // BLOCKER 5/9 (mobile round 9) — same robust crew-matching helper the
 // employee portal uses (tolerates object-shaped crew entries, stringified
 // JSON, casing, and the employees.id vs employees.user_id mismatch). Live
@@ -625,7 +625,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
   const ownerEmpId = ownerEmp?.id || null;
   const ownerOnShift = !!ownerEmp?.dayClockInAt;
   const ownerShiftMs = ownerOnShift ? Math.max(0, Date.now() - Number(ownerEmp.dayClockInAt) - (Number(ownerEmp.dayPausedMinutes) || 0) * 60000) : 0;
-  const weekStartLive = (() => { const d = new Date(); d.setDate(d.getDate() - d.getDay()); return d.toISOString().slice(0, 10); })();
+  const weekStartLive = (() => { const d = new Date(); d.setDate(d.getDate() - d.getDay()); return localDateKey(d); })(); // local date, not UTC (audit 2026-11-17)
   // Today's jobs nobody is assigned to are the owner's to do (e.g. a
   // trash-can route imported without a crew) — they used to be invisible
   // here, so a full route day showed "No job assigned to you today".
@@ -831,7 +831,7 @@ export function Dashboard({ jobs = [], setJobs = (() => {}) as any, customers = 
     if (j.clockInAt) { patch.clockInAt = null; patch.loggedHours = Math.round(((Number(j.loggedHours) || 0) + (Date.now() - j.clockInAt) / 3600000) * 100) / 100; }
     await ownerUpdateJob(j.id, patch);
     if (j.isRecurring) {
-      const nextJob: any = { ...stripLegacyJobFields(j), id: uid(), googleEventId: null, status: "scheduled", scheduledDate: computeNextRecurringDate(j, j.scheduledDate), loggedHours: 0, clockInAt: null, arrivedAt: null, completedAt: null, signOff: null, photos: [], videos: [], commLog: [], checklist: (j.checklist || []).map((c: any) => ({ ...c, done: false })), preChecklist: (j.preChecklist || []).map((c: any) => ({ ...c, done: false })), duringChecklist: (j.duringChecklist || []).map((c: any) => ({ ...c, done: false })), postChecklist: (j.postChecklist || []).map((c: any) => ({ ...c, done: false })), paymentStatus: undefined, amountCollected: undefined };
+      const nextJob: any = { ...nextVisitBase(j), id: uid(), googleEventId: null, status: "scheduled", scheduledDate: computeNextRecurringDate(j, j.scheduledDate), loggedHours: 0, clockInAt: null, arrivedAt: null, completedAt: null, signOff: null, photos: [], videos: [], commLog: [], checklist: (j.checklist || []).map((c: any) => ({ ...c, done: false })), preChecklist: (j.preChecklist || []).map((c: any) => ({ ...c, done: false })), duringChecklist: (j.duringChecklist || []).map((c: any) => ({ ...c, done: false })), postChecklist: (j.postChecklist || []).map((c: any) => ({ ...c, done: false })), paymentStatus: undefined, amountCollected: undefined };
       setJobs((prev: any[]) => [...prev, nextJob]);
       const r = await (supabase as any).from("jobs").insert(nextJob);
       if (r?.error) {

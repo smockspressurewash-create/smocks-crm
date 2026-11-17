@@ -31,7 +31,7 @@ import { sendPushNotification } from "../../lib/push";
 import { SopModal } from "../ui/SopModal";
 import { chargeSavedPaymentMethod, sendPaymentReceipt, listCustomerPaymentMethods } from "../../lib/stripe";
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGrid } from "recharts";
-import { fmt, uid, today, localDateStr, localDateKey, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields, reconcileCrewAfterAssign, getPollIntervalMs, getPayPeriodBounds, haversineMiles, resolveTermsForJobType, buildJobCalendarDescription, haptic, queueOfflineJobPatch, getPendingJobPatches, clearPendingJobPatch, fetchDriveDistance } from "../../lib/utils";
+import { fmt, uid, today, localDateStr, localDateKey, shiftDayStr, daysFromNow, computeJobRatingScore, setOAuthIntent, compressImageFile, getEffectiveRate, computeNextRecurringDate, weekdayLabels, normalizeJobRow, totalJobPhotoCount, mediaSrc, dataUrlToBlob, uploadJobMedia, checkVideoLimits, stripLegacyJobFields, nextVisitBase, reconcileCrewAfterAssign, getPollIntervalMs, getPayPeriodBounds, haversineMiles, resolveTermsForJobType, buildJobCalendarDescription, haptic, queueOfflineJobPatch, getPendingJobPatches, clearPendingJobPatch, fetchDriveDistance } from "../../lib/utils";
 import { computeDiscountsTotal } from "../../lib/utils";
 import { useOnlineStatus } from "../../hooks/useOnlineStatus";
 import { callModel, MODELS } from "../../lib/api";
@@ -2653,10 +2653,17 @@ export function JobDetailView({ job, customer, onBack, onUpdateJob, toast, compa
                   if (canChargeSavedCard) {
                     try {
                       await chargeSavedPaymentMethod(customer.stripeCustomerId!, customer.savedPaymentMethodId!, Math.round(feeAmount * 100), "usd", feeName, undefined, (job as any).owner_id);
-                      onUpdateJob({ inconvenienceFeeCharged: feeAmount, inconvenienceFeeChargedAt: new Date().toISOString(), inconvenienceFeePendingConfirmation: false, commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: localDateStr(), note: `🗑 Cans not out — charged ${feeName} (${fmt(feeAmount)})` }] } as any);
-                      if (customer.phone) twilioSend(settings as any, customer.phone, `Hi ${customer.firstName}, we stopped by for your trash can cleaning but your cans weren't out, so a ${fmt(feeAmount)} ${feeName.toLowerCase()} was charged to your card on file. — ${(settings as any)?.companyName || "Crew Boss"}`).catch(() => {});
-                      toast(`Charged ${fmt(feeAmount)} ✓`, "green");
                       charged = true;
+                      // BUG FIX (audit 2026-11-17) — the card was charged but if the
+                      // job save failed nobody knew, so the fee could be charged
+                      // again. Wait for the save and warn when it didn't land.
+                      let saveRes: any = null;
+                      try {
+                        saveRes = await onUpdateJob({ inconvenienceFeeCharged: feeAmount, inconvenienceFeeChargedAt: new Date().toISOString(), inconvenienceFeePendingConfirmation: false, commLog: [...(job.commLog || []), { id: uid(), type: "note" as const, date: localDateStr(), note: `🗑 Cans not out — charged ${feeName} (${fmt(feeAmount)})` }] } as any);
+                      } catch (se: any) { saveRes = { error: se }; }
+                      if (customer.phone) twilioSend(settings as any, customer.phone, `Hi ${customer.firstName}, we stopped by for your trash can cleaning but your cans weren't out, so a ${fmt(feeAmount)} ${feeName.toLowerCase()} was charged to your card on file. — ${(settings as any)?.companyName || "Crew Boss"}`).catch(() => {});
+                      if (saveRes?.error) toast(`Charged ${fmt(feeAmount)}, but not recorded on the job — ${saveRes.error?.message || "save failed"}. Tell the office so it isn't charged twice.`, "yellow");
+                      else toast(`Charged ${fmt(feeAmount)} ✓`, "green");
                     } catch (e: any) {
                       toast(`Charge failed — ${e?.message || "unknown error"} — flagging for the owner to collect`, "red");
                     }
@@ -3550,14 +3557,14 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const [shiftEndedMsg, setShiftEndedMsgState] = useState<string | null>(() => {
     try {
       const raw = localStorage.getItem("smocks.shiftEnded");
-      if (raw) { const o = JSON.parse(raw); if (o.date === new Date().toISOString().slice(0, 10)) return o.msg; }
+      if (raw) { const o = JSON.parse(raw); if (o.date === localDateStr()) return o.msg; }
     } catch { /* ignore */ }
     return null;
   });
   const setShiftEndedMsg = (msg: string | null) => {
     setShiftEndedMsgState(msg);
     try {
-      if (msg) localStorage.setItem("smocks.shiftEnded", JSON.stringify({ date: new Date().toISOString().slice(0, 10), msg }));
+      if (msg) localStorage.setItem("smocks.shiftEnded", JSON.stringify({ date: localDateStr(), msg }));
       else localStorage.removeItem("smocks.shiftEnded");
     } catch { /* ignore */ }
   };
@@ -3734,7 +3741,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   // on this tab were fixed presets (7 days / 4 weeks / 12 months) or the
   // calendar's month prev/next (capped at the current month) — there was no
   // way to actually pick an arbitrary date range as asked for.
-  const [payCustomStart, setPayCustomStart] = useState(() => { const d = new Date(); d.setDate(d.getDate() - 30); return d.toISOString().slice(0, 10); });
+  const [payCustomStart, setPayCustomStart] = useState(() => { const d = new Date(); d.setDate(d.getDate() - 30); return localDateKey(d); });
   const [payCustomEnd, setPayCustomEnd] = useState(() => localDateStr());
   // Drives a spinner on the "Share My Location" button for the window between
   // tapping it and the browser's permission prompt resolving — previously the
@@ -4913,11 +4920,13 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const todayStr = shiftDayStr();
   const todayJobs = myJobs.filter(j => j.scheduledDate === todayStr && j.status !== "cancelled");
 
+  // BUG FIX (audit 2026-11-17) — week, pay-period and "today" dates used UTC,
+  // so in the evening the crew saw the wrong week and hours. Use local dates.
   const weekStart = (() => {
-    const d = new Date(); d.setDate(d.getDate() - d.getDay()); return d.toISOString().slice(0, 10);
+    const d = new Date(); d.setDate(d.getDate() - d.getDay()); return localDateKey(d);
   })();
   const weekEnd = (() => {
-    const d = new Date(); d.setDate(d.getDate() + (6 - d.getDay())); return d.toISOString().slice(0, 10);
+    const d = new Date(); d.setDate(d.getDate() + (6 - d.getDay())); return localDateKey(d);
   })();
   const weekJobs = myJobs.filter(j => j.scheduledDate >= weekStart && j.scheduledDate <= weekEnd);
 
@@ -4963,7 +4972,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
     })[0] ?? null;
   const upNextCustomer = upNextJob ? findCustomer(upNextJob.customerId) : null;
 
-  const payStart = (() => { const d = new Date(); d.setDate(d.getDate() - 14); return d.toISOString().slice(0, 10); })();
+  const payStart = (() => { const d = new Date(); d.setDate(d.getDate() - 14); return localDateKey(d); })();
   const periodJobs = myJobs.filter(j => j.status === "completed" && j.scheduledDate >= payStart);
   const periodHours = periodJobs.reduce((s, j) => s + Number(j.loggedHours || j.duration || 0), 0);
   const estimatedPay = periodHours * (myEmployee?.hourlyRate || 0);
@@ -5058,6 +5067,10 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             if (retry?.error) { console.error("[updateJob] core retry failed:", retry.error.message); return retry; }
             if (!retry?.data || retry.data.length === 0) { console.error("[updateJob] core retry matched 0 rows — blocked by permissions"); return { error: { message: "Update rejected by the server (permissions)" } }; }
             console.log("[FIXHOURS] core-columns retry succeeded — status/hours/pay synced to Supabase despite full-patch rejection:", Object.keys(core));
+            // BUG FIX (audit 2026-11-17) — the crew was told the job saved even
+            // though the retry left some changes out. Say which ones.
+            const notSaved = Object.keys(patch).filter(k => !(k in core));
+            if (notSaved.length > 0) toast?.("Saved the main details, but these didn't save: " + notSaved.join(", ") + " — tell the office", "yellow");
             return retry;
           }
           return result;
@@ -5082,11 +5095,18 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
   const createRecurringJob = (sourceJob: Job) => {
     if (!sourceJob.isRecurring) return;
     const nextDate = computeNextRecurringDate(sourceJob, sourceJob.scheduledDate);
+    // BUG FIX (audit 2026-11-17) — completing a job twice (double tap, or the
+    // owner and crew both) booked the next visit twice. `jobs` here is from
+    // before this completion, so skip if it was already done or if the same
+    // visit is already on the schedule for that day.
+    const before: any = jobs.find(x => x.id === sourceJob.id);
+    if (before?.status === "completed") return;
+    const dupe = jobs.some((x: any) => x.id !== sourceJob.id && x.customerId === sourceJob.customerId && x.scheduledDate === nextDate && x.status !== "cancelled" && (x.serviceCategory || "") === ((sourceJob as any).serviceCategory || "") && (x.title || "") === ((sourceJob as any).title || ""));
+    if (dupe) return;
     const nextJob: any = {
-      // stripLegacyJobFields — sourceJob may still carry a poisoned
-      // organizationId/org_id key from before that bug was reverted; a bare
-      // spread would carry it into this brand-new row and fail the insert.
-      ...stripLegacyJobFields(sourceJob), id: uid(), status: "scheduled", scheduledDate: nextDate,
+      // BUG FIX (audit 2026-11-17) — the next visit copied this visit's
+      // cans-not-out fee; nextVisitBase drops it (and legacy bad fields).
+      ...nextVisitBase(sourceJob), id: uid(), status: "scheduled", scheduledDate: nextDate,
       // Its own calendar events, not the finished job's (see lib/calendarSync.ts).
       googleEventId: null, crewGoogleEventIds: {},
       loggedHours: 0, clockInAt: null, arrivedAt: null, completedAt: null,
@@ -7386,7 +7406,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
               const isTodayTs = (v: any): boolean => {
                 if (!v) return false;
                 const d = typeof v === "number" ? new Date(v) : new Date(String(v));
-                return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === localDateStr();
+                return !Number.isNaN(d.getTime()) && localDateKey(d) === localDateStr();
               };
               const sendEndOfDaySummary = async (finalHours: number) => {
                 const todayStr = localDateStr();
@@ -7935,7 +7955,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             <div className="flex items-center justify-between gap-1.5">
               {Array.from({ length: 7 }, (_, i) => {
                 const d = new Date(); d.setDate(d.getDate() - d.getDay() + i);
-                const dStr = d.toISOString().slice(0, 10);
+                const dStr = localDateKey(d);
                 const isToday = dStr === todayStr;
                 const hasJob = myJobs.some(j => j.scheduledDate === dStr);
                 return (
@@ -8181,7 +8201,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
             const calWeekDates = Array.from({ length: 7 }, (_, i) => {
               const d = new Date();
               d.setDate(d.getDate() - d.getDay() + i + calWeekOffset * 7);
-              return d.toISOString().slice(0, 10);
+              return localDateKey(d);
             });
             const calMonthBase = new Date();
             calMonthBase.setDate(1);
@@ -8584,7 +8604,7 @@ export function EmployeePortal({ empSession, setEmpSession, jobs, setJobs, emplo
 
           {/* All Jobs tab — grouped by date */}
           {tab === "jobs" && (() => {
-            const jwEnd = (() => { const d = new Date(); d.setDate(d.getDate() + (6 - d.getDay())); return d.toISOString().slice(0, 10); })();
+            const jwEnd = (() => { const d = new Date(); d.setDate(d.getDate() + (6 - d.getDay())); return localDateKey(d); })();
             // Apply status filter first, then search text
             const statusFiltered = myJobs.filter(j => {
               if (j.status === "cancelled" && !showCanceledJobs) return false;

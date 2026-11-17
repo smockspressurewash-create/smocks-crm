@@ -47,9 +47,11 @@ export function WorkOrderEditor({
   onOpenJob?: (id: string) => void; customers?: any[]; employees?: any[]; services?: any[]; setServices?: any; settings?: any;
 }) {
   const [d, setD] = useState<Draft>(() => fromJob(job, settings));
+  // What the editor opened with, so an edit only sends what was changed.
+  const [initial, setInitial] = useState<Draft>(() => fromJob(job, settings));
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
-  React.useEffect(() => { if (open) { setD(fromJob(job, settings)); setErr(""); } }, [open, job?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  React.useEffect(() => { if (open) { const f = fromJob(job, settings); setD(f); setInitial(f); setErr(""); } }, [open, job?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const upd = (patch: Partial<Draft>) => setD(x => ({ ...x, ...patch }));
   const linesTotal = jobLinesTotal(cleanLines(d.lineItems));
   const subTotal = cleanLines(d.lineItems).length ? linesTotal : (parseFloat(d.amount) || 0);
@@ -79,9 +81,35 @@ export function WorkOrderEditor({
     if (steps.length) patch.preChecklist = [...(job?.preChecklist || []), ...steps];
     if (!d.scheduledDate) patch.tags = Array.from(new Set([...(job?.tags || []), "Needs Scheduling"]));
     else if (job?.tags?.includes("Needs Scheduling")) patch.tags = job.tags.filter((t: string) => t !== "Needs Scheduling");
+    // BUG FIX (audit 2026-11-17) — saving an edit rewrote every field, so it
+    // wiped crew changes, notes, equipment or checklist steps made by someone
+    // else while this was open. Only send what was changed here.
+    const editPatch = (): any => {
+      const ch = (k: keyof Draft) => JSON.stringify(d[k]) !== JSON.stringify(initial[k]);
+      const out: any = {};
+      const keep = (...keys: string[]) => keys.forEach(k => { if (k in patch) out[k] = patch[k]; });
+      if (ch("customerId")) keep("customerId");
+      if (ch("address") || (ch("customerId") && !d.address)) keep("address");
+      if (ch("scheduledDate")) keep("scheduledDate", "tags");
+      if (ch("scheduledTime")) keep("scheduledTime");
+      if (ch("crew")) keep("crew", "crewAssignedAt");
+      if (ch("workOrderNumber")) keep("workOrderNumber");
+      if (ch("workOrderClient")) keep("workOrderClient");
+      if (ch("lineItems")) keep("lineItems");
+      if (ch("lineItems") || ch("amount") || ch("taxOn") || ch("taxRate")) keep("amount", "tax", "taxRate");
+      if (ch("equipment")) keep("equipment");
+      if (ch("photoRequirements")) keep("photoRequirements");
+      if (ch("notes")) keep("notes");
+      if (ch("requiresManagerSignoff")) keep("requiresManagerSignoff");
+      if (ch("isNightJob")) keep("isNightJob");
+      if (job?.isWorkOrder && !job?.jobType) keep("isWorkOrder", "jobType");
+      keep("preChecklist");
+      return out;
+    };
     const full = isNew
       ? { id: uid(), status: "scheduled", priority: "normal", checklist: [], photos: [], commLog: [], chemicalsUsed: [], tags: patch.tags || [], loggedHours: 0, createdAt: today(), ...patch }
-      : patch;
+      : editPatch();
+    if (!isNew && Object.keys(full).length === 0) { setSaving(false); onClose(); return; }
     const ok = await onSave(full, isNew);
     setSaving(false);
     if (ok) onClose();

@@ -1,0 +1,36 @@
+# Daily integration health check (functions/api/alfred-health.ts GET).
+# Checks every business's AI keys, Twilio account and incoming-text webhook,
+# Google sign-in, speech-to-text, database tables and the reminders
+# scheduler. Owners get a push notice when something newly breaks.
+#
+# Settings (repo -> Settings -> Secrets and variables -> Actions):
+#   vars.APP_URL             the live site (default https://smocks-crm.pages.dev)
+#   secrets.HEALTH_CHECK_KEY same value as HEALTH_CHECK_KEY (or
+#                            REMINDERS_CRON_SECRET) in Cloudflare Pages
+name: Health check
+on:
+  schedule:
+    - cron: "37 11 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Run the health check
+        env:
+          APP_URL: ${{ vars.APP_URL || 'https://smocks-crm.pages.dev' }}
+          KEY: ${{ secrets.HEALTH_CHECK_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then echo "::error::Set the HEALTH_CHECK_KEY secret (same value as in Cloudflare Pages)."; exit 1; fi
+          code=$(curl -s -o out.json -w "%{http_code}" --max-time 300 "$APP_URL/api/alfred-health?key=$KEY")
+          echo "HTTP $code"
+          head -c 2000 out.json; echo
+          case "$code" in
+            2??) ;;
+            *) echo "::error::health check failed to run (HTTP $code)."; exit 1 ;;
+          esac
+          # Fail the run (so GitHub emails the repo owner) when any business has a failing check.
+          if grep -q '"failing":[1-9]' out.json; then echo "::warning::Some connections are failing; owners were notified."; exit 1; fi

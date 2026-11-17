@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import type { Automation, AutomationStep, Job, Customer, Estimate, Referral, AppSettings, Employee, Goal } from "../types";
-import { today, daysSince, recurringFreqs } from "../lib/utils";
+import { today, daysSince, recurringFreqs, daysFromNow, localDateKey } from "../lib/utils";
 import { twilioSend, logOutboundSmsToInbox, sendOwnerGmailOnly, emailShell, emailButton } from "../lib/messaging";
 
 interface AutomationEngineProps {
@@ -976,7 +976,8 @@ export function useAutomationEngine({
           direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 80,
           extraVars: () => {
             const qStartMonth = Math.floor(now.getMonth() / 3) * 3;
-            const qStart = new Date(now.getFullYear(), qStartMonth, 1).toISOString().slice(0, 10);
+            // BUG FIX (audit 2026-11-17) — quarter start used a UTC date; use the local one.
+            const qStart = localDateKey(new Date(now.getFullYear(), qStartMonth, 1));
             const qJobs = jobs.filter(j => j.status === "completed" && j.scheduledDate >= qStart && j.scheduledDate <= todayStr);
             const revenue = qJobs.reduce((s, j) => s + (Number(j.amount) || 0), 0);
             const newCustomers = customers.filter(c => (c.createdAt || "").slice(0, 10) >= qStart).length;
@@ -1028,7 +1029,8 @@ export function useAutomationEngine({
           direction: "immediate", defaultDelayMinutes: 0, defaultCooldownDays: 5,
           extraVars: cand => {
             const emp = cand.employee!;
-            const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+            // BUG FIX (audit 2026-11-17) — UTC date math shifted the week by a day in the evening; use local dates.
+            const weekAgo = daysFromNow(-7);
             const recentJobs = jobs.filter(j => (j.crew || []).includes(emp.id) && j.status === "completed" && j.scheduledDate >= weekAgo);
             return {
               jobs_completed: String(recentJobs.length),
@@ -1160,7 +1162,8 @@ export function useAutomationEngine({
             };
           },
           getCandidates: () => {
-            const tomorrowStr = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+            // BUG FIX (audit 2026-11-17) — "tomorrow" was a UTC date, so after 7-8pm the owner was warned about the wrong day's unassigned jobs.
+            const tomorrowStr = daysFromNow(1);
             return jobs.filter(j => j.status === "scheduled" && j.scheduledDate === tomorrowStr && (j.crew || []).length === 0).map(j => {
               const oc = ownerCandidate(settings, `unassigned:${j.id}`);
               return oc ? { ...oc, job: j } : null;

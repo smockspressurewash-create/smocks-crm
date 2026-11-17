@@ -128,11 +128,12 @@ export async function prepareImportFromFile(ctx: Ctx, input: { fileUrl?: string;
     }
   }
   if (!records.length) return { error: "Couldn't find any customers in that." };
-  const [customers, employees] = await Promise.all([
+  const [customers, employees, jobs] = await Promise.all([
     getAll(ctx, `customers?select=*&owner_id=eq.${encodeURIComponent(ctx.ownerId)}`),
     getAll(ctx, `employees?select=id,firstName,lastName,status&owner_id=eq.${encodeURIComponent(ctx.ownerId)}`),
+    getAll(ctx, `jobs?select=customerId,status,serviceCategory&owner_id=eq.${encodeURIComponent(ctx.ownerId)}`),
   ]);
-  const plan = buildImportPlan(records, { customers, employees, serviceCategory: input.serviceCategory === "trash_can" ? "trash_can" : "general", createJobs: input.createJobs !== false });
+  const plan = buildImportPlan(records, { customers, employees, jobs, serviceCategory: input.serviceCategory === "trash_can" ? "trash_can" : "general", createJobs: input.createJobs !== false });
   // The full customer list isn't needed to save — keep the draft small.
   const draft = { id: plan.id, createdAt: plan.createdAt, serviceCategory: plan.serviceCategory, added: plan.customers.added, updated: plan.customers.updated, jobs: plan.jobs, warnings: plan.warnings, totalRecords: plan.totalRecords, status: "draft" };
   const saved = await recPut(ctx.authHeaders, ctx.ownerId, "import_draft", draft);

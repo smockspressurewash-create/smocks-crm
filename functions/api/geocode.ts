@@ -10,12 +10,16 @@
 // browser call from this site). Signed-in users only, at most 40 addresses
 // per call, so it can't be used as an open proxy.
 import { resolveCallerOwnerId } from "./_lib/ownerSecrets";
+// BUG FIX (audit 2026-11-17) — external calls here had no time limit, so a
+// stuck provider left the request hanging; they now give up after ~15s with
+// an error (see _lib/fetchWithTimeout.ts).
+import { fetchWithTimeout } from "./_lib/fetchWithTimeout";
 
 const json = (o: any, status = 200) => new Response(JSON.stringify(o), { status, headers: { "Content-Type": "application/json" } });
 
 const census = async (address: string): Promise<{ lat: number; lng: number } | null> => {
   const u = `https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?address=${encodeURIComponent(address)}&benchmark=Public_AR_Current&format=json`;
-  const r = await fetch(u).catch(() => null);
+  const r = await fetchWithTimeout(u).catch(() => null);
   const d: any = r && r.ok ? await r.json().catch(() => null) : null;
   const c = d?.result?.addressMatches?.[0]?.coordinates;
   return typeof c?.x === "number" && typeof c?.y === "number" ? { lat: c.y, lng: c.x } : null;
@@ -23,7 +27,7 @@ const census = async (address: string): Promise<{ lat: number; lng: number } | n
 
 const nominatim = async (address: string): Promise<{ lat: number; lng: number } | null> => {
   const u = `https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=us&q=${encodeURIComponent(address)}`;
-  const r = await fetch(u, { headers: { "User-Agent": "CrewBoss-CRM-route-builder/1.0", "Accept-Language": "en" } }).catch(() => null);
+  const r = await fetchWithTimeout(u, { headers: { "User-Agent": "CrewBoss-CRM-route-builder/1.0", "Accept-Language": "en" } }).catch(() => null);
   const d: any = r && r.ok ? await r.json().catch(() => null) : null;
   const hit = Array.isArray(d) ? d[0] : null;
   const lat = Number(hit?.lat), lng = Number(hit?.lon);
